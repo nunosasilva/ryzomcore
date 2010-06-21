@@ -11,7 +11,7 @@ TARGET_LINK_LIBRARIES(pd_support_service	admin_modules
 						${NELMISC_LIBRARY} 
 						${NELNET_LIBRARY})
 IF(WIN32)
-  SET_TARGET_PROPERTIES(ryzom_welcome_service PROPERTIES 
+  SET_TARGET_PROPERTIES(pd_support_service PROPERTIES 
 	LINK_FLAGS "/NODEFAULTLIB:libcmt /SUBSYSTEM:WINDOWS"
 	PROJECT_LABEL "Services: PD Support Service (PDSS)")
 ENDIF(WIN32)
