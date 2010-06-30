@@ -134,84 +134,79 @@ ENDMACRO(ADD_PRECOMPILED_HEADER_TO_TARGET)
 
 MACRO(ADD_PRECOMPILED_HEADER _targetName _inputh _inputcpp)
 
-	IF(WITH_PCH)
-		SET(_PCH_current_target ${_targetName})
+	SET(_PCH_current_target ${_targetName})
 
-		IF(NOT CMAKE_BUILD_TYPE)
-			MESSAGE(FATAL_ERROR
-				"This is the ADD_PRECOMPILED_HEADER macro. "
-				"You must set CMAKE_BUILD_TYPE!"
-			)
-		ENDIF(NOT CMAKE_BUILD_TYPE)
-
-		GET_PRECOMPILED_HEADER_OUTPUT( ${_targetName} ${_inputh} _output)
-
-		GET_TARGET_PROPERTY(_targetType ${_PCH_current_target} TYPE)
-
-		# always build static library because it doesn't need linking
-		ADD_LIBRARY(${_targetName}_pch_dephelp STATIC ${_inputcpp})
-
-		_PCH_GET_COMPILE_FLAGS(_compile_FLAGS)
-
-		SET_SOURCE_FILES_PROPERTIES(${_inputh} PROPERTIES GENERATED 1)
-
-		_PCH_GET_COMPILE_COMMAND(_command  ${_inputh} ${_output})
-
-		ADD_CUSTOM_COMMAND(
-			OUTPUT ${_output}
-			COMMAND ${_command}
-			DEPENDS ${_inputh} ${_targetName}_pch_dephelp
+	IF(NOT CMAKE_BUILD_TYPE)
+		MESSAGE(FATAL_ERROR
+			"This is the ADD_PRECOMPILED_HEADER macro. "
+			"You must set CMAKE_BUILD_TYPE!"
 		)
+	ENDIF(NOT CMAKE_BUILD_TYPE)
 
-		ADD_PRECOMPILED_HEADER_TO_TARGET(${_targetName} ${_inputh}  ${_output})
-	ENDIF(WITH_PCH)
+	GET_PRECOMPILED_HEADER_OUTPUT( ${_targetName} ${_inputh} _output)
+
+	GET_TARGET_PROPERTY(_targetType ${_PCH_current_target} TYPE)
+
+	# always build static library because it doesn't need linking
+	ADD_LIBRARY(${_targetName}_pch_dephelp STATIC ${_inputcpp})
+
+	_PCH_GET_COMPILE_FLAGS(_compile_FLAGS)
+
+	SET_SOURCE_FILES_PROPERTIES(${_inputh} PROPERTIES GENERATED 1)
+
+	_PCH_GET_COMPILE_COMMAND(_command  ${_inputh} ${_output})
+
+	ADD_CUSTOM_COMMAND(
+		OUTPUT ${_output}
+		COMMAND ${_command}
+		DEPENDS ${_inputh} ${_targetName}_pch_dephelp
+	)
+
+	ADD_PRECOMPILED_HEADER_TO_TARGET(${_targetName} ${_inputh}  ${_output})
 
 ENDMACRO(ADD_PRECOMPILED_HEADER)
 
 MACRO(ADD_NATIVE_PRECOMPILED_HEADER _targetName _inputh _inputcpp)
 
-	IF(WITH_PCH)
+	if(CMAKE_GENERATOR MATCHES Visual*)
+		# Auto include the precompile (useful for moc processing, since the use of
+		# precompiled is specified at the target level
+		# and I don't want to specifiy /F- for each moc/res/ui generated files (using Qt)
 
-		if(CMAKE_GENERATOR MATCHES Visual*)
-			# Auto include the precompile (useful for moc processing, since the use of
-			# precompiled is specified at the target level
-			# and I don't want to specifiy /F- for each moc/res/ui generated files (using Qt)
+		GET_TARGET_PROPERTY(oldProps ${_targetName} COMPILE_FLAGS)
+		if (${oldProps} MATCHES NOTFOUND)
+			SET(oldProps "")
+		endif(${oldProps} MATCHES NOTFOUND)
+
+		SET(newProperties "${oldProps} /Yu\"${_inputh}\" /FI\"${_inputh}\"")
+		SET_TARGET_PROPERTIES(${_targetName} PROPERTIES COMPILE_FLAGS "${newProperties}")
+
+		#also inlude ${oldProps} to have the same compile options
+		SET_SOURCE_FILES_PROPERTIES(${_inputcpp} PROPERTIES COMPILE_FLAGS "${oldProps} /Yc\"${_inputh}\"")
+
+	else(CMAKE_GENERATOR MATCHES Visual*)
+
+		if (CMAKE_GENERATOR MATCHES Xcode)
+			# For Xcode, cmake needs my patch to process
+			# GCC_PREFIX_HEADER and GCC_PRECOMPILE_PREFIX_HEADER as target properties
 
 			GET_TARGET_PROPERTY(oldProps ${_targetName} COMPILE_FLAGS)
 			if (${oldProps} MATCHES NOTFOUND)
 				SET(oldProps "")
 			endif(${oldProps} MATCHES NOTFOUND)
 
-			SET(newProperties "${oldProps} /Yu\"${_inputh}\" /FI\"${_inputh}\"")
-			SET_TARGET_PROPERTIES(${_targetName} PROPERTIES COMPILE_FLAGS "${newProperties}")
+			# When buiding out of the tree, precompiled may not be located
+			# Use full path instead.
+			GET_FILENAME_COMPONENT(fullPath ${_inputh} ABSOLUTE)
 
-			#also inlude ${oldProps} to have the same compile options
-			SET_SOURCE_FILES_PROPERTIES(${_inputcpp} PROPERTIES COMPILE_FLAGS "${oldProps} /Yc\"${_inputh}\"")
+			SET_TARGET_PROPERTIES(${_targetName} PROPERTIES XCODE_ATTRIBUTE_GCC_PREFIX_HEADER "${fullPath}")
+			SET_TARGET_PROPERTIES(${_targetName} PROPERTIES XCODE_ATTRIBUTE_GCC_PRECOMPILE_PREFIX_HEADER "YES")
 
-		else(CMAKE_GENERATOR MATCHES Visual*)
+		else (CMAKE_GENERATOR MATCHES Xcode)
 
-			if (CMAKE_GENERATOR MATCHES Xcode)
-				# For Xcode, cmake needs my patch to process
-				# GCC_PREFIX_HEADER and GCC_PRECOMPILE_PREFIX_HEADER as target properties
-
-				GET_TARGET_PROPERTY(oldProps ${_targetName} COMPILE_FLAGS)
-				if (${oldProps} MATCHES NOTFOUND)
-					SET(oldProps "")
-				endif(${oldProps} MATCHES NOTFOUND)
-
-				# When buiding out of the tree, precompiled may not be located
-				# Use full path instead.
-				GET_FILENAME_COMPONENT(fullPath ${_inputh} ABSOLUTE)
-
-				SET_TARGET_PROPERTIES(${_targetName} PROPERTIES XCODE_ATTRIBUTE_GCC_PREFIX_HEADER "${fullPath}")
-				SET_TARGET_PROPERTIES(${_targetName} PROPERTIES XCODE_ATTRIBUTE_GCC_PRECOMPILE_PREFIX_HEADER "YES")
-
-			else (CMAKE_GENERATOR MATCHES Xcode)
-
-				#Fallback to the "old" precompiled suppport
-				ADD_PRECOMPILED_HEADER(${_targetName} ${_inputh} ${_inputcpp})
-			endif(CMAKE_GENERATOR MATCHES Xcode)
-		endif(CMAKE_GENERATOR MATCHES Visual*)
-	ENDIF(WITH_PCH)
+			#Fallback to the "old" precompiled suppport
+			ADD_PRECOMPILED_HEADER(${_targetName} ${_inputh} ${_inputcpp})
+		endif(CMAKE_GENERATOR MATCHES Xcode)
+	endif(CMAKE_GENERATOR MATCHES Visual*)
 
 ENDMACRO(ADD_NATIVE_PRECOMPILED_HEADER)
