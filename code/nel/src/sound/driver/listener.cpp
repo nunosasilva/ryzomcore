@@ -14,8 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#include "nel/sound/driver/listener.h"
-
+#include "stdsound_lowlevel.h"
 
 // leave not static else this workaround don't work
 void	dummyToAvoidStupidCompilerWarning_sound_listener_cpp()

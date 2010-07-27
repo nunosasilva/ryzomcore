@@ -38,3 +38,5 @@
 #include <iomanip>
 
 #include "nel/misc/vector.h"
+#include "nel/misc/path.h"
+#include "nel/misc/file.h"
