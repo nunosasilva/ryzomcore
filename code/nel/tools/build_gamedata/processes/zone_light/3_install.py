@@ -58,7 +58,7 @@ mkPath(log, destDir)
 copyFilesNoTreeIfNeeded(log, srcDir, destDir)
 
 printLog(log, ">>> Install zone_light igs <<<")
-srcDir = ExportBuildDirectory + "/" + IgLandBuildDirectory
+srcDir = ExportBuildDirectory + "/" + ZoneLightIgLandBuildDirectory
 mkPath(log, srcDir)
 destDir = ClientDataDirectory + "/" + IgClientDirectory
 mkPath(log, destDir)

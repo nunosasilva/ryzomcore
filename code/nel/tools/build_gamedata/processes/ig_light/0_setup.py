@@ -45,17 +45,14 @@ printLog(log, "")
 
 # Setup source directories
 printLog(log, ">>> Setup source directories <<<")
-#for dir in ig_lightSourceDirectories:
-#	mkPath(log, DatabaseDirectory + "/" + dir)
 
 # Setup export directories
 printLog(log, ">>> Setup export directories <<<")
-#mkPath(log, ExportBuildDirectory + "/" + ig_lightExportDirectory)
 
 # Setup build directories
 printLog(log, ">>> Setup build directories <<<")
-mkPath(log, ExportBuildDirectory + "/" + IgVillageBuildDirectory)
-mkPath(log, ExportBuildDirectory + "/" + IgLightVillageBuildDirectory)
+mkPath(log, ExportBuildDirectory + "/" + IgOtherBuildDirectory)
+mkPath(log, ExportBuildDirectory + "/" + IgOtherLightedBuildDirectory)
 
 # Setup client directories
 printLog(log, ">>> Setup client directories <<<")
