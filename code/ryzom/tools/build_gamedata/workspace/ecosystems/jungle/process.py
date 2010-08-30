@@ -69,6 +69,10 @@ ShapeExportOptLightmapLog = "false"
 # Coarse mesh texture mul size
 TextureMulSizeValue = "1.5"
 
+DoBuildShadowSkin = 0
+
+ClodConfigFile = ""
+
 # *** COARSE MESH TEXTURE NAME ***
 CoarseMeshTextureNames = [ ]
 CoarseMeshTextureNames += [ "nel_coarse_mesh_jungle_sp" ]
