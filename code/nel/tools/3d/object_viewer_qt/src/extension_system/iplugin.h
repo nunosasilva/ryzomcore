@@ -20,7 +20,7 @@
 #ifndef IPLUGIN_H
 #define IPLUGIN_H
 
-#include <QtPlugin>
+#include <QtCore/QtPlugin>
 #include <QtCore/QString>
 
 #include "iplugin_manager.h"
@@ -52,6 +52,6 @@ public:
 
 }; //namespace NLQT
 
-Q_DECLARE_INTERFACE(NLQT::IPlugin, "com.ryzom.dev.ObjectViewerQt.IPlugin/0.8")
+Q_DECLARE_INTERFACE(NLQT::IPlugin, "com.ryzom.dev.ObjectViewerQt.IPlugin/0.9")
 
 #endif // IPLUGIN_H
