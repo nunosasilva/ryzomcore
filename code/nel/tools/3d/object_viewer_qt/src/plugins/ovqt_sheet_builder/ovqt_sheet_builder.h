@@ -28,7 +28,7 @@ namespace NLMISC
     class CLibraryContext;
 }
 
-namespace NLQT
+namespace ExtensionSystem
 {
     class IPluginSpec;
 }
@@ -36,12 +36,12 @@ namespace NLQT
 namespace Plugin
 {
 
-    class SheetBuilderPlugin : public QObject, public NLQT::IPlugin
+    class SheetBuilderPlugin : public QObject, public ExtensionSystem::IPlugin
     {
         Q_OBJECT
-        Q_INTERFACES(NLQT::IPlugin)
+        Q_INTERFACES(ExtensionSystem::IPlugin)
     public:
-        bool initialize(NLQT::IPluginManager *pluginManager, QString *errorString);
+        bool initialize(ExtensionSystem::IPluginManager *pluginManager, QString *errorString);
         void extensionsInitialized();
 
         void setNelContext(NLMISC::INelContext *nelContext);
@@ -50,9 +50,9 @@ namespace Plugin
 	QString version() const;
 	QString vendor() const;
 	QString description() const;
-
+		QList<QString> dependencies() const;
 	QObject *objectByName(const QString &name) const;
-	NLQT::IPluginSpec *pluginByName(const QString &name) const;
+	ExtensionSystem::IPluginSpec *pluginByName(const QString &name) const;
 
 	void buildSheet(bool clean);
 
@@ -63,7 +63,7 @@ namespace Plugin
         NLMISC::CLibraryContext *_LibContext;
 
     private:
-        NLQT::IPluginManager *_plugMan;
+		ExtensionSystem::IPluginManager *_plugMan;
 
     };
 
