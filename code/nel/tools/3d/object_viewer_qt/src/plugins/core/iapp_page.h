@@ -45,7 +45,7 @@ public:
 	virtual QIcon icon() const = 0;
 
 	/// The widget will be destroyed by the widget hierarchy when the main window closes
-	virtual QWidget *widget(QWidget *parent) = 0;
+	virtual QWidget *widget() = 0;
 };
 
 } // namespace Core
