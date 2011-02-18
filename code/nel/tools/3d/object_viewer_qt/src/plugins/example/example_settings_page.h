@@ -32,10 +32,9 @@ namespace Plugin
 /**
 @class CExampleSettingsPage
 */
-class CExampleSettingsPage : public QObject, public Core::IOptionsPage
+class CExampleSettingsPage : public Core::IOptionsPage
 {
 	Q_OBJECT
-	Q_INTERFACES(Core::IOptionsPage)
 public:
 	CExampleSettingsPage(QObject *parent = 0);
 	virtual ~CExampleSettingsPage() {}
