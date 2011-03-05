@@ -37,8 +37,8 @@ namespace NLQT
 			const QModelIndex &index) const;
 		void updateEditorGeometry(QWidget *editor,
 			const QStyleOptionViewItem &option, const QModelIndex &index) const;
-		void paint ( QPainter * painter, const QStyleOptionViewItem & option, 
-			const QModelIndex & index ) const;  
+		//void paint ( QPainter * painter, const QStyleOptionViewItem & option, 
+		//	const QModelIndex & index ) const;  
 	};
 
 }
