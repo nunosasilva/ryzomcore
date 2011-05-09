@@ -59,6 +59,7 @@ public:
 	virtual ExtensionSystem::IPluginManager *pluginManager() const = 0;
 
 Q_SIGNALS:
+	void changeSettings();
 	void closeMainWindow();
 };
 
