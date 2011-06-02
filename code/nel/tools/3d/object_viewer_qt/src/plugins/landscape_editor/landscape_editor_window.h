@@ -20,6 +20,7 @@
 
 // Project includes
 #include "ui_landscape_editor_window.h"
+#include "builder_zone.h"
 
 // Qt includes
 #include <QtGui/QUndoStack>
@@ -47,6 +48,7 @@ private:
 	void readSettings();
 	void writeSettings();
 
+	ZoneBuilder *m_zoneBuilder;
 	QUndoStack *m_undoStack;
 	Ui::LandscapeEditorWindow m_ui;
 }; /* class LandscapeEditorWindow */
