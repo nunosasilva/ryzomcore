@@ -28,10 +28,11 @@
 namespace LandscapeEditor
 {
 class ZoneBuilder;
+class ListZonesModel;
 
 /**
 @class ZoneListWidget
-@brief ZoneListWidget
+@brief ZoneListWidget displays list available zones in accordance with the filter settings
 @details
 */
 class ListZonesWidget: public QWidget
@@ -44,21 +45,19 @@ public:
 
 	void updateUi();
 	void setZoneBuilder(ZoneBuilder *zoneBuilder);
-	void setModel(QAbstractItemModel *model);
 
 Q_SIGNALS:
-public Q_SLOTS:
+private Q_SLOTS:
 	void updateFilters_1(const QString &value);
 	void updateFilters_2(const QString &value);
 	void updateFilters_3(const QString &value);
 	void updateFilters_4(const QString &value);
-
-private Q_SLOTS:
 	void updateListZones();
 
 private:
 	void disableSignals(bool block);
 
+	ListZonesModel *m_listZonesModel;
 	ZoneBuilder *m_zoneBuilder;
 	Ui::ListZonesWidget m_ui;
 }; /* ZoneListWidget */
