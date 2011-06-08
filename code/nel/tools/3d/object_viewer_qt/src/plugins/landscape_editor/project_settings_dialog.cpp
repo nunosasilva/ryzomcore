@@ -28,6 +28,7 @@
 // Qt includes
 #include <QtCore/QSettings>
 #include <QtGui/QFileDialog>
+#include <QtGui/QFileDialog>
 
 namespace LandscapeEditor
 {
@@ -38,6 +39,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(const QString &dataPath, QWidget *p
 	m_ui.setupUi(this);
 	m_ui.pathLineEdit->setText(dataPath);
 	setFixedHeight(sizeHint().height());
+	connect(m_ui.selectPathButton, SIGNAL(clicked()), this, SLOT(selectPath()));
 }
 
 ProjectSettingsDialog::~ProjectSettingsDialog()
@@ -47,6 +49,13 @@ ProjectSettingsDialog::~ProjectSettingsDialog()
 QString ProjectSettingsDialog::dataPath() const
 {
 	return m_ui.pathLineEdit->text();
+}
+
+void ProjectSettingsDialog::selectPath()
+{
+	QString dataPath = QFileDialog::getExistingDirectory(this, tr("Select data path"), m_ui.pathLineEdit->text());
+	if (!dataPath.isEmpty())
+		m_ui.pathLineEdit->setText(dataPath);
 }
 
 } /* namespace LandscapeEditor */
