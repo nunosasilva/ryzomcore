@@ -50,21 +50,15 @@ public:
 	void apply();
 	void finish();
 
-	// Set of the search paths(not recursive) and the remap extensions (loading from settings file)
-	void applySearchPaths();
-
 private Q_SLOTS:
-	void addPath();
-	void delPath();
-	void upPath();
-	void downPath();
+	void addServer();
+	void delServer();
+	void editServer(int row, int column);
 
 private:
 	void readSettings();
 	void writeSettings();
-	void checkEnabledButton();
 
-	bool m_recurse;
 	QWidget *m_page;
 	Ui::MissionCompilerSettingsPage m_ui;
 };
