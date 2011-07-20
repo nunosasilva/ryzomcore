@@ -26,6 +26,7 @@
 
 namespace WorldEditor
 {
+class PrimitivesTreeModel;
 
 class WorldEditorWindow: public QMainWindow
 {
@@ -48,6 +49,9 @@ private:
 	void readSettings();
 	void writeSettings();
 
+	void loadPrimitive(const QString &fileName);
+
+	PrimitivesTreeModel *m_primitivesModel;
 	QUndoStack *m_undoStack;
 	Ui::WorldEditorWindow m_ui;
 }; /* class WorldEditorWindow */
