@@ -38,7 +38,7 @@ namespace LandscapeEditor
 @brief
 @details
 */
-class LANDSCAPE_EDITOR_EXPORT LandscapeScene : public QGraphicsScene
+class LandscapeScene : public QGraphicsScene
 {
 	Q_OBJECT
 

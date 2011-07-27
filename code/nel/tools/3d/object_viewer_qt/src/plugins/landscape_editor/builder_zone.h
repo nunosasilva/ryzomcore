@@ -19,6 +19,7 @@
 #define BUILDER_ZONE_H
 
 // Project includes
+#include "builder_zone_base.h"
 #include "builder_zone_region.h"
 #include "zone_region_editor.h"
 #include "pixmap_database.h"
@@ -45,29 +46,6 @@ namespace LandscapeEditor
 class ListZonesWidget;
 class LandscapeScene;
 class UndoScanRegionCommand;
-
-// Data
-struct ZonePosition
-{
-	// Absolute position
-	sint32 x;
-	sint32 y;
-	int region;
-
-	ZonePosition()
-	{
-		x = 0xffffffff;
-		y = 0xffffffff;
-		region = -1;
-	}
-
-	ZonePosition(const sint32 posX, const sint32 posY, const int id)
-	{
-		x = posX;
-		y = posY;
-		region = id;
-	}
-};
 
 /**
 @class ZoneBuilder
