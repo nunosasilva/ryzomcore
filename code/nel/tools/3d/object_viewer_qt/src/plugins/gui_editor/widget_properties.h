@@ -19,40 +19,13 @@
 #define WIDGETPROPS_H
 
 #include "ui_widget_properties.h"
+#include "widget_info.h"
 #include <map>
 #include <vector>
 #include <string>
 
 namespace GUIEditor
 {
-	struct SPropEntry
-	{
-		std::string propName;
-		std::string propType;
-		std::string propDefault;
-		
-		static SPropEntry create( const char *propname, const char *proptype, const char *propdefault )
-		{
-			SPropEntry entry;
-			entry.propName = propname;
-			entry.propType = proptype;
-			entry.propDefault = propdefault;
-			return entry;
-		}
-	};
-
-	struct SWidgetInfo
-	{
-		std::string name;
-		std::string GUIName;
-		std::string description;
-		bool isAbstract;
-		std::string icon;
-
-		std::vector< SPropEntry > props;
-	};
-
-
 	class CWidgetProperties : public QWidget, public Ui::WidgetProperties
 	{
 		Q_OBJECT
