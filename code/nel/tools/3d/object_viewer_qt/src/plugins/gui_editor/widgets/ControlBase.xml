@@ -2,6 +2,7 @@
     <header>
         <name>CtrlBase</name>
         <guiname>cb</guiname>
+        <ancestor>InterfaceElement</ancestor>
         <description></description>
         <abstract>true</abstract>
         <icon></icon>

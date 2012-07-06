@@ -1,0 +1,22 @@
+<widget>
+    <header>
+        <name>InterfaceGroup</name>
+        <guiname>ig</guiname>
+        <ancestor>CtrlBase</ancestor>
+        <description></description>
+        <abstract>false</abstract>
+        <icon></icon>
+    </header>
+    <properties>
+        <property>
+            <name>on_enter</name>
+            <type>string</type>
+            <default>handler</default>
+        </property>
+        <property>
+            <name>on_enter_params</name>
+            <type>string</type>
+            <default>params</default>
+        </property>
+    </properties>
+</widget>
