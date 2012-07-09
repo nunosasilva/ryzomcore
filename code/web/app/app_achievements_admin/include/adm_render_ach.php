@@ -137,8 +137,8 @@
 									<td>
 										<select name='ap_condition'>
 											<option value='all' selected='selected'>all</option>
-											<option value='any' selected='selected'>any</option>
-											<option value='value' selected='selected'>by value</option>
+											<option value='any'>any</option>
+											<option value='value'>by value</option>
 										</select>
 									</td>
 								</tr>
@@ -310,7 +310,7 @@
 							</div>";
 
 							$html .= "<div id='new_perk_".$ach->getID()."' style='margin-bottom:3px;margin-top:3px;display:none;color:#000000;background-color:#FFFFFF;'>
-								<form method='post' action=''>
+								<form method='post' action='?mode=ach&cat=".$_REQUEST['cat']."&id=".$ach->getID()."&act=perk_insert'>
 									<fieldset>
 										<legend>add new perk</legend>
 										<table>
@@ -345,8 +345,8 @@
 												<td>
 													<select name='ap_condition'>
 														<option value='all' selected='selected'>all</option>
-														<option value='any' selected='selected'>any</option>
-														<option value='value' selected='selected'>by value</option>
+														<option value='any'>any</option>
+														<option value='value'>by value</option>
 													</select>
 												</td>
 											</tr>
@@ -442,21 +442,21 @@
 									</td></tr></table>";
 
 					$html .= "<div id='edit_perk_".$perk->getID()."' style='margin-bottom:3px;margin-top:3px;display:none;color:#000000;background-color:#FFFFFF;'>
-						<form method='post' action=''>
+						<form method='post' action='?mode=ach&cat=".$_REQUEST['cat']."&id=".$perk->getPathID()."&act=perk_update'>
 							<fieldset>
 								<legend>edit perk</legend>
 								<table>
 									<tr>
 										<td>name:</td>
-										<td><input type='text' name='apl_name' /></td>
+										<td><input type='text' name='apl_name' value='".$perk->getName()."' /></td>
 									</tr>
 									<tr>
 										<td>naming template:</td>
-										<td><input type='text' name='apl_template' /></td>
+										<td><input type='text' name='apl_template' value=\"".$perk->getTemplate()."\" /></td>
 									</tr>
 									<tr>
 										<td>yubopoints:</td>
-										<td><input type='text' name='ap_value' /></td>
+										<td><input type='text' name='ap_value' value='".$perk->getValue()."' /></td>
 									</tr>
 									<tr>
 										<td>parent:</td>
@@ -467,7 +467,15 @@
 												$iter = $par->getOpen();
 												while($iter->hasNext()) {
 													$curr = $iter->getNext();
-													$html .= "<option value='".$curr->getID()."'>".$curr->getName()."</option>";
+													if($curr->getID() == $perk->getID()) {
+														continue;
+													}
+													
+													$html .= "<option value='".$curr->getID()."'";
+													if($curr->getID() == $perk->getParentID()) {
+														$html .= " selected='selected'";
+													}
+													$html .= ">".$curr->getName()."</option>";
 												}
 
 											$html .= "</select>
@@ -477,18 +485,18 @@
 										<td>condition:</td>
 										<td>
 											<select name='ap_condition'>
-												<option value='all' selected='selected'>all</option>
-												<option value='any' selected='selected'>any</option>
-												<option value='value' selected='selected'>by value</option>
+												<option value='all'"; if($perk->getCondition() == "all") { $html .= " selected='selected'"; } $html .= ">all</option>
+												<option value='any'"; if($perk->getCondition() == "any") { $html .= " selected='selected'"; } $html .= ">any</option>
+												<option value='value'"; if($perk->getCondition() == "value") { $html .= " selected='selected'"; } $html .= ">by value</option>
 											</select>
 										</td>
 									</tr>
 									<tr>
 										<td>condition value:</td>
-										<td><input type='text' name='ap_condition_value' /></td>
+										<td><input type='text' name='ap_condition_value' value='".$perk->getConditionValue()."' /></td>
 									</tr>
 									<tr>
-										<td colspan='2'><input type='submit' value='add' /></td>
+										<td colspan='2'><input type='submit' value='save' /></td>
 									</tr>
 								</table>
 							</fieldset>
@@ -496,7 +504,7 @@
 					</div>";
 
 					$html .= "<div id='new_obj_".$perk->getID()."' style='margin-bottom:3px;margin-top:3px;display:none;color:#000000;background-color:#FFFFFF;'>
-						<form method='post' action=''>
+						<form method='post' action='?mode=ach&cat=".$_REQUEST['cat']."&id=".$perk->getPathID()."&act=obj_insert'>
 							<fieldset>
 								<legend>add new objective</legend>
 								<table>
@@ -507,7 +515,7 @@
 									<tr>
 										<td>type:</td>
 										<td>
-											<select name='ao_type'>
+											<select name='ao_display'>
 												<option value='simple' selected='selected'>simple</option>
 												<option value='hidden'>hidden</option>
 												<option value='value'>value / progressbar</option>
@@ -518,7 +526,7 @@
 									<tr>
 										<td>trigger condition:</td>
 										<td>
-											<select name='ap_condition'>
+											<select name='ao_condition'>
 												<option value='simple' selected='selected'>require all</option>
 												<option value='hidden'>require any</option>
 												<option value='value'>value / progressbar</option>
@@ -606,12 +614,60 @@
 					break;
 			}
 
-			$html .= "<td style='background-color:#FFFFFF;padding:3px;'><nobr><a href='javascript:hs(\"edit_perk_".$elem->getID()."\",\"block\");'><img src='pic/icon_edit.gif'></a>";
+			$html .= "<td style='background-color:#FFFFFF;padding:3px;'><nobr><a href='javascript:hs(\"edit_obj_".$elem->getID()."\",\"block\");'><img src='pic/icon_edit.gif'></a>";
 
-					$html .= "&nbsp;<a href='javascript:hs(\"new_obj_".$elem->getID()."\",\"block\");'><img src='pic/b_insrow.png'></a>";
+					#$html .= "&nbsp;<a href='javascript:hs(\"edit_obj_".$elem->getID()."\",\"block\");'><img src='pic/b_insrow.png'></a>";
 						
 					$html .= "&nbsp;&nbsp;&nbsp;<a href='?mode=ach&cat=".$_REQUEST['cat']."&confirm=delete&id=".$elem->getPathID()."'><img src='pic/b_drop.png'></a></nobr></td>
 									</td></tr></table>";
+
+									#$perk = $elem->getParent();
+
+			$html .= "<div id='edit_obj_".$elem->getID()."' style='margin-bottom:3px;margin-top:3px;display:none;color:#000000;background-color:#FFFFFF;'>
+						<form method='post' action='?mode=ach&cat=".$_REQUEST['cat']."&id=".$elem->getPathID()."&act=obj_update'>
+							<fieldset>
+								<legend>edit objective</legend>
+								<table>
+									<tr>
+										<td>name:</td>
+										<td><input type='text' name='aol_name' value='".$elem->getName()."' /></td>
+									</tr>
+									<tr>
+										<td>type:</td>
+										<td>
+											<select name='ao_display'>
+												<option value='simple'"; if($elem->getDisplay() == "simple") { $html .= " selected='selected'"; } $html .= ">simple</option>
+												<option value='hidden'"; if($elem->getDisplay() == "hidden") { $html .= " selected='selected'"; } $html .= ">hidden</option>
+												<option value='value'"; if($elem->getDisplay() == "value") { $html .= " selected='selected'"; } $html .= ">value / progressbar</option>
+												<option value='meta'"; if($elem->getDisplay() == "meta") { $html .= " selected='selected'"; } $html .= ">meta</option>
+											</select>
+										</td>
+									</tr>
+									<tr>
+										<td>trigger condition:</td>
+										<td>
+											<select name='ao_condition'>
+												<option value='simple'"; if($elem->getCondition() == "simple") { $html .= " selected='selected'"; } $html .= ">require all</option>
+												<option value='hidden'"; if($elem->getCondition() == "hidden") { $html .= " selected='selected'"; } $html .= ">require any</option>
+												<option value='value'"; if($elem->getCondition() == "value") { $html .= " selected='selected'"; } $html .= ">value / progressbar</option>
+											</select>
+										</td>
+									</tr>
+									<tr>
+										<td>trigger value:</td>
+										<td><input type='text' name='ao_value' value='".$elem->getValue()."' /></td>
+									</tr>
+									<tr>
+										<td>metalink:</td>
+										<td></td>
+									</tr>
+									<tr>
+										<td colspan='2'><input type='submit' value='save' /></td>
+									</tr>
+								</table>
+							</fieldset>
+						</form>
+					</div>";
 
 			#if(($i%2) == 1) {
 				$html .= "</td></tr>";
