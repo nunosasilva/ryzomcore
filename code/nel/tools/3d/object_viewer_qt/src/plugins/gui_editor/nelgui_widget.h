@@ -35,6 +35,9 @@ namespace GUIEditor
 		bool parse( SProjectFiles &files );
 		void draw();
 
+Q_SIGNALS:
+		void guiLoadComplete();
+
 	protected:
 		void paintEvent( QPaintEvent *evnt );
 		void timerEvent( QTimerEvent *evnt );
