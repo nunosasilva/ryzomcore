@@ -19,6 +19,7 @@
 #define LINK_EDITOR_H
 
 #include "ui_link_editor.h"
+#include "nel/misc/types_nl.h"
 
 namespace GUIEditor
 {
@@ -28,6 +29,11 @@ namespace GUIEditor
 	public:
 		LinkEditor( QWidget *parent = NULL );
 		~LinkEditor();
+		void setup();
+		void setLinkId( uint32 linkId );
+
+	private:
+		uint32 currentLinkId;
 	};
 }
 
