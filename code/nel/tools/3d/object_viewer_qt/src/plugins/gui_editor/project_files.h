@@ -23,10 +23,18 @@
 
 namespace GUIEditor
 {
+	enum ProjectVersion
+	{
+		OLD = 0,
+		NEW = 1,
+		MAX_PROJECTFILE_VERSION
+	};
+
 	struct SProjectFiles
 	{
 	public:
 		std::string projectName;
+		unsigned long version;
 		std::string masterGroup;
 		std::string activeGroup;
 		std::vector< std::string > guiFiles;
