@@ -24,9 +24,6 @@
 // This is mainly for system configuration related functions 
 // such as config file changes.
 
-/// does not belong here
-void updateCameraPerspective();
-
 /// Compare ClientCfg and LastClientCfg to know what we must update
 void updateFromClientCfg();
 
