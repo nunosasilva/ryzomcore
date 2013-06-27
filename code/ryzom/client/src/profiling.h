@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#ifndef CL_MAIN_LOOP_PROFILING_H
-#define CL_MAIN_LOOP_PROFILING_H
+#ifndef CL_PROFILING_H
+#define CL_PROFILING_H
 
 #include <nel/misc/types_nl.h>
 
@@ -31,6 +31,6 @@ void testLaunchProfile();
 /// Test ProfilingVBLock and run?
 void testLaunchProfileVBLock();
 
-#endif // CL_MAIN_LOOP_PROFILING_H
+#endif // CL_PROFILING_H
 
 /* end of file */
