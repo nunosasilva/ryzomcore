@@ -18,7 +18,6 @@ function change_password(){
                         $adminChangesOther = true;
                         $_POST["CurrentPass"] = "dummypass";
                     }
-                    $id = $_POST['target_id'];
                     
                     $webUser = new WebUsers();
                     $params = Array( 'user' => $target_username, 'CurrentPass' => $_POST["CurrentPass"], 'NewPass' => $_POST["NewPass"], 'ConfirmNewPass' => $_POST["ConfirmNewPass"], 'adminChangesOther' => $adminChangesOther);
@@ -29,9 +28,9 @@ function change_password(){
                         $hashpass = crypt($_POST["NewPass"], WebUsers::generateSALT());
                         $status = WebUsers::setPassword($target_username, $hashpass);
                         if($status == 'ok'){
-                            $succresult['SUCCESS'] = "OK";
+                            $succresult['SUCCESS_PASS'] = "OK";
                         }else if($status == 'shardoffline'){
-                             $succresult['SUCCESS'] = "SHARDOFF";
+                             $succresult['SUCCESS_PASS'] = "SHARDOFF";
                         }
                         $succresult['permission'] = $_SESSION['permission'];
                         $succresult['no_visible_elements'] = 'FALSE';
@@ -51,6 +50,7 @@ function change_password(){
                         $result['prevConfirmNewPass'] = $_POST["ConfirmNewPass"];
                         $result['permission'] = $_SESSION['permission'];
                         $result['no_visible_elements'] = 'FALSE';
+                        $return['username'] = $_SESSION['user'];
                         $result['target_id'] = $_POST['target_id'];
                         if(isset($_GET['id'])){
                             if(WebUsers::isAdmin() && ($_POST['target_id'] != $_SESSION['id'])){
