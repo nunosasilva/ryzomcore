@@ -83,7 +83,7 @@ public:
 	virtual void setDriver(NL3D::UDriver *driver);
 
 	/// Gets the required screen resolution for this device
-	virtual void getScreenResolution(uint &width, uint &height);
+	virtual bool getScreenResolution(uint &width, uint &height);
 	/// Set latest camera position etcetera
 	virtual void updateCamera(uint cid, const NL3D::UCamera *camera);
 	/// Get the frustum to use for clipping
