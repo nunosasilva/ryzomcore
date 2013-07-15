@@ -34,7 +34,6 @@
 		</div>
 		
 		<input type="hidden" name="function" value="add_sgroup">
-		<input type="hidden" name="target_id" value="{$target_id}">
 		
 		<div class="control-group">
 		    <label class="control-label"></label>
@@ -92,7 +91,7 @@
 			{foreach from=$grouplist item=group}
 			  <tr>
 				<td>{$group.sGroupId}</td>
-				<td><a href ="index.php?page=show_group&id={$group.sGroupId}">{$group.name}</a></td>
+				<td><a href ="index.php?page=show_sgroup&id={$group.sGroupId}">{$group.name}</a></td>
 				<td class="center"><span class="label label-important" >{$group.tag}</span></td>
 				<td class="center"><a class="btn btn-danger" href="#"><i class="icon-trash icon-white"></i> Delete</a></td>  
 			  </tr>
