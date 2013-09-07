@@ -1,7 +1,5 @@
 /** \file pixel_program.h
  * Pixel program definition
- *
- * $Id: pixel_program.h,v 1.1.2.3 2007/07/06 15:58:45 legallo Exp $
  */
 
 /* Copyright, 2000, 2001 Nevrax Ltd.
@@ -28,80 +26,61 @@
 
 #include <nel/misc/types_nl.h>
 #include <nel/misc/smart_ptr.h>
+#include <nel/3d/gpu_program.h>
+#include <nel/3d/gpu_program_source.h>
 
 #include <list>
 
 namespace NL3D {
 
-// List typedef.
-class	IDriver;
-class	IPixelProgramDrvInfos;
-typedef	std::list<IPixelProgramDrvInfos*>	TPixelPrgDrvInfoPtrList;
-typedef	TPixelPrgDrvInfoPtrList::iterator		ItPixelPrgDrvInfoPtrList;
-
-// Class for interaction of pixel program with Driver.
-// IPixelProgramDrvInfos represent the real data of the pixel program, stored into the driver.
-class IPixelProgramDrvInfos : public NLMISC::CRefCount
-{
-private:
-	IDriver						*_Driver;
-	ItPixelPrgDrvInfoPtrList	_DriverIterator;
-
-public:
-	IPixelProgramDrvInfos (IDriver *drv, ItPixelPrgDrvInfoPtrList it);
-	// The virtual dtor is important.
-	virtual ~IPixelProgramDrvInfos(void);
-};
-
-
-//-------------------------------------------------------------------------------
-class CPixelProgram : public NLMISC::CRefCount
+/**
+ * \brief CPixelProgramInfo
+ * \date 2013-09-07 15:00GMT
+ * \author Jan Boon (Kaetemi)
+ * Read-only information structure.
+ */
+struct CPixelProgramInfo
 {
 public:
-
-	enum TProfile 
-	{ 
-		// TODO:
-		// If it's more useful, change this to a flags bitfield and 
-		// change the d3d (and gl) code to generate the bitfield of 
-		// supported modes instead of doing a >= version check.
-
-		// direct3d - 0xD3D0,major,minor
-		ps_1_1 = 0xD3D00101, 
-		ps_1_2 = 0xD3D00102, 
-		ps_1_3 = 0xD3D00103, 
-		ps_1_4 = 0xD3D00104, 
-		ps_2_0 = 0xD3D00200, 
-		ps_2_x = 0xD3D00201, // not sure...
-		ps_3_0 = 0xD3D00300, 
-
-		// opengl - 0x0610,bitfield
-		// fp20 = 0x061B0001, // very limited and outdated, unnecessary
-		// fp30 = 0x06100002, // NV_fragment_program, now arbfp1, redundant
-		arbfp1 = 0x06100004, // ARB_fragment_program
-		fp40 = 0x06100008, // NV_fragment_program2, arbfp1 with "OPTION NV_fragment_program2;\n"
-		gp4fp = 0x06100010, // NV_gpu_program4
-		gp5fp = 0x06100020, // NV_gpu_program5
+	std::string DisplayName;
+	
+	enum TFeatures
+	{
+		/// Use texture stages from CMaterial as texture parameters
+		MaterialTextures = 0x0001, 
+		/// Set driver fog parameters on this program
+		Fog = 0x0002, 
+		/// Adds an enabled/disabled parameter to the fog, for user shaders
+		DynamicFog = 0x0004, 
 	};
 
-	/// Constructor
-	CPixelProgram (const char* program);
+	// Bitfield containing features used by this pixel program
+	uint Features;
 
+	// Indices of parameters used by features
+	uint FogEnabledIdx; // (Fog && DynamicFog) nlFogEnabled, fog enabled
+	uint FogStartEndIdx; // (Fog) nlFogStartEnd, start and end of fog
+	uint FogColorIdx; // (Fog) nlFogColor, fog color
+};
+
+class CPixelProgram : public IGPUProgram
+{
+public:
+	/// Constructor
+	CPixelProgram(CGPUProgramSourceCont *programSource);
 	/// Destructor
 	virtual ~CPixelProgram ();
 
-	/// Get the program
-	inline const std::string& getProgram() const { return _Program; };
+	/// Build feature information
+	void buildInfo(const char *displayName, uint features);
+	/// Get feature information
+	inline const CPixelProgramInfo *getInfo() const { return _Info; }
 
-	/// The driver informations. For the driver implementation only.
-	NLMISC::CRefPtr<IPixelProgramDrvInfos>		_DrvInfo;
+private:
 
-protected:
-
-	/// The progam
-	std::string									_Program;
+	/// Feature information
+	CPixelProgramInfo							*_Info;
 };
-
 
 } // NL3D
 
