@@ -41,15 +41,16 @@
  * so, delete this exception statement from your version.
  */
 
-#ifdef HAVE_LIBOVR
+#ifdef HAVE_LIBOVR_02
 
-#include <nel/misc/types_nl.h>
+#include "std3d.h"
 #include <nel/3d/stereo_ovr.h>
 
 // STL includes
 #include <sstream>
 
 // External includes
+#define OVR_NO_STDINT
 #include <OVR.h>
 
 // NeL includes

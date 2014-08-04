@@ -44,7 +44,7 @@
 #ifndef NL3D_STEREO_OVR_H
 #define NL3D_STEREO_OVR_H
 
-#ifdef HAVE_LIBOVR
+#ifdef HAVE_LIBOVR_02
 
 #include <nel/misc/types_nl.h>
 
