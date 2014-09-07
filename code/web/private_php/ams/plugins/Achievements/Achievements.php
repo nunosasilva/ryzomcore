@@ -31,6 +31,7 @@ function achievements_hook_display()
     global $return_set;
      // to display plugin name in menu bar
     $return_set['menu_display'] = 'Achievements';
+    $return_set['icon'] = 'icon-certificate';
      } 
 
 /**
