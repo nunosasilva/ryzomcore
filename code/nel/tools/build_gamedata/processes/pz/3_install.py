@@ -48,7 +48,8 @@ mkPath(log, installPath)
 
 printLog(log, ">>> Install pz <<<")
 mkPath(log, ExportBuildDirectory + "/" + PackedZoneBuildDirectory)
-copyFilesNoTreeIfNeeded(log, ExportBuildDirectory + "/" + PackedZoneBuildDirectory, installPath)
+copyFilesExtNoTreeIfNeeded(log, ExportBuildDirectory + "/" + PackedZoneBuildDirectory, installPath, ".island_hm")
+copyFilesExtNoTreeIfNeeded(log, ExportBuildDirectory + "/" + PackedZoneBuildDirectory, installPath, ".packed_island")
 
 printLog(log, "")
 log.close()
