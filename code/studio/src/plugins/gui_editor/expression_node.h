@@ -22,6 +22,7 @@
 
 #include <QGraphicsItem>
 #include <QList>
+#include "expr_slot_info.h"
 
 class ExpressionLink;
 class NodeSlot;
@@ -42,12 +43,17 @@ public:
 
 	int slotCount() const{ return m_slots.count(); }
 
+	bool slotEmpty( int slot ) const;
+
+	void getSlots( QList< SlotInfo > &l );
+
 protected:
 	void mouseMoveEvent( QGraphicsSceneMouseEvent *e );
 
 private:
 	void createSlots();
 	void paintSlots( QPainter *painter );
+	void clearLinks();
 
 	qreal m_w;
 	qreal m_h;
