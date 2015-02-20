@@ -18,10 +18,12 @@
 
 
 #ifndef RCERROR_WIDGET
-#define RCERROR_SOCKET
+#define RCERROR_WIDGET
 
 
 #include "ui_rcerror_widget.h"
+
+class RCErrorSocket;
 
 class RCErrorWidget : public QWidget
 {
@@ -37,10 +39,13 @@ private Q_SLOTS:
 	void onSendClicked();
 	void onCancelClicked();
 	void onCBClicked();
+	
+	void onReportSent();
 
 private:
 	Ui::RCErrorWidget m_ui;
 	QString m_fileName;
+	RCErrorSocket *m_socket;
 };
 
 #endif
