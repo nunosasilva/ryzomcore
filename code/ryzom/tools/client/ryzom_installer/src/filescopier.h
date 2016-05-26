@@ -32,10 +32,11 @@ public:
 	virtual ~CFilesCopier();
 
 	void setSourceDirectory(const QString &src);
-	void setDesinationDirectory(const QString &src);
+	void setDestinationDirectory(const QString &src);
 
 	void setIncludeFilter(const QStringList &filter);
-	void setExcludeFilter(const QStringList &filter);
+
+	void addFile(const QString &file);
 
 	bool exec();
 
@@ -61,7 +62,7 @@ protected:
 	QString m_destinationDirectory;
 
 	QStringList m_includeFilter;
-	QStringList m_excludeFilter;
+	QStringList m_files;
 };
 
 #endif
