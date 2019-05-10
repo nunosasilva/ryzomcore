@@ -12,6 +12,12 @@ LANGUAGE LANG_ENGLISH, SUBLANG_NEUTRAL
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
 
+#ifdef _DEBUG
+#define NL_FILEEXT "_d"
+#else
+#define NL_FILEEXT "_r"
+#endif
+
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION NL_VERSION_RC
  PRODUCTVERSION NL_VERSION_RC
@@ -33,8 +39,8 @@ BEGIN
             VALUE "CompanyName", AUTHOR
             VALUE "FileDescription", "NeL Ligoscape utility"
             VALUE "FileVersion", NL_VERSION
-            VALUE "LegalCopyright", COPYRIGHT
-            VALUE "OriginalFilename", "ligoscape.dlu"
+            VALUE "LegalCopyright", COPYRIGHT ". Copyright (C) 2000 Nevrax Ltd."
+            VALUE "OriginalFilename", "nelligoscapeutility" NL_FILEEXT ".dlx"
             VALUE "ProductName", "NeL Plugins for 3ds Max " STRINGIFY(MAX_PRODUCT_YEAR_NUMBER)
             VALUE "ProductVersion", NL_PRODUCT_VERSION
         END
