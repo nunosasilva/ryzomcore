@@ -42,6 +42,8 @@ public:
 
 	void serial(NLMISC::IStream &f) throw(NLMISC::EStream);
 
+	/// result: [out] ex. /00/00/000000000..
+	/// hash: [in]
 	static void makePath(std::string &result, const CHashKey &hash);
 
 public:
