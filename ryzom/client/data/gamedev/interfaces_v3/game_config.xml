@@ -923,20 +923,20 @@
                   text="uiOccEventBnps"
                   posparent="window_snap_invert"
                   posref="BL TL"
-                  x="-20"
+                  x="0"
                   y="-28" />
         <instance template="tgcw_checkbox"
                   id="occitems"
                   text="uiOccItems"
-                  posref="BR BL"
+                  posref="BL TL"
                   posparent="occeventbnps"
-                  x="5"
-                  y="0" />
+                  x="0"
+                  y="-2" />
         <!-- wait vbl -->
         <instance template="tgcw_checkbox"
                   id="waitvbl"
                   text="uiWaitVBL"
-                  posparent="occeventbnps"
+                  posparent="occitems"
                   posref="BL TL"
                   x="0"
                   y="-28" />
