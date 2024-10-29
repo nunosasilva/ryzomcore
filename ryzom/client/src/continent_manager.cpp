@@ -369,12 +369,16 @@ void CContinentManager::select(const string &name, const CVectorD &pos, NLMISC::
 		H_AUTO(InitRZWorldMapHandling)
 		CWorldSheet *pWS = dynamic_cast<CWorldSheet*>(SheetMngr.get(CSheetId("ryzom.world")));
 		string foundMap = "";
+		string firstMap = "";
 		for (uint32 i = 0; i < pWS->Maps.size(); ++i)
 		{
 			if (pWS->Maps[i].ContinentName == name)
 			{
 				if (foundMap.empty())
-					foundMap = pWS->Maps[i].Name;
+				{
+					firstMap =  pWS->Maps[i].Name;
+					foundMap = firstMap;
+				}
 				if (pos.x >= pWS->Maps[i].MinX
 					&& pos.x <= pWS->Maps[i].MaxX
 					&& pos.y >= pWS->Maps[i].MinY
@@ -388,7 +392,7 @@ void CContinentManager::select(const string &name, const CVectorD &pos, NLMISC::
 			pMap->setMap(foundMap);
 		pMap = dynamic_cast<CGroupMap*>(CWidgetManager::getInstance()->getElementFromId("ui:interface:respawn_map:content:map_content:actual_map"));
 		if (pMap != NULL)
-			pMap->setMap(foundMap);
+			pMap->setMap(firstMap);
 	}
 
 }// select //
