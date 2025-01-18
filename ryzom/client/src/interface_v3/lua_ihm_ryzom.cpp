@@ -461,6 +461,7 @@ void CLuaIHMRyzom::RegisterRyzomFunctions(NLGUI::CLuaState &ls)
 	ls.registerFunc("breakPoint",    breakPoint);
 	ls.registerFunc("setTextFormatTaged",    setTextFormatTaged);
 	ls.registerFunc("initEmotesMenu", initEmotesMenu);
+	ls.registerFunc("getEmotesList", getEmotesList);
 	ls.registerFunc("hideAllWindows", hideAllWindows);
 	ls.registerFunc("hideAllNonSavableWindows", hideAllNonSavableWindows);
 	ls.registerFunc("getDesktopIndex", getDesktopIndex);
@@ -1169,8 +1170,85 @@ int CLuaIHMRyzom::initEmotesMenu(CLuaState &ls)
 
 	return 1;
 }
-
 // ***************************************************************************
+int CLuaIHMRyzom::getEmotesList(CLuaState &ls)
+{
+	ls.newTable();
+	CLuaObject result(ls);
+	std::map<std::string, std::string> emoteList;
+
+	CTextEmotListSheet *pTELS = dynamic_cast<CTextEmotListSheet *>(SheetMngr.get(CSheetId("list.text_emotes")));
+	if (pTELS == NULL)
+		return 0;
+
+	std::list<CEmoteStruct> entries;
+
+	if (entries.empty())
+	{
+		for (uint i = 0; i < pTELS->TextEmotList.size(); i++)
+		{
+			CEmoteStruct entry;
+			entry.EmoteId = pTELS->TextEmotList[i].EmoteId;
+			entry.Path = pTELS->TextEmotList[i].Path;
+			entry.Anim = pTELS->TextEmotList[i].Anim;
+			entry.UsableFromClientUI = pTELS->TextEmotList[i].UsableFromClientUI;
+			entries.push_back(entry);
+		}
+		entries.sort();
+	}
+
+	
+	// The list of behaviour missnames emotList
+	CEmotListSheet *pEmotList = dynamic_cast<CEmotListSheet *>(SheetMngr.get(CSheetId("list.emot")));
+	nlassert(pEmotList != NULL);
+	nlassert(pEmotList->Emots.size() <= 255);
+	// Get the focus beta tester flag
+	bool betaTester = false;
+
+	CInterfaceManager *pIM = CInterfaceManager::getInstance();
+	CSkillManager *pSM = CSkillManager::getInstance();
+
+	betaTester = pSM->isTitleUnblocked(CHARACTER_TITLE::FBT);
+
+	for (std::list<CEmoteStruct>::const_iterator it = entries.begin(); it != entries.end(); it++)
+	{
+		std::string sEmoteId = (*it).EmoteId;
+		std::string sState = (*it).Anim;
+		std::string sName = (*it).Path;
+
+		// Check that the emote can be added to UI
+		// ---------------------------------------
+		if ((*it).UsableFromClientUI == false)
+		{
+			continue;
+		}
+
+		// Check the emote reserved for FBT (hardcoded)
+		// --------------------------------------------
+		if (sState == "FBT" && !betaTester)
+			continue;
+
+		
+		// Add EmotId to list
+		// ----------------------------
+		
+		emoteList[sEmoteId] = (toLower(CI18N::get("uiEM_" + sEmoteId)));
+	}
+	
+	std::map<std::string, std::string>::iterator it;
+	for (it = emoteList.begin(); it != emoteList.end(); it++)
+	{
+		result.setValue(it->first, it->second);
+	}
+
+	result.push();
+
+	return 1;
+}
+
+
+
+	// ***************************************************************************
 int CLuaIHMRyzom::hideAllWindows(CLuaState &/* ls */)
 {
 	//H_AUTO(Lua_CLuaIHM_hideAllWindows)
