@@ -239,7 +239,7 @@ CVariable<uint32> OutpostDaysForGvX(
 	"egs", "OutpostDaysForGvX", "Minimum days in Guild for GvE,PvE and GvG", 21, 0, true);
 
 CVariable<float> RegenerateReposModifierFactor(
-	"egs", "RegenerateReposModifierFactor", "Factor who will increase the RegenerateModifier with the time", 0, 0, true);
+	"egs", "RegenerateReposModifierFactor", "Factor who will increase the RegenerateModifier with the time", 0.03, 0, true);
 
 
 
