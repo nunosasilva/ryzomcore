@@ -10,7 +10,10 @@ if not SearchCommand then
 		modal_open_list = {},
 		process_list = {},
 		player_list = {},
-		player_list_already_filled = 0
+		player_list_already_filled = 0,
+		player_name_local = "",
+		player_gender_local = 9,
+		ryzom_emotes_text_list = {}
 	}
 end
 
@@ -20,9 +23,9 @@ SearchCommand.commands_list = {}
 
 local player_priv = isPlayerPrivilege()
 if(player_priv)then
-	table.insert(SearchCommand.commands_list,{"client", "player", "help_desc", "?", {{"Text:<Command>",""}, {"all","help_all_desc"}}, {{"shard",""},{"client",""},{"eScript",""}}})
+	table.insert(SearchCommand.commands_list,{"client", "player", "help_desc", "?", {{"Text:<Command>",""}, {"all","help_all_desc"}}, {{"shard",""},{"client",""},{"emotes",""},{"eScript",""}}})
 else
-	table.insert(SearchCommand.commands_list,{"client", "player", "help_desc", "?", {{"Text:<Command>",""}, {"all","help_all_desc"}}})
+	table.insert(SearchCommand.commands_list,{"client", "player", "help_desc", "?", {{"Text:<Command>",""}, {"all","help_all_desc"}}, {{"client",""},{"emotes",""}}})
 end
 
 --client commands
@@ -300,19 +303,22 @@ table.insert(SearchCommand.commands_list,{"eScript", ":DEV:SGM:GM:EM:", "setCanA
 table.insert(SearchCommand.commands_list,{"eScript", ":DEV:SGM:GM:EM:", "setHealer_desc", "setHealer(arg1)", {{"<0/1>",""}}})
 table.insert(SearchCommand.commands_list,{"eScript", ":DEV:SGM:GM:EM:", "setHPScale_desc", "setHPScale(arg1)", {{"<0.0/..0.5../1.0>",""}}})
 table.insert(SearchCommand.commands_list,{"eScript", ":DEV:SGM:GM:EM:", "followPlayer_desc", "followPlayer(arg1,arg2)", {{"Number:<PlayerEID>",""}}, {{"Number:<Meter>",""}}})
-table.insert(SearchCommand.commands_list,{"eScript", ":DEV:SGM:GM:EM:", "setFactionAttackableBelow_desc", "setFactionAttackableBelow(\"arg1\",arg2,arg3)", {{"Text:<TribeName>",""}}, {{"<0/1>",""}}, {{"<6000 points per 1 fame>",""}}})
+table.insert(SearchCommand.commands_list,{"eScript", ":DEV:SGM:GM:EM:", "setFactionAttackableBelow_desc", "setFactionAttackableBelow(\"arg1\",arg2,arg3)", {{"Text:<TribeName>",""}}, {{"<0/1>",""}}, {{"<6000_points_per_1_fame>",""}}})
 
 --END eScript commands
 
-
-
-function SearchCommand:pars_all_emotes()
-	local emot_list = getEmotesList()
-
-	for emote_id,emote_translation in pairs(emot_list) do
-		table.insert(SearchCommand.commands_list,{"client", "player", "client_emote_desc", emote_translation, {{"Text:<CustomEmoteText>",""},{"none",""}}})
-	end
+function SearchCommand:firstToUpper(str)
+    return str:sub(1,1):upper() .. str:sub(2)
 end
+
+function SearchCommand:split(str, sep)
+    local result = {}
+    for part in string.gmatch(str, "[^" .. sep .. "]+") do
+        table.insert(result, part)
+    end
+    return result
+end
+
 
 function SearchCommand:find(tbl, value)
 	for k, v in pairs(tbl) do
@@ -321,6 +327,146 @@ function SearchCommand:find(tbl, value)
 		end
 	end
 	return nil
+end
+
+function SearchCommand:pars_all_emotes()
+	local emot_list = getEmotesList()
+
+	for emote_id,emote_data in pairs(emot_list) do
+		--do a dirty hack and used the description to pass path data for emotes only
+		local emote_infos = emote_data["path"].."|"..emote_id
+		table.insert(SearchCommand.commands_list,{"emotes", "player", emote_infos, emote_data["translated"], {{":",""},{"Text:<CustomEmoteText>",""},{"none",""}}, {{"Text:<MoreCustomEmoteText>",""}}})
+	end
+end
+
+function SearchCommand:build_emote_preview(emote_id)
+	if(self.player_name_local == "")then
+		self.player_name_local=getPlayerName()
+	end
+	
+	if(self.player_gender_local == 9)then
+		self.player_gender_local=getPlayerGender()
+	end
+	
+	
+	if next(self.ryzom_emotes_text_list) == nil then
+		if(game.emots_text_array == nil)then
+			self.ryzom_emotes_text_list=game.emots_text_array
+		end
+	end
+	
+	local final_emote_text = ""
+
+	local target_name_ui = "[".. i18n.get("uihTarget"):toUtf8() .."]"
+	local play_name_ui = "[".. i18n.get("uimPlayer"):toUtf8() .."]"
+	
+	local target_name_local = "no_target"
+	local player_name = SearchCommand:firstToUpper(self.player_name_local)
+	local player_gender = ""
+	local current_emote_art = ""
+	local current_emote_art_text = ""
+	local current_action = ""
+	local build_current_emote = ""
+
+	if(getTargetName() ~= nil)then
+		target_name_local = SearchCommand:firstToUpper(getTargetName())
+	end
+	
+	if(self.player_gender_local == 0)then
+		player_name = "m"
+	else
+		player_gender = "f"
+	end
+	
+	--check for mode
+	if(target_name_local == "no_target")then
+		--no target
+		target_name_local=target_name_ui
+		current_emote_art = "NOBODY"
+	elseif(target_name_local == player_name)then
+		--self
+		current_emote_art = "SELF"
+	else
+		current_emote_art = "TARGET"
+	end
+	
+	local possible_mode = {"NOBODY", "SELF", "TARGET"}
+
+	for i = 1, #possible_mode do
+		local build_search_emotid = string.upper("EMOTE_"..emote_id.."_"..tostring(possible_mode[i]))
+		local build_search_emotid_gender_f = build_search_emotid.."_f"
+		local build_search_emotid_gender_m = build_search_emotid.."_m"
+		
+		if(self.ryzom_emotes_text_list[build_search_emotid] ~= nil)then
+			final_emote_text = final_emote_text .."<tr><td>"..i18n.get("uiEM_Emotes_"..tostring(possible_mode[i])):toUtf8()..": "..self.ryzom_emotes_text_list[build_search_emotid].."</td></tr>"
+		end
+		
+		if(self.ryzom_emotes_text_list[build_search_emotid_gender_f] ~= nil)then
+			final_emote_text = final_emote_text .."<tr><td>"..i18n.get("uiEM_Emotes_"..tostring(possible_mode[i])):toUtf8().."-"..i18n.get("uiCP_Sex_Female"):toUtf8()..": ".. self.ryzom_emotes_text_list[build_search_emotid_gender_f].."</td></tr>"
+		end
+		
+		if(self.ryzom_emotes_text_list[build_search_emotid_gender_m] ~= nil)then
+			final_emote_text = final_emote_text .."<tr><td>"..i18n.get("uiEM_Emotes_"..tostring(possible_mode[i])):toUtf8().."-"..i18n.get("uiCP_Sex_Male"):toUtf8()..": ".. self.ryzom_emotes_text_list[build_search_emotid_gender_m].."</td></tr>"
+		end
+		
+		
+		if(current_emote_art == tostring(possible_mode[i]))then
+			if(player_gender == "m")then
+				if(self.ryzom_emotes_text_list[build_search_emotid_gender_m] ~= nil)then
+					current_emote_art_text=self.ryzom_emotes_text_list[build_search_emotid_gender_m]
+					current_action=i18n.get("uiEM_Emotes_"..tostring(possible_mode[i])):toUtf8().."-"..i18n.get("uiCP_Sex_Male"):toUtf8()
+				else
+					current_emote_art_text=self.ryzom_emotes_text_list[build_search_emotid]
+					current_action=i18n.get("uiEM_Emotes_"..tostring(possible_mode[i])):toUtf8()
+				end
+			else
+				if(self.ryzom_emotes_text_list[build_search_emotid_gender_f] ~= nil)then
+					current_emote_art_text=self.ryzom_emotes_text_list[build_search_emotid_gender_f]
+					current_action=i18n.get("uiEM_Emotes_"..tostring(possible_mode[i])):toUtf8().."-"..i18n.get("uiCP_Sex_Female"):toUtf8()
+				else
+					current_emote_art_text=self.ryzom_emotes_text_list[build_search_emotid]
+					current_action=i18n.get("uiEM_Emotes_"..tostring(possible_mode[i])):toUtf8()
+				end
+			end
+			
+		end
+	end
+	if(current_emote_art_text == nil)then
+		current_emote_art_text = "ERROR: no emote preview for: ".. emote_id
+		debug("ErrorC: "..emote_id)
+	end
+	
+	if(final_emote_text == "")then
+		final_emote_text = "ERROR: no emote preview for: ".. emote_id
+		debug("ErrorF: "..emote_id)
+	end
+	
+	--build current mode
+	if string.match(current_emote_art_text, "%[a%]") then
+		current_emote_art_text = string.gsub(current_emote_art_text, "%[a%]", player_name)
+	end
+	if string.match(current_emote_art_text, "%[t%]") then
+		current_emote_art_text = string.gsub(current_emote_art_text, "%[t%]", target_name_local)
+	end
+	
+	
+		
+	build_current_emote = i18n.get("uiCurrentAction"):toUtf8()..": "..current_action
+	build_current_emote = build_current_emote.."<br>"..i18n.get("uiFaberItemResultHeader"):toUtf8()..": "..current_emote_art_text
+
+	SearchCommand:htmlentities(build_current_emote)
+	
+	--check we need replace player or target name
+	if string.match(final_emote_text, "%[a%]") then
+		final_emote_text = string.gsub(final_emote_text, "%[a%]", play_name_ui)
+	end
+	if string.match(final_emote_text, "%[t%]") then
+		final_emote_text = string.gsub(final_emote_text, "%[t%]", target_name_ui)
+	end
+	
+	SearchCommand:htmlentities(final_emote_text)
+	
+	return "<table><tr><td>&nbsp;</td></tr>"..final_emote_text.."<tr><td>&nbsp;</td></tr><tr><td>"..build_current_emote.."</td></tr><tr><td>&nbsp;</td></tr></table>"
 end
 
 function SearchCommand:check_prvis(command_privs)
@@ -407,7 +553,7 @@ function SearchCommand:help_show_all(parameter)
 	--debug("help parameter: "..parameter)
 	build_content=build_content.."<table width='100%' border=0>"
 	
-	if(parameter ~= "eScript" and parameter ~= "client" and parameter ~= "shard" and parameter ~= "all")then
+	if(parameter ~= "eScript" and parameter ~= "client" and parameter ~= "emotes" and parameter ~= "shard" and parameter ~= "all")then
 		parameter = "all"
 	end
 	
@@ -450,7 +596,14 @@ function SearchCommand:help_show_all(parameter)
 				count=count+1
 				
 				build_content=build_content.."<tr><td width='10px'>"..count..".</td><td colspan=3>"..SearchCommand:htmlentities(self.commands_list[c][4]).." "..arg_display.."</td></tr>"
-				build_content=build_content.."<tr><td>&nbsp;</td><td>"..i18n.get("uiR2EDScenarioDescription"):toUtf8()..": '"..SearchCommand:htmlentities(tostring(i18n.get(self.commands_list[c][3]))).."'</td></tr>"
+				if(self.commands_list[c][1] == "emotes")then
+					local path_parts = SearchCommand:split(self.commands_list[c][3], "|")
+					build_content=build_content.."<tr><td>&nbsp;</td><td>"..i18n.get("uiEM_Emotes"):toUtf8()..": '"..i18n.get("uiEM_Emotes"):toUtf8().. " > " ..SearchCommand:htmlentities(tostring(i18n.get(path_parts[2]))).." > ".. SearchCommand:htmlentities(SearchCommand:firstToUpper(self.commands_list[c][4])) .."'</td></tr>"
+					build_content=build_content.."<tr><td>&nbsp;</td><td>".. SearchCommand:build_emote_preview(path_parts[4]).."</td></tr>"
+				else
+					build_content=build_content.."<tr><td>&nbsp;</td><td>"..i18n.get("uiR2EDScenarioDescription"):toUtf8()..": '"..SearchCommand:htmlentities(tostring(i18n.get(self.commands_list[c][3]))).."'</td></tr>"
+				end
+				
 				build_content=build_content.."<tr><td>&nbsp;</td><td>"..i18n.get("uiFrontSelectionType"):toUtf8()..": "..SearchCommand:htmlentities(self.commands_list[c][1]).."</td></tr>"
 				build_content=build_content.."<tr><td>&nbsp;</td><td>"..i18n.get("uiSearchCommandPriv"):toUtf8()..": "..SearchCommand:htmlentities(self.commands_list[c][2]).."</td></tr>"
 				
@@ -553,7 +706,14 @@ function SearchCommand:help(uiId,input)
 						arg_display = ""
 					end
 					
-					build_content=build_content.."<tr><td>"..i18n.get("uiR2EDScenarioDescription"):toUtf8()..": "..SearchCommand:htmlentities(tostring(i18n.get(self.commands_list[c][3]))).."</td></tr>"
+					if(self.commands_list[c][1] == "emotes")then
+						local path_parts = SearchCommand:split(self.commands_list[c][3], "|")
+						build_content=build_content.."<tr><td>"..i18n.get("uiEM_Emotes"):toUtf8()..": '"..i18n.get("uiEM_Emotes"):toUtf8().. " > " ..SearchCommand:htmlentities(tostring(i18n.get(path_parts[2]))).." > ".. SearchCommand:htmlentities(SearchCommand:firstToUpper(self.commands_list[c][4])) .."'</td></tr>"
+						build_content=build_content.."<tr><td>".. SearchCommand:build_emote_preview(path_parts[4]).."</td></tr>"
+					else
+						
+						build_content=build_content.."<tr><td>"..i18n.get("uiR2EDScenarioDescription"):toUtf8()..": "..SearchCommand:htmlentities(tostring(i18n.get(self.commands_list[c][3]))).."</td></tr>"
+					end
 					build_content=build_content.."<tr><td>"..i18n.get("uiFrontSelectionType"):toUtf8()..": "..SearchCommand:htmlentities(self.commands_list[c][1]).."</td></tr>"
 					build_content=build_content.."<tr><td>"..i18n.get("uiSearchCommandPriv"):toUtf8()..": "..SearchCommand:htmlentities(self.commands_list[c][2]).."</td></tr>"
 					build_content=build_content.."<tr><td>&nbsp;</td></tr>"
@@ -872,7 +1032,7 @@ function SearchCommand:build_valid_command_list(command_input,uiId)
 		
 		if(#self.command_parameter_list <= 1)then
 			if(command_input == "a" or command_input == "b" or command_input == "c")then
-				if(self.commands_list[c][1] == "client" or self.commands_list[c][4] == "a" or self.commands_list[c][4] == "b" or self.commands_list[c][4] == "c")then
+				if(self.commands_list[c][1] == "client" or self.commands_list[c][1] == "emotes" or self.commands_list[c][4] == "a" or self.commands_list[c][4] == "b" or self.commands_list[c][4] == "c")then
 					command_display = 1
 				else
 					command_display = 0
@@ -1648,7 +1808,6 @@ end
 --##############Pars now all Emotes and add it to command table
 SearchCommand:pars_all_emotes()
 --##############END Pars now all Emotes and add it to command table
-
 
 -- VERSION --
 RYZOM_SEARCH_COMMAND_VERSION = 367

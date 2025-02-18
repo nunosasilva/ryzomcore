@@ -1175,7 +1175,6 @@ int CLuaIHMRyzom::getEmotesList(CLuaState &ls)
 {
 	ls.newTable();
 	CLuaObject result(ls);
-	std::map<std::string, std::string> emoteList;
 
 	CTextEmotListSheet *pTELS = dynamic_cast<CTextEmotListSheet *>(SheetMngr.get(CSheetId("list.text_emotes")));
 	if (pTELS == NULL)
@@ -1197,7 +1196,6 @@ int CLuaIHMRyzom::getEmotesList(CLuaState &ls)
 		entries.sort();
 	}
 
-	
 	// The list of behaviour missnames emotList
 	CEmotListSheet *pEmotList = dynamic_cast<CEmotListSheet *>(SheetMngr.get(CSheetId("list.emot")));
 	nlassert(pEmotList != NULL);
@@ -1219,26 +1217,21 @@ int CLuaIHMRyzom::getEmotesList(CLuaState &ls)
 		// Check that the emote can be added to UI
 		// ---------------------------------------
 		if ((*it).UsableFromClientUI == false)
-		{
 			continue;
-		}
 
 		// Check the emote reserved for FBT (hardcoded)
 		// --------------------------------------------
 		if (sState == "FBT" && !betaTester)
 			continue;
 
-		
+
 		// Add EmotId to list
 		// ----------------------------
-		
-		emoteList[sEmoteId] = (toLower(CI18N::get("uiEM_" + sEmoteId)));
-	}
-	
-	std::map<std::string, std::string>::iterator it;
-	for (it = emoteList.begin(); it != emoteList.end(); it++)
-	{
-		result.setValue(it->first, it->second);
+		ls.newTable();
+		CLuaObject oEmoteInfos(ls);
+		oEmoteInfos.setValue("translated", toLower(CI18N::get("uiEM_" + sEmoteId)));
+		oEmoteInfos.setValue("path", sName);
+		result.setValue(sEmoteId, oEmoteInfos);
 	}
 
 	result.push();
