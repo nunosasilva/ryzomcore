@@ -350,7 +350,7 @@ function SearchCommand:build_emote_preview(emote_id)
 	
 	
 	if next(self.ryzom_emotes_text_list) == nil then
-		if(game.emots_text_array == nil)then
+		if(game.emots_text_array ~= nil)then
 			self.ryzom_emotes_text_list=game.emots_text_array
 		end
 	end
