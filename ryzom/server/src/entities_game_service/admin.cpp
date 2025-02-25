@@ -4665,6 +4665,7 @@ NLMISC_COMMAND(setGuildInventoryChest, "Select the chest to display in GH A or B
 	CGuild * guild = CGuildManager::getInstance()->getGuildFromId(c->getGuildId());
 	if (guild)
 	{
+		guild->initChests();
 		uint8 chest;
 		NLMISC::fromString(args[2], chest);
 
