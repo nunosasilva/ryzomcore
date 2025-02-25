@@ -269,7 +269,7 @@ std::string COutpostBuilding::toString() const
 			for (uint j = 0; j < DRILLER_NB_LEVEL; ++j)
 			{
 				if (_StaticData->Driller.QualityFactor[j])
-					desc += _StaticData->Driller.MPs[i].toString()+NLMISC::toString(" Q%d", 50*(j+1))+"\n";
+					desc += _StaticData->Driller.MPs[i].toString()+NLMISC::toString(" Q%d", (j+1)*(250/DRILLER_NB_LEVEL))+"\n";
 			}
 		}
 	}
