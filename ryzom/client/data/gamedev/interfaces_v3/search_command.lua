@@ -364,7 +364,7 @@ function SearchCommand:pars_all_emotes()
 	for emote_id,emote_data in pairs(emot_list) do
 		--do a dirty hack and used the description to pass path data for emotes only
 		local emote_infos = emote_data["path"].."|"..emote_id
-		table.insert(SearchCommand.commands_list,{"emotes", "player", emote_infos, emote_data["translated"], {{":",""},{"Text:<CustomEmoteText>",""},{"none",""}}, {{"Text:<MoreCustomEmoteText>",""}}})
+		table.insert(SearchCommand.commands_list,{"emotes", "player", emote_infos, emote_data["translated"], "", {{":",""},{"Text:<CustomEmoteText>",""},{"none",""}}, {{"Text:<MoreCustomEmoteText>",""}}})
 	end
 end
 
