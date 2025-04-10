@@ -194,6 +194,11 @@ void CGuild::setChestA(const CEntityId &recipient, uint8 chest)
 	if (chest >= _Chests.size())
 		return;
 	_GuildInventoryView->setChestA(recipient, chest);
+	CBankAccessor_GUILD::getGUILD().getCHEST().getArray(chest).setNAME(_DbGroup, _Chests[chest].Name, true);
+	CBankAccessor_GUILD::getGUILD().getCHEST().getArray(chest).setVIEW_GRADE(_DbGroup, _Chests[chest].ViewGrade, true);
+	CBankAccessor_GUILD::getGUILD().getCHEST().getArray(chest).setPUT_GRADE(_DbGroup, _Chests[chest].PutGrade, true);
+	CBankAccessor_GUILD::getGUILD().getCHEST().getArray(chest).setGET_GRADE(_DbGroup, _Chests[chest].GetGrade, true);
+	CBankAccessor_GUILD::getGUILD().getCHEST().getArray(chest).setBULK_MAX(_DbGroup, _Chests[chest].BulkMax, true);
 	sendClientDBChest(recipient);
 }
 
@@ -203,6 +208,11 @@ void CGuild::setChestB(const CEntityId &recipient, uint8 chest)
 	if (chest >= _Chests.size())
 		return;
 	_GuildInventoryView->setChestB(recipient, chest);
+	CBankAccessor_GUILD::getGUILD().getCHEST().getArray(chest).setNAME(_DbGroup, _Chests[chest].Name, true);
+	CBankAccessor_GUILD::getGUILD().getCHEST().getArray(chest).setVIEW_GRADE(_DbGroup, _Chests[chest].ViewGrade, true);
+	CBankAccessor_GUILD::getGUILD().getCHEST().getArray(chest).setPUT_GRADE(_DbGroup, _Chests[chest].PutGrade, true);
+	CBankAccessor_GUILD::getGUILD().getCHEST().getArray(chest).setGET_GRADE(_DbGroup, _Chests[chest].GetGrade, true);
+	CBankAccessor_GUILD::getGUILD().getCHEST().getArray(chest).setBULK_MAX(_DbGroup, _Chests[chest].BulkMax, true);
 	sendClientDBChest(recipient);
 }
 
