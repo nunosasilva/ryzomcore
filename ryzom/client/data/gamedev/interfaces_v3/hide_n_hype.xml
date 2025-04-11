@@ -208,29 +208,11 @@
 		   </group>
 		</template>
 		
-		<template name="hide_n_hype_button" keep="true" x="0" y="0">
-			<group id="hide_n_hype_button" posref="MM MM" w="100" h="50" x="#x" y="#y" sizeref="" render_layer="1">
-			  <ctrl type="button"
-				style="text_button_header"
-				button_type="toggle_button"
-				id="hide_n_hype_button_accept"
-				x="0"
-				y="-4"
-				active="false"
-				tx_normal="r2ed_icon_rotate.tga"
-				tx_pushed="r2ed_icon_rotate.tga"
-				tooltip="uiBrowseRefresh"
-				onclick_l="lua"
-				params_l="debug('test')" />
-			 </group>
-		</template>
-		
-		
 			<template name="hide_n_hype_button_images" render_layer1="1" render_layer2="2" keep="true" tooltip="" w="40" h="40" bg="" img1="" x="0" y="0" lua_function="" ctrl_active="true" >
 			<group id="#id" posref="MM MM" w="#w" h="#h" x="#x" y="#y" sizeref="" render_layer="#render_layer1">
 				<view type="bitmap" posref="ML ML" render_layer="#render_layer1"
 					id="back"
-					x="2"
+					x="0"
 					y="0"
 					w="#w"
 					h="#h"
@@ -240,7 +222,7 @@
 					global_color="false" />
 				<view type="bitmap" posref="ML ML" render_layer="#render_layer2"
 					id="img1"
-					x="2"
+					x="0"
 					y="0"
 					w="#w"
 					h="#h"
@@ -269,7 +251,7 @@
 			<group id="#id" posref="MM MM" w="#w" h="#h" x="#x" y="#y" sizeref="" render_layer="#render_layer1">
 				<view type="bitmap" posref="ML ML" render_layer="#render_layer1"
 					id="img1"
-					x="2"
+					x="0"
 					y="0"
 					w="#w"
 					h="#h"
