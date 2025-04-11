@@ -1836,7 +1836,7 @@ function game:onWebIgReady()
 	debug("Webig ready")
 	game.webigInitialized = true
 	setOnDraw(getUI("ui:interface:encyclopedia"), "ArkMissionCatalog:startResize()")
-	getUI("ui:interface:webig:content:html"):browse("home")
+	-- getUI("ui:interface:webig:content:html"):browse("home")
 	if getDbProp("UI:SAVE:SKIP_TUTORIAL") == 0 then
 		addOnDbChange(getUI("ui:interface"), "@UI:SAVE:MK_MODE", "game:resizeMilkoPad()")
 		help:initWelcome()
