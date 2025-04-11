@@ -1799,6 +1799,8 @@ function game:onInGameDbInitialized()
 	--getUI("ui:interface:db_loading").active=false
 	game.InGameDbInitialized = true
 	debug("IG DB initialized")
+	getUI("ui:interface:webig:content:html"):browse("home")
+
 	-- Add waiters to guild chests
 	for i=0, 19 do
 		addOnDbChange(getUI("ui:interface:inv_guild"), "@SERVER:GUILD:CHEST:"..tostring(i)..":NAME", "updateChestList()")
@@ -1851,7 +1853,6 @@ function game:onWebIgReady()
 
 	setOnDraw(getUI("ui:interface:ryzhomeMain"), "RyzhomeBar:close()")
 end
-
 --------------------------------------------------------------------------------------------------------------
 -- handler called by C++ at the start of a far TP (log to char selection or far tp)
 function game:onFarTpStart()
