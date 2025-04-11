@@ -33,7 +33,7 @@ table.insert(SearchCommand.commands_list,{"client", "player", "time_desc", "time
 table.insert(SearchCommand.commands_list,{"client", "player", "version_desc", "version", "", ""})
 table.insert(SearchCommand.commands_list,{"client", "player", "where_desc", "where", "", ""})
 table.insert(SearchCommand.commands_list,{"client", "player", "playedTime_desc", "playedTime", "", ""})
-table.insert(SearchCommand.commands_list,{"client", "player", "guildinvite_desc", "", "guildinvite", "",{{"Text:<PlayerName>",""}}})
+table.insert(SearchCommand.commands_list,{"client", "player", "guildinvite_desc", "guildinvite", "", "",{{"Text:<PlayerName>",""}}})
 table.insert(SearchCommand.commands_list,{"client", "player", "who_desc", "who", "", "", {{"gm","who_gm_desc"}}})
 table.insert(SearchCommand.commands_list,{"client", "player", "guildmotd_desc", "guildmotd", "", "",{{"Text:<Message>",""},{"?","guildmotd_arg1_desc"}}})
 table.insert(SearchCommand.commands_list,{"client", "player", "league_desc", "league", "", "",{{"Text:<LeagueName>",""}}})
