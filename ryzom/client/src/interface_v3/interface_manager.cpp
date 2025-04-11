@@ -1113,6 +1113,7 @@ void CInterfaceManager::loadUI()
 	}
 
 	configureQuitDialogBox();
+	CLuaManager::getInstance().executeLuaScript("game:onLoadedUi()");
 }
 
 // ------------------------------------------------------------------------------------------------

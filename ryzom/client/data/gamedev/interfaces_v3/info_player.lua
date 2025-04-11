@@ -1798,8 +1798,8 @@ end
 function game:onInGameDbInitialized()
 	--getUI("ui:interface:db_loading").active=false
 	game.InGameDbInitialized = true
-	debug("IG DB initialized")
-	getUI("ui:interface:webig:content:html"):browse("home")
+	debugInfo("IG DB initialized")
+	game:initWebIg()
 
 	-- Add waiters to guild chests
 	for i=0, 19 do
@@ -1833,25 +1833,34 @@ function game:onInGameDbInitialized()
 	end
 end
 
-function game:onWebIgReady()
-	-- Call init webig
-	debug("Webig ready")
-	game.webigInitialized = true
-	setOnDraw(getUI("ui:interface:encyclopedia"), "ArkMissionCatalog:startResize()")
-	-- getUI("ui:interface:webig:content:html"):browse("home")
-	if getDbProp("UI:SAVE:SKIP_TUTORIAL") == 0 then
-		addOnDbChange(getUI("ui:interface"), "@UI:SAVE:MK_MODE", "game:resizeMilkoPad()")
-		help:initWelcome()
+function game:initWebIg()
+	if not game.webigInitialized then
+		game.webigInitialized = true
+		openUrlInBg("https://app.ryzom.com/index.php?init_webig=1")
+
+		if getDbProp("UI:SAVE:SKIP_TUTORIAL") == 0 then
+			addOnDbChange(getUI("ui:interface"), "@UI:SAVE:MK_MODE", "game:resizeMilkoPad()")
+			help:initWelcome()
+		end
+
+		game.setupWebigWithDBInitialized = true
+		help:displayWelcome()
+		game:onCapResize()
+		local cap = getUI("ui:interface:cap")
+		setOnDraw(cap, "game:onOverCap()")
+		ArkLessons:init()
 	end
+end
 
-	game.setupWebigWithDBInitialized = true
-	help:displayWelcome()
-	game:onCapResize()
-	local cap = getUI("ui:interface:cap")
-	setOnDraw(cap, "game:onOverCap()")
-	ArkLessons:init()
-
+function game:onLoadedUi()
+	debugInfo("On Loaded Ui")
+	getUI("ui:interface:webig:content:html"):browse("home")
 	setOnDraw(getUI("ui:interface:ryzhomeMain"), "RyzhomeBar:close()")
+	setOnDraw(getUI("ui:interface:encyclopedia"), "ArkMissionCatalog:startResize()")
+end
+
+function game:onWebIgReady()
+	-- Deprecated
 end
 --------------------------------------------------------------------------------------------------------------
 -- handler called by C++ at the start of a far TP (log to char selection or far tp)
