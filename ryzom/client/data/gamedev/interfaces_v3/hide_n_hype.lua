@@ -74,6 +74,7 @@ if not Ryzhide then
 		hint_1_text = "????",
 		hint_2_text = "????",
 		hint_3_text = "????",
+		hint_4_text = "????",
 		pull_request_data = 0,
 		
 		reward_already_claimed = 0,
@@ -83,7 +84,16 @@ if not Ryzhide then
 		target_name_old = "",
 		
 		debug_window_border = 0,
-		debug_enable_debug_message = 0
+		debug_enable_debug_message = 0,
+		
+		duration_time_invite = 120,
+		duration_time_prepartion = 180,
+		duration_time_game_running = 600,
+		duration_time_hint_1 = 240,
+		duration_time_hint_2 = 180,
+		duration_time_hint_3 = 150,
+		duration_time_claim_reward = 180,
+		duration_time_most_wanted_offline = 180
 	}
 end
 
@@ -134,6 +144,12 @@ function Ryzhide:update_timer(id,remaining_time_display,duration_display)
 	end
 end
 
+function Ryzhide:convert_secound_to_string(secound_to_convert)
+	local minutes = math.floor(secound_to_convert / 60)
+	local secs = secound_to_convert % 60
+	return string.format("%02d:%02d", minutes, secs)
+end
+
 function Ryzhide:position_json_load_window()
 	local json_load_window = getUI("ui:interface:load_pars_json")
 	local mainui = getUI(self.main_window_name)
@@ -144,27 +160,27 @@ function Ryzhide:position_json_load_window()
 	main_window_w = mainui.w
 	
 	if(main_window_x == 0 or main_window_y == 0 or main_window_h == 0 or main_window_w == 0)then
-    	local interface_window = getUI("ui:interface")
-    	
-    	self.main_window_old_x = 0
-        self.main_window_old_y = 0
-        self.main_window_old_w = 0
-        self.main_window_old_h = 0
-    	
-    	json_load_window.x = interface_window.w - 36
-	    json_load_window.y = 36
+		local interface_window = getUI("ui:interface")
+		
+		self.main_window_old_x = 0
+		self.main_window_old_y = 0
+		self.main_window_old_w = 0
+		self.main_window_old_h = 0
+		
+		json_load_window.x = interface_window.w - 36
+		json_load_window.y = 36
 	else
-    	if(self.main_window_old_x ~= main_window_x or self.main_window_old_y ~= main_window_y or self.main_window_old_h ~= main_window_h or self.main_window_old_w ~= main_window_w)then
-    	    self.main_window_old_x = main_window_x
-            self.main_window_old_y = main_window_y
-            self.main_window_old_w = main_window_w
-            self.main_window_old_h = main_window_h
-            
-            json_load_window.x = main_window_x + main_window_w
-    	    json_load_window.y = main_window_y
-    	
-    	    Ryzhide:display_debug_messanges("main_window_x: "..main_window_x.."main_window_y: "..main_window_y.."main_window_h: "..main_window_h.."main_window_w: "..main_window_w)
-    	end
+		if(self.main_window_old_x ~= main_window_x or self.main_window_old_y ~= main_window_y or self.main_window_old_h ~= main_window_h or self.main_window_old_w ~= main_window_w)then
+			self.main_window_old_x = main_window_x
+			self.main_window_old_y = main_window_y
+			self.main_window_old_w = main_window_w
+			self.main_window_old_h = main_window_h
+			
+			json_load_window.x = main_window_x + main_window_w
+			json_load_window.y = main_window_y
+		
+			Ryzhide:display_debug_messanges("main_window_x: "..main_window_x.."main_window_y: "..main_window_y.."main_window_h: "..main_window_h.."main_window_w: "..main_window_w)
+		end
 	end
 	
 	if(self.load_animation_timer == 25)then
@@ -328,20 +344,6 @@ function Ryzhide:check_local_player_name()
 	end
 end
 
-function Ryzhide:toUnixTimestamp(dateString)
-	local pattern = "(%d+)-(%d+)-(%d+) (%d+):(%d+):(%d+)"
-	local year, month, day, hour, min, sec = dateString:match(pattern)
-
-	return os.time({
-		year = tonumber(year),
-		month = tonumber(month),
-		day = tonumber(day),
-		hour = tonumber(hour),
-		min = tonumber(min),
-		sec = tonumber(sec)
-	})
-end
-
 function Ryzhide:distance_calc(x1, y1, z1, x2, y2, z2)
 	if(x1 == nil or y1 == nil or z1 == nil or x2 == nil or y2 == nil or z2 == nil)then
 		Ryzhide:display_debug_messanges("calc_distand_a_nil_value")
@@ -390,6 +392,16 @@ function Ryzhide:pars_json_data_login()
 				--set flag player is registrated
 				self.player_already_registerd = 1
 				
+				--set timer times load from server
+				self.duration_time_invite = self.hide_n_hide_json_data.duration_time_invite
+				self.duration_time_prepartion = self.hide_n_hide_json_data.duration_time_prepartion
+				self.duration_time_game_running = self.hide_n_hide_json_data.duration_time_game_running
+				self.duration_time_hint_1 = self.hide_n_hide_json_data.duration_time_hint_1
+				self.duration_time_hint_2 = self.hide_n_hide_json_data.duration_time_hint_2
+				self.duration_time_hint_3 = self.hide_n_hide_json_data.duration_time_hint_3
+				self.duration_time_claim_reward = self.hide_n_hide_json_data.duration_time_claim_reward
+				self.duration_time_most_wanted_offline = self.hide_n_hide_json_data.duration_time_most_wanted_offline
+				
 				Ryzhide:display_debug_messanges("ready: "..self.hide_n_hide_json_data.ready)
 				Ryzhide:display_debug_messanges("player_round_id: "..self.hide_n_hide_json_data.player_round_id)
 				Ryzhide:display_debug_messanges("round_id: "..self.hide_n_hide_json_data.round_id)
@@ -398,7 +410,6 @@ function Ryzhide:pars_json_data_login()
 				if(tonumber(self.hide_n_hide_json_data.ready) == 69 and tonumber(self.hide_n_hide_json_data.player_round_id) == tonumber(self.hide_n_hide_json_data.round_id))then
 					self.reward_already_claimed = 1
 				end
-				
 				
 				--player reject play this round
 				if(tonumber(self.hide_n_hide_json_data.ready) == 4 and tonumber(self.hide_n_hide_json_data.player_round_id) == tonumber(self.hide_n_hide_json_data.round_id))then
@@ -681,7 +692,7 @@ function Ryzhide:build_invite_window()
 			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
-				<td align="center" colspan="2"><div id="hide_n_hype_timer_invite" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_invite;timer:01:00;'></div></td>
+				<td align="center" colspan="2"><div id="hide_n_hype_timer_invite" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_invite;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_invite)..[[;'></div></td>
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
 			</tr>
 			
@@ -828,7 +839,7 @@ function Ryzhide:pars_json_data_ask_for_join()
 			if(remaining_time < 0)then
 				Ryzhide:invite_timer_stopped()
 			else
-				Ryzhide:update_timer("hide_n_hype_timer_invite",remaining_time, (1*60))
+				Ryzhide:update_timer("hide_n_hype_timer_invite",remaining_time, self.duration_time_invite)
 			end
 		end
 
@@ -889,11 +900,11 @@ function Ryzhide:inti_invite_window(json_data)
 	self.register_player_online = json_data.reg_online_player
 	
 	if(tonumber(self.register_player_online) >= 3)then
-	    --set to green all ok
-	    self.register_player_online_color = "0 255 0 255"
+		--set to green all ok
+		self.register_player_online_color = "0 255 0 255"
 	else
-	    --set to red all ok
-	    self.register_player_online_color = "255 0 0 255"
+		--set to red all ok
+		self.register_player_online_color = "255 0 0 255"
 	end
 	
 	Ryzhide:check_local_player_name()
@@ -902,7 +913,7 @@ function Ryzhide:inti_invite_window(json_data)
 		self.current_round_start = 0
 		self.json_pull_counter = 0
 	else	
-		self.current_round_start = Ryzhide:toUnixTimestamp(json_data.current_round_start)
+		self.current_round_start = json_data.current_round_start
 	end
 	
 	if (type(json_data.hunter_list) == "boolean") then
@@ -1000,7 +1011,7 @@ function Ryzhide:update_invite_window(json_data)
 		self.current_round_start = 0
 		self.json_pull_counter = 0
 	else	
-		self.current_round_start = Ryzhide:toUnixTimestamp(json_data.current_round_start)
+		self.current_round_start = json_data.current_round_start
 	end
 	
 	local mainui = getUI(self.main_window_name)
@@ -1009,11 +1020,11 @@ function Ryzhide:update_invite_window(json_data)
 	player_online_text:find("text").hardtext = json_data.reg_online_player
 	
 	if(tonumber(self.register_player_online) >= 3)then
-	    --set to green all ok
-	    player_online_text:find("text").color = "0 255 0 255"
+		--set to green all ok
+		player_online_text:find("text").color = "0 255 0 255"
 	else
-	    --set to red all ok
-	    player_online_text:find("text").color = "255 0 0 255"
+		--set to red all ok
+		player_online_text:find("text").color = "255 0 0 255"
 	end
 	
 	Ryzhide:check_and_pars_player_infos(json_data.hunter_list,"hunte_accept","hunte_text","hunte_display_status")
@@ -1195,7 +1206,7 @@ function Ryzhide:pars_json_data_wait_for_most_wanted()
 		if(remaining_time < 0)then
 			Ryzhide:wait_most_wanted_timer_stopped()
 		else
-			Ryzhide:update_timer("hide_n_hype_timer_hunter",remaining_time, (3*60))
+			Ryzhide:update_timer("hide_n_hype_timer_hunter",remaining_time, self.duration_time_prepartion)
 		end
 	else
 		Ryzhide:wait_most_wanted_timer_stopped()
@@ -1260,7 +1271,7 @@ function Ryzhide:build_hunter_window()
 			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
-				<td align="center"><div id="hide_n_hype_timer_hunter" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_hunter;timer:03:00;'></div></td>
+				<td align="center"><div id="hide_n_hype_timer_hunter" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_hunter;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_prepartion)..[[;'></div></td>
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
 			</tr>
 			
@@ -1282,7 +1293,7 @@ function Ryzhide:build_most_wanted_window()
 			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
-				<td align="center" width="180"><div id="hide_n_hype_timer_hunter" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_hunter;timer:03:00;'></div></td>
+				<td align="center" width="180"><div id="hide_n_hype_timer_hunter" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_hunter;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_prepartion)..[[;'></div></td>
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
 			</tr>
 			
@@ -1439,19 +1450,19 @@ function Ryzhide:display_game_running_error(error_msg)
 end
 
 function Ryzhide:check_player_are_in_special_state()
-    local current_player_mode = getPlayerMode()
-    local current_player_invisible = getDbProp("SERVER:USER:IS_INVISIBLE")
-    
-    local player_special_state = 0
-    
-    if(self.json_pull_counter > 3)then
-        --now the tatus need to be fine and not allow to break
-        if(current_player_mode ~= "REST" or current_player_invisible == 0)then
-            player_special_state = 69
-        end
-    end
+	local current_player_mode = getPlayerMode()
+	local current_player_invisible = getDbProp("SERVER:USER:IS_INVISIBLE")
+	
+	local player_special_state = 0
+	
+	if(self.json_pull_counter > 3)then
+		--now the tatus need to be fine and not allow to break
+		if(current_player_mode ~= "REST" or current_player_invisible == 0)then
+			player_special_state = 69
+		end
+	end
 
-    return player_special_state
+	return player_special_state
 end
 
 function Ryzhide:pars_json_data_game_running_most_wanted()
@@ -1469,7 +1480,7 @@ function Ryzhide:pars_json_data_game_running_most_wanted()
 			if(remaining_time < 0)then
 				Ryzhide:game_running_timer_stopped()
 			else
-				Ryzhide:update_timer("hide_n_hype_timer_game_running_most_wanted",remaining_time, (3*60))
+				Ryzhide:update_timer("hide_n_hype_timer_game_running_most_wanted",remaining_time, self.duration_time_game_running)
 			end
 		end
 
@@ -1481,7 +1492,7 @@ function Ryzhide:pars_json_data_game_running_most_wanted()
 					end
 				elseif (self.hide_n_hide_json_data.success) then
 					if(self.hide_n_hide_json_data.success == "ok_most_wanted_heartbeat")then
-					    self.json_pull_counter = self.json_pull_counter + 1
+						self.json_pull_counter = self.json_pull_counter + 1
 						--Ryzhide:display_game_running_sucess("sucess_heartbeat: "..self.hide_n_hide_json_data.success)
 					end
 				else
@@ -1499,10 +1510,12 @@ function Ryzhide:update_hint_data()
 	Ryzhide:display_debug_messanges("hint_1: "..self.hide_n_hide_json_data.hint_1)
 	Ryzhide:display_debug_messanges("hint_2: "..self.hide_n_hide_json_data.hint_2)
 	Ryzhide:display_debug_messanges("hint_3: "..self.hide_n_hide_json_data.hint_3)
+	Ryzhide:display_debug_messanges("hint_4: "..self.hide_n_hide_json_data.hint_4)
 	
 	self.hint_1_text = self.hide_n_hide_json_data.hint_1
 	self.hint_2_text = self.hide_n_hide_json_data.hint_2
 	self.hint_3_text = self.hide_n_hide_json_data.hint_3
+	self.hint_4_text = self.hide_n_hide_json_data.hint_4
 end
 
 function Ryzhide:check_player_target()
@@ -1510,8 +1523,8 @@ function Ryzhide:check_player_target()
 	local check_found_most_wanted_button = mainui:find("check_found_most_wanted")
 	
 	local hnh_target_x_pos = 0
-    local hnh_target_y_pos = 0
-    local hnh_target_z_pos = 0
+	local hnh_target_y_pos = 0
+	local hnh_target_z_pos = 0
 	
 	local hnh_player_x_pos = 0
 	local hnh_player_y_pos = 0
@@ -1519,11 +1532,11 @@ function Ryzhide:check_player_target()
 	
 	
 	if(isTargetNPC() == false and isTargetPlayer() == false and isTargetUser() == false)then
-	    hnh_player_x_pos,hnh_player_y_pos,hnh_player_z_pos = getPlayerPos()
+		hnh_player_x_pos,hnh_player_y_pos,hnh_player_z_pos = getPlayerPos()
 	
-    	if(getTargetPos() ~= nil)then
-    		hnh_target_x_pos,hnh_target_y_pos,hnh_target_z_pos = getTargetPos()
-    	end
+		if(getTargetPos() ~= nil)then
+			hnh_target_x_pos,hnh_target_y_pos,hnh_target_z_pos = getTargetPos()
+		end
 	
 		local current_distance = Ryzhide:distance_calc(hnh_target_x_pos, hnh_target_y_pos, hnh_target_z_pos, hnh_player_x_pos, hnh_player_y_pos, hnh_player_z_pos)
 		if(current_distance <= 5)then
@@ -1607,10 +1620,13 @@ function Ryzhide:pars_json_data_game_running_hunter()
 				if (self.hide_n_hide_json_data.error) then
 					Ryzhide:display_debug_messanges("error: "..self.hide_n_hide_json_data.error.." m: "..self.manuell_action)
 					if(self.manuell_action == 1)then
-						Ryzhide:display_try_found_error(Ryzhide:load_translation(self.hide_n_hide_json_data.error))
+						
 						if(self.hide_n_hide_json_data.error == "not_near_most_wanted")then
-							Ryzhide:feedback_found_button("error")
+						    Ryzhide:display_try_found_error(Ryzhide:load_translation("hide_n_hype_"..self.hide_n_hide_json_data.error))
+						    Ryzhide:feedback_found_button("error")
 							self.manuell_action = 0
+						else
+						    Ryzhide:display_try_found_error(Ryzhide:load_translation(self.hide_n_hide_json_data.error))
 						end
 					end
 				elseif (self.hide_n_hide_json_data.success) then
@@ -1641,41 +1657,64 @@ function Ryzhide:pars_json_data_game_running_hunter()
 
 	if(self.current_round_end ~= 0)then
 		local remaining_time = self.current_round_end - os.time()
-		local remaining_time_hint_1 = (self.current_round_end - os.time()) - 180
-		local remaining_time_hint_2 = (self.current_round_end - os.time()) - 120
-		local remaining_time_hint_3 = (self.current_round_end - os.time()) - 60
+		
+		local total_timer_need = self.duration_time_hint_1 + self.duration_time_hint_2 + self.duration_time_hint_3
+		
+		local remaining_time_hint_1 = remaining_time - (self.duration_time_hint_2 + self.duration_time_hint_3 + (self.duration_time_game_running - total_timer_need))
+		local remaining_time_hint_2 = remaining_time - (self.duration_time_hint_2)
+		local remaining_time_hint_3 = remaining_time - (self.duration_time_hint_3 - (self.duration_time_hint_3 - (self.duration_time_game_running - total_timer_need)) )
+		
+		local time_to_unlock_hint_1 = self.duration_time_hint_1
+		local time_to_unlock_hint_2 = self.duration_time_hint_1 + self.duration_time_hint_2
+		local time_to_unlock_hint_3 = self.duration_time_hint_1 + self.duration_time_hint_2 + self.duration_time_hint_3
+		
 		
 		if(remaining_time < 0)then
 			Ryzhide:game_running_timer_stopped()
 		else
-			if(remaining_time_hint_1 >= 0 and self.timer_hint_1 == 0)then
-				Ryzhide:update_timer("hide_n_hype_timer_game_running_hint",remaining_time_hint_1, (0.5*60))
-			elseif(remaining_time_hint_1 < 0)then
-				if(self.timer_hint_1 == 0)then
-					self.timer_hint_1 = 1
-					Ryzhide:display_debug_messanges("self.timer_hint_1")
-				end
+            local diff_remaining_time = self.duration_time_game_running - remaining_time
+            
+            Ryzhide:display_debug_messanges("diff_remaining_time: "..diff_remaining_time)
+            Ryzhide:display_debug_messanges("time_to_unlock_hint_1: "..time_to_unlock_hint_1)
+            Ryzhide:display_debug_messanges("time_to_unlock_hint_2: "..time_to_unlock_hint_2)
+            Ryzhide:display_debug_messanges("time_to_unlock_hint_3: "..time_to_unlock_hint_3)
+            
+            
+            Ryzhide:display_debug_messanges("remaining_time_hint_1: "..remaining_time_hint_1)
+            Ryzhide:display_debug_messanges("remaining_time_hint_2: "..remaining_time_hint_2)
+            Ryzhide:display_debug_messanges("remaining_time_hint_3: "..remaining_time_hint_3)
+            
+            if(remaining_time_hint_1 >= 0 and self.timer_hint_1 == 0)then
+				Ryzhide:update_timer("hide_n_hype_timer_game_running_hint",remaining_time_hint_1, self.duration_time_hint_1)
 			end
 			
 			if(remaining_time_hint_2 >= 0 and self.timer_hint_2 == 0 and self.timer_hint_1 == 1)then
-				Ryzhide:update_timer("hide_n_hype_timer_game_running_hint",remaining_time_hint_2, (0.5*60))
-			elseif(remaining_time_hint_2 < 0)then
-				if(self.timer_hint_2 == 0)then
-					self.timer_hint_2 = 1
-					Ryzhide:display_debug_messanges("self.timer_hint_2")
-				end
+				Ryzhide:update_timer("hide_n_hype_timer_game_running_hint",remaining_time_hint_2, self.duration_time_hint_2)
 			end
 			
 			if(remaining_time_hint_3 >= 0 and self.timer_hint_3 == 0 and self.timer_hint_1 == 1 and self.timer_hint_2 == 1)then
-				Ryzhide:update_timer("hide_n_hype_timer_game_running_hint",remaining_time_hint_3, (0.5*60))
-			elseif(remaining_time_hint_3 < 0)then
-				if(self.timer_hint_3 == 0)then
-					self.timer_hint_3 = 1
-					Ryzhide:display_debug_messanges("self.timer_hint_3")
-				end
+				Ryzhide:update_timer("hide_n_hype_timer_game_running_hint",remaining_time_hint_3, self.duration_time_hint_3)
 			end
-			
-			Ryzhide:update_timer("hide_n_hype_timer_game_running_hunter",remaining_time, (3*60))
+        
+            --unlock hint_2
+            if(diff_remaining_time > time_to_unlock_hint_1 and self.timer_hint_1 == 0)then
+                self.timer_hint_1 = 1
+				Ryzhide:display_debug_messanges("self.timer_hint_1")
+            end
+            
+            --unlock hint_3
+            if(diff_remaining_time > time_to_unlock_hint_2 and self.timer_hint_2 == 0)then
+                self.timer_hint_2 = 1
+				Ryzhide:display_debug_messanges("self.timer_hint_2")
+            end
+            
+            --unlock hint_4
+            if(diff_remaining_time > time_to_unlock_hint_3 and self.timer_hint_3 == 0)then
+                self.timer_hint_3 = 1
+				Ryzhide:display_debug_messanges("self.timer_hint_3")
+            end
+            
+			Ryzhide:update_timer("hide_n_hype_timer_game_running_hunter",remaining_time, self.duration_time_game_running)
 		end
 	end
 end
@@ -1683,22 +1722,29 @@ end
 function Ryzhide:unlock_hints()
 	local mainui = getUI(self.main_window_name)
 	
-	if(self.timer_hint_1 == 1)then
-		local hint_1_text_controll = mainui:find("hint_1")
-		Ryzhide:display_debug_messanges("set_hint_1: "..self.hint_1_text)
-		hint_1_text_controll:find("text").hardtext = self.hint_1_text
-		hint_1_text_controll:find("text").color = "0 255 0 255"
+	if(self.hint_1_text ~= "????")then
+    	local hint_1_text_controll = mainui:find("hint_1")
+    	Ryzhide:display_debug_messanges("set_hint_1: "..self.hint_1_text)
+    	hint_1_text_controll:find("text").hardtext = self.hint_1_text
+    	hint_1_text_controll:find("text").color = "0 255 0 255"
 	end
-	if(self.timer_hint_2 == 1)then
+		
+	if(self.timer_hint_1 == 1 and self.hint_2_text ~= "????")then
 		local hint_2_text_controll = mainui:find("hint_2")
 		Ryzhide:display_debug_messanges("set_hint_2: "..self.hint_2_text)
 		hint_2_text_controll:find("text").hardtext = self.hint_2_text
 		hint_2_text_controll:find("text").color = "0 255 0 255"
 	end
-	if(self.timer_hint_3 == 1)then
+	if(self.timer_hint_2 == 1 and self.hint_3_text ~= "????")then
 		local hint_3_text_controll = mainui:find("hint_3")
 		Ryzhide:display_debug_messanges("set_hint_3: "..self.hint_3_text)
 		hint_3_text_controll:find("text").hardtext = self.hint_3_text
+		hint_3_text_controll:find("text").color = "0 255 0 255"
+	end
+	if(self.timer_hint_3 == 1 and self.hint_3_text ~= "????")then
+		local hint_3_text_controll = mainui:find("hint_4")
+		Ryzhide:display_debug_messanges("set_hint_4: "..self.hint_4_text)
+		hint_3_text_controll:find("text").hardtext = Ryzhide:load_translation("hide_n_hype_"..self.hint_4_text)
 		hint_3_text_controll:find("text").color = "0 255 0 255"
 	end
 end
@@ -1729,7 +1775,7 @@ function Ryzhide:build_game_running_most_wanted_window()
 	html_running_most_wanted=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_running_window")..[[</title><br>
 			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
-				<td align="center"><div id="hide_n_hype_timer_game_running_most_wanted" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_game_running_most_wanted;timer:15:00;'></div></td>
+				<td align="center"><div id="hide_n_hype_timer_game_running_most_wanted" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_game_running_most_wanted;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_game_running)..[[;'></div></td>
 			</tr>
 			
 			<tr>
@@ -1740,20 +1786,20 @@ function Ryzhide:build_game_running_most_wanted_window()
 end
 
 function Ryzhide:build_game_running_hunter_window()
-	local window_height = 280
-	local window_width = 365
+	local window_height = 320
+	local window_width = 380
 	local table_width = window_width - 15
 
 	local html_running_hunter=""
 	html_running_hunter=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_running_window")..[[</title><br>
 		   <table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
-				<td align="center" colspan="2"><div id="hide_n_hype_timer_game_running_hunter" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_game_running_hunter;timer:15:00;'></div></td>
+				<td align="center" colspan="2"><div id="hide_n_hype_timer_game_running_hunter" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_game_running_hunter;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_game_running)..[[;'></div></td>
 			</tr>
 			
 			<tr>
 				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_new_hint_in")..[[</h2></td>
-				<td align="center"><div id="hide_n_hype_timer_game_running_hint" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_game_running_hint;timer:05:00;'></td>
+				<td align="center"><div id="hide_n_hype_timer_game_running_hint" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_game_running_hint;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_hint_1)..[[;'></td>
 			</tr>
 			<tr>
 				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_hint_1")..[[</h2></td>
@@ -1766,6 +1812,10 @@ function Ryzhide:build_game_running_hunter_window()
 			<tr>
 				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_hint_3")..[[</h2></td>
 				<td align="center"><div id="hint_3" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_text;id:hint_3;font_size:16;text_color:255 0 0 255;hardtext:????;w:250;'></div></td>
+			</tr>
+			<tr>
+				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_hint_4")..[[</h2></td>
+				<td align="center"><div id="hint_4" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_text;id:hint_4;font_size:16;text_color:255 0 0 255;hardtext:????;w:250;'></div></td>
 			</tr>
 			
 			<tr>
@@ -1888,7 +1938,7 @@ function Ryzhide:timer_to_claim_rewards(timer_claim_reward)
 		if(remaining_time < 0)then
 			Ryzhide:game_running_timer_stopped()
 		else
-			Ryzhide:update_timer("hide_n_hype_timer_claim_reward",remaining_time, (3*60))
+			Ryzhide:update_timer("hide_n_hype_timer_claim_reward",remaining_time, self.duration_time_claim_reward)
 		end
 	end
 end
@@ -1916,7 +1966,7 @@ function Ryzhide:build_finished_hunter(hunter_name,most_wanted_name)
 	html_finished_hunter=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title><br>
 			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 				<tr>
-					<td align="center"><div id="hide_n_hype_timer_claim_reward" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_claim_reward;timer:03:00;'></div></td>
+					<td align="center"><div id="hide_n_hype_timer_claim_reward" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_claim_reward;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_claim_reward)..[[;'></div></td>
 				</tr>
 				
 				<tr>
@@ -2141,7 +2191,7 @@ function Ryzhide:build_most_wanted_offline_window()
 		<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr align="center">
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
-				<td align="center"><div id="hide_n_hype_timer_most_wanted_offline" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_most_wanted_offline;timer:02:00;'></div></td>
+				<td align="center"><div id="hide_n_hype_timer_most_wanted_offline" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_most_wanted_offline;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_most_wanted_offline)..[[;'></div></td>
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
 			</tr>
 			
@@ -2258,11 +2308,9 @@ function Ryzhide:run_timer_most_wanted_offline()
 		if(remaining_time < 0)then
 			Ryzhide:game_running_timer_stopped()
 		else
-			Ryzhide:update_timer("hide_n_hype_timer_most_wanted_offline",remaining_time, (3*60))
+			Ryzhide:update_timer("hide_n_hype_timer_most_wanted_offline",remaining_time, self.duration_time_most_wanted_offline)
 		end
 	end
 end
 
 --###################################### END error handling #######################################
-
-
