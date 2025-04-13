@@ -611,6 +611,10 @@ function Ryzhide:pars_json_data_register()
 						Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_already_registerd"))
 						self.player_already_registerd = 1
 						Ryzhide:build_register_window()
+					elseif(self.hide_n_hide_json_data.error == "no_active_hide")then
+					    Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_no_active_hide"))
+						self.player_already_registerd = 0
+						Ryzhide:close_window(self.main_window_name, "")
 					else
 						display_register_error(self.hide_n_hide_json_data.error)
 					end
@@ -633,6 +637,10 @@ function Ryzhide:pars_json_data_register()
 						Ryzhide:display_unregister_error(Ryzhide:load_translation("hide_n_hype_not_registerd"))
 						self.player_already_registerd = 0
 						Ryzhide:build_register_window()
+					elseif(self.hide_n_hide_json_data.error == "no_active_hide")then
+					    Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_no_active_hide"))
+						self.player_already_registerd = 0
+						Ryzhide:close_window(self.main_window_name, "")
 					else
 						Ryzhide:display_unregister_error(self.hide_n_hide_json_data.error)
 					end
@@ -848,9 +856,14 @@ function Ryzhide:pars_json_data_ask_for_join()
 				if (self.hide_n_hide_json_data.error) then
 					if(self.hide_n_hide_json_data.error == "not_registerd")then
 						Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_not_registerd"))
+					elseif(self.hide_n_hide_json_data.error == "not_allow_again")then
+					    Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_not_allow_again"))
 					else
-						Ryzhide:display_asked_for_join_error(self.hide_n_hide_json_data.error)
+						Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_"..self.hide_n_hide_json_data.error))
 					end
+					
+					self.json_data_ready = 0
+					self.manuell_action = 0
 				elseif (self.hide_n_hide_json_data.success) then
 					if(self.hide_n_hide_json_data.success == "asked_to_join")then
 						self.json_pull_counter = self.json_pull_counter + 1
@@ -899,6 +912,10 @@ function Ryzhide:inti_invite_window(json_data)
 	Ryzhide:display_debug_messanges("inti_invite_window: "..json_data.current_round_start)
 	self.register_player_online = json_data.reg_online_player
 	
+	local found_hunter = 0
+	local found_most_wanted_hunter = 0
+	local found_most_wanted = 0
+	
 	if(tonumber(self.register_player_online) >= 3)then
 		--set to green all ok
 		self.register_player_online_color = "0 255 0 255"
@@ -924,11 +941,17 @@ function Ryzhide:inti_invite_window(json_data)
 		for _, name in ipairs(json_data.hunter_list) do
 			self.hunter_array = self.hunter_array + 1
 			if(self.player_name == name)then
+			    found_hunter = 1
 				self.regist_as_hunter = 1
 				self.hunter_accept_image = "rap_invited_no_dm.tga"
 				self.hunter_accept_active = "false"
 			end
 		end
+	end
+	
+	if(found_hunter == 0)then
+	    self.hunter_accept_image = ""
+	    self.hunter_accept_active = "true"
 	end
 	
 	if(self.hunter_array == 0)then
@@ -947,11 +970,17 @@ function Ryzhide:inti_invite_window(json_data)
 		for _, name in ipairs(json_data.hunter_and_most_wanted_list) do
 			self.hunter_or_most_wanted_array = self.hunter_or_most_wanted_array + 1
 			if(self.player_name == name)then
+			    found_most_wanted_hunter = 1
 				self.regist_as_hunter_or_most_wanted = 1
 				self.hunter_or_most_wanted_accept_image = "rap_invited_no_dm.tga"
 				self.hunter_or_most_wanted_accept_active = "false"
 			end
 		end
+	end
+	
+	if(found_most_wanted_hunter == 0)then
+	    self.hunter_or_most_wanted_accept_image = ""
+	    self.hunter_or_most_wanted_accept_active = "true"
 	end
 	
 	if(self.hunter_or_most_wanted_array == 0)then
@@ -970,11 +999,17 @@ function Ryzhide:inti_invite_window(json_data)
 		for _, name in ipairs(json_data.most_wanted_list) do
 			self.most_wanted_array = self.most_wanted_array + 1
 			if(self.player_name == name)then
+			    found_most_wanted = 1
 				self.regist_as_most_wanted = 1
 				self.most_wanted_accept_image = "rap_invited_no_dm.tga"
 				self.most_wanted_accept_active = "false"
 			end
 		end
+	end
+	
+	if(found_most_wanted == 0)then
+	    self.most_wanted_accept_image = ""
+	    self.most_wanted_accept_active = "true"
 	end
 	
 	if(self.most_wanted_array == 0)then
@@ -1037,6 +1072,8 @@ function Ryzhide:check_and_pars_player_infos(json_data,action_button,action_coun
 	local mainui = getUI(self.main_window_name)
 	local count_array = 0
 	
+	local found_player_in_list = 0
+	
 	Ryzhide:check_local_player_name()
 	
 	if (type(json_data) == "boolean") then
@@ -1055,17 +1092,23 @@ function Ryzhide:check_and_pars_player_infos(json_data,action_button,action_coun
 	else
 		count_array = 0
 		local regist_hunter_img = mainui:find(action_button)
-		regist_hunter_img:find("img1").texture = ""
-		regist_hunter_img:find("ctrl").active = true
 		
 		for _, name in ipairs(json_data) do
 			count_array = count_array + 1
 			if(self.player_name == name)then
+			    found_player_in_list = 1
 				Ryzhide:display_debug_messanges("player_name: "..self.player_name.." array_name: "..name)
 				regist_hunter_img:find("img1").texture = "rap_invited_no_dm.tga"
 				regist_hunter_img:find("ctrl").active = false
 			end
 		end
+	end
+	
+	if(found_player_in_list == 0)then
+	    
+	    local regist_hunter_img = mainui:find(action_button)
+		regist_hunter_img:find("img1").texture = ""
+		regist_hunter_img:find("ctrl").active = true
 	end
 	
 	if(count_array == 0)then
