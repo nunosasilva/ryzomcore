@@ -3,6 +3,7 @@ if not Ryzhide then
 	Ryzhide = {
 		main_window_name = "ui:interface:hide_n_hype_main",
 		timer_str = "@UI:VARIABLES:CURRENT_SERVER_TICK",
+		game_is_now_running = 0,
 		pull_data = 10,
 		request_server = 0,
 		json_data_ready = 0,
@@ -57,6 +58,7 @@ if not Ryzhide then
 		player_name = "",
 		
 		json_pull_counter = 0,
+		json_pull_counter_old = 0,
 		manuell_action = 0,
 		
 		round_time_to_start = 0,
@@ -145,6 +147,10 @@ function Ryzhide:update_timer(id,remaining_time_display,duration_display)
 end
 
 function Ryzhide:convert_secound_to_string(secound_to_convert)
+    if(secound_to_convert == nil)then
+        return "00:00"
+    end
+    
 	local minutes = math.floor(secound_to_convert / 60)
 	local secs = secound_to_convert % 60
 	return string.format("%02d:%02d", minutes, secs)
@@ -302,7 +308,7 @@ function Ryzhide:open_resize_main_window(win_h, win_w, render_html_content)
 end
 
 function Ryzhide:close_window(window_id, function_id)
-	if(function_id == "abort_because_do_nothing")then
+	if(function_id == "abort_because_do_nothing" or function_id == "abort_because_in_team")then
 		removeOnDbChange(getUI(self.main_window_name),self.timer_str)
 	end
 	
@@ -316,6 +322,14 @@ function Ryzhide:click_close_button(window_id)
 	
 	if(window_id == "close_window_build_loos_hunter")then
 		self.closed_loos_hunter = 1
+	end
+	
+	if(window_id == "close_window_unregister_window")then
+		removeOnDbChange(getUI(self.main_window_name),self.timer_str)
+	end
+	
+	if(window_id == "close_window_register_window")then
+		removeOnDbChange(getUI(self.main_window_name),self.timer_str)
 	end
 	
 	getUI(self.main_window_name).active=false
@@ -354,6 +368,21 @@ function Ryzhide:distance_calc(x1, y1, z1, x2, y2, z2)
 	local dy = y2 - y1
 	local dz = z2 - z1
 	return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+function Ryzhide:check_have_team_member()
+    local team_member_return = "false"
+    
+    local have_team_member = getUI("ui:interface:team_list_0")
+    if(have_team_member.active ~= nil)then
+        Ryzhide:display_debug_messanges("member: "..tostring(have_team_member.active))
+    	if(have_team_member.active ~= false)then
+    	    Ryzhide:display_debug_messanges("player_join_a_team"..tostring(have_team_member.active))
+    	    team_member_return = "true"
+    	end
+	end
+	
+	return team_member_return
 end
 
 --###################################### START load and start at login function #######################################
@@ -568,6 +597,11 @@ function Ryzhide:build_register_window()
 end
 
 function Ryzhide:open_register_window()
+    if(self.game_is_now_running == 1)then
+        Ryzhide:display_message_to_player('error', 'AMB', Ryzhide:load_translation("hide_n_hype_cannot_open_reg_dereg_window_because_game_is_running"))
+        return
+    end
+    
 	local mainui = getUI(self.main_window_name)
 	Ryzhide:build_register_window()
 	
@@ -595,7 +629,7 @@ function Ryzhide:display_unregister_error(error_msg)
 	self.json_data_ready = 0
 	
 	--unlock register button again
-	local mainui_group = getUI(self.main_window_name):find("reject_accept")
+	local mainui_group = getUI(self.main_window_name):find("unregister_accept")
 	mainui_group:find("img1").texture = ""
 	mainui_group:find("ctrl").active = true
 	
@@ -619,9 +653,10 @@ function Ryzhide:pars_json_data_register()
 						display_register_error(self.hide_n_hide_json_data.error)
 					end
 				elseif (self.hide_n_hide_json_data.success) then
+				    self.player_already_registerd = 1
 					Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_reg_sucesfully"))
-					self.player_already_registerd = 1
 					Ryzhide:build_register_window()
+					Ryzhide:check_data_at_login()
 				else
 					Ryzhide:display_register_error("no 'error' or 'success' found")
 				end
@@ -662,12 +697,6 @@ end
 function Ryzhide:click_icon_registration(id)
 	local mainui = getUI(self.main_window_name)
 
-	if(id == "close_window")then
-		removeOnDbChange(mainui, self.timer_str)
-		Ryzhide:close_window(self.main_window_name, "")
-		return
-	end
-	
 	if(id == "register_accept")then
 		Ryzhide:display_debug_messanges("start_register_now")
 		Ryzhide:start_fetch_json_data("https://app.ryzom.com/app_ryzhide/?mode=register")
@@ -783,6 +812,7 @@ function Ryzhide:open_ask_for_join_window(current_round_time,current_round)
 	end
 	
 	self.current_round_id = tonumber(current_round)
+	self.game_is_now_running = 1
 	
 	Ryzhide:display_debug_messanges("asked_join_id: "..current_round)
 	Ryzhide:display_debug_messanges("reject_invite_round_id: "..self.reject_invite_round_id)
@@ -801,7 +831,14 @@ function Ryzhide:open_ask_for_join_window(current_round_time,current_round)
 	self.json_data_ready = 0
 	self.current_round_start = 0
 	self.json_pull_counter = 0
+	self.json_pull_counter_old = 0
 	self.reward_already_claimed = 0
+	self.manuell_action = 0
+	
+    self.hint_1_text = "????"
+	self.hint_2_text = "????"
+	self.hint_3_text = "????"
+	self.hint_4_text = "????"
 	
 	Ryzhide:check_local_player_name()
 	
@@ -849,6 +886,10 @@ function Ryzhide:pars_json_data_ask_for_join()
 			else
 				Ryzhide:update_timer("hide_n_hype_timer_invite",remaining_time, self.duration_time_invite)
 			end
+		end
+		
+		if(self.json_pull_counter_old > 3 and self.manuell_action == 1)then
+		    self.manuell_action = 0
 		end
 
 		if(self.json_data_ready == 1)then
@@ -1105,7 +1146,6 @@ function Ryzhide:check_and_pars_player_infos(json_data,action_button,action_coun
 	end
 	
 	if(found_player_in_list == 0)then
-	    
 	    local regist_hunter_img = mainui:find(action_button)
 		regist_hunter_img:find("img1").texture = ""
 		regist_hunter_img:find("ctrl").active = true
@@ -1140,9 +1180,16 @@ function Ryzhide:check_and_pars_player_infos(json_data,action_button,action_coun
 end
 
 function Ryzhide:click_icon_ask_for_join(id)
+    local have_team_member = Ryzhide:check_have_team_member()
+	if(have_team_member == "true" and id ~= "reject_accept")then
+	    Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_you_cannot_be_in_team"))
+	    return
+	end
+
 	if(id == "hunte_accept")then
 		self.player_click_to_register = 1
 		self.manuell_action = 1
+		self.json_pull_counter_old = self.json_pull_counter
 		self.need_json_update = 0
 		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=accept_invite&accept_as=hunter')
 	end
@@ -1150,6 +1197,7 @@ function Ryzhide:click_icon_ask_for_join(id)
 	if(id == "hunter_or_mostwanted_accept")then
 		self.player_click_to_register = 1
 		self.manuell_action = 1
+		self.json_pull_counter_old = self.json_pull_counter
 		self.need_json_update = 0
 		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=accept_invite&accept_as=hunter_and_most_wanted')
 	end
@@ -1157,6 +1205,7 @@ function Ryzhide:click_icon_ask_for_join(id)
 	if(id == "mostwanted_accept")then
 		self.player_click_to_register = 1
 		self.manuell_action = 1
+		self.json_pull_counter_old = self.json_pull_counter
 		self.need_json_update = 0
 		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=accept_invite&accept_as=most_wanted')
 	end
@@ -1164,8 +1213,10 @@ function Ryzhide:click_icon_ask_for_join(id)
 	if(id == "reject_accept")then
 		self.player_click_to_register = 1
 		self.manuell_action = 1
+		self.json_pull_counter_old = self.json_pull_counter
 		self.need_json_update = 0
 		self.reject_invite_round_id = tonumber(self.current_round_id)
+		self.game_is_now_running = 0
 		
 		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=accept_invite&accept_as=reject')
 		removeOnDbChange(getUI(self.main_window_name),self.timer_str)
@@ -1241,8 +1292,21 @@ function Ryzhide:wait_most_wanted_timer_stopped()
 end
 
 function Ryzhide:pars_json_data_wait_for_most_wanted()
+	if(self.player_type == "most_wanted")then
+    	local have_team_member = Ryzhide:check_have_team_member()
+        if(have_team_member == "true")then
+            Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_you_cannot_be_in_team"))
+            if(self.spawn_a_object == 2)then
+                Ryzhide:despawn_object(self.save_x_pos, self.save_y_pos, "in_team")
+            else
+                Ryzhide:despawn_object(0, 0, "in_team")
+            end
+            Ryzhide:close_window(self.main_window_name, "abort_because_in_team")
+        end
+	end
+	
 	local mainui = getUI(self.main_window_name)
-
+    
 	if(self.round_time_to_start ~= 0)then
 		local remaining_time = self.round_time_to_start - os.time()
 			
@@ -1287,7 +1351,7 @@ function Ryzhide:pars_json_data_wait_for_most_wanted()
 			if(current_distance > 1)then
 				Ryzhide:display_debug_messanges("you_moved!!!!")
 				
-				Ryzhide:despawn_object(self.save_x_pos, self.save_y_pos)
+				Ryzhide:despawn_object(self.save_x_pos, self.save_y_pos, "")
 	
 				local regist_hunter_text = mainui:find("ready_most_wanted_text")
 				regist_hunter_text:find("text").hardtext = Ryzhide:load_translation("hide_n_hype_not_ready")
@@ -1407,11 +1471,17 @@ function Ryzhide:build_most_wanted_window()
 end
 
 function Ryzhide:spawn_object(sheet_id)
-	webig:openUrlInBg("https://app.ryzom.com/app_arcc/index.php?action=mScript_Run&script=12811&command=reset_all&sheet_to_spawn="..sheet_id)
+    local have_team_member = Ryzhide:check_have_team_member()
+	if(have_team_member == "true")then
+	    Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_you_cannot_be_in_team"))
+	    return
+	else
+	    webig:openUrlInBg("https://app.ryzom.com/app_arcc/index.php?action=mScript_Run&script=12811&command=reset_all&sheet_to_spawn="..sheet_id)
+	end
 end
 
-function Ryzhide:despawn_object(old_x, old_y)
-	webig:openUrlInBg("https://app.ryzom.com/app_arcc/index.php?action=mScript_Run&script=12835&command=reset_all&play_pos_x="..old_x.."&play_pos_y="..old_y)
+function Ryzhide:despawn_object(old_x, old_y, reason_why)
+	webig:openUrlInBg("https://app.ryzom.com/app_arcc/index.php?action=mScript_Run&script=12835&command=reset_all&play_pos_x="..old_x.."&play_pos_y="..old_y.."&reason_why="..reason_why)
 end
 
 
@@ -1495,8 +1565,14 @@ end
 function Ryzhide:check_player_are_in_special_state()
 	local current_player_mode = getPlayerMode()
 	local current_player_invisible = getDbProp("SERVER:USER:IS_INVISIBLE")
+	local have_team_member = "false"
 	
 	local player_special_state = 0
+	
+	local have_team_member = Ryzhide:check_have_team_member()
+	if(have_team_member == "true")then
+	    player_special_state = 69
+	end
 	
 	if(self.json_pull_counter > 3)then
 		--now the tatus need to be fine and not allow to break
@@ -1908,6 +1984,7 @@ function Ryzhide:game_over_most_wanted_not_found(most_wanted_name,current_round_
 		return
 	end
 	
+	self.game_is_now_running = 0
 	local mainui = getUI(self.main_window_name)
 	removeOnDbChange(mainui,self.timer_str)
 	
@@ -1946,6 +2023,8 @@ function Ryzhide:game_over_most_wanted_found(hunter_name,most_wanted_name,curren
 	Ryzhide:display_debug_messanges("game_over_most_wanted_found: "..timer_claim_reward)
 	Ryzhide:display_debug_messanges("hunter: "..hunter_name)
 	Ryzhide:display_debug_messanges("most_wanted: "..most_wanted_name)
+	
+	self.game_is_now_running = 0
 	local mainui = getUI(self.main_window_name)
 	removeOnDbChange(mainui,self.timer_str)
 	
@@ -2293,6 +2372,8 @@ function Ryzhide:build_most_wanted_moved()
 end
 
 function Ryzhide:abort_because_of(process_info_name,round_id)
+    self.game_is_now_running = 0
+
 	if(self.game_is_full_loaded == 0)then
 		Ryzhide:display_debug_messanges("game_not_loaded -- abort_because_of: "..process_info_name)
 		return
