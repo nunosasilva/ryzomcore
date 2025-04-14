@@ -5514,11 +5514,50 @@ NLMISC_COMMAND(setSpecial,"set special values","uid special value")
 
 	GET_ACTIVE_CHARACTER
 
-	uint32 value;
-
-	if (args[1] == "speedswimbonus") {
+	if (args[1] == "speedswimbonus")
+	{
+		uint32 value;
 		NLMISC::fromString(args[2], value);
 		c->setCurrentSpeedSwimBonus(value);
 	}
+
+	if (args[1] == "invisible")
+	{
+		if (args[2] == "1" || strlwr(args[2]) == "on" || strlwr(args[2]) == "true")
+		{
+
+			// check if player is invulnerable, if so do not apply goo damage
+			bool invulnerable = false;
+			CSEffect* effect = c->lookForActiveEffect(EFFECT_FAMILIES::PowerInvulnerability);
+			if (!effect)
+				effect = c->lookForActiveEffect(EFFECT_FAMILIES::Invincibility);
+
+			if (!effect)
+			{
+				c->setInvisibility(true);
+				c->setWhoSeesMe(0);
+				c->setAggroableOverride(false);
+				c->setAggroableSave(false);
+				c->setAfkState(true);
+				log.displayNL("OK");
+			}
+			else
+				log.displayNL("ERR:INVU");
+		}
+		else
+		{
+			c->setInvisibility(false);
+			c->setWhoSeesMe(~0);
+			c->setAggroableOverride(true);
+			c->setAggroableSave(true);
+			c->setAfkState(false);
+			log.displayNL("OK");
+		}
+	}
+	return true;
 }
+
+
+
+
 
