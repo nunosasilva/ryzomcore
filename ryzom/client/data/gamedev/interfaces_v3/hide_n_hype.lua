@@ -362,13 +362,13 @@ function Ryzhide:htmlentities(text)
 	local html_trans_content = ""
 	local html_client_translation = ""
 	
-	html_client_translation = tostring(i18n.get(text):toUtf8())
+	html_client_translation = i18n.get(text):toUtf8()
 
 	html_trans_content = html_client_translation:gsub("<NotExist:", "{")
 	html_trans_content = html_trans_content:gsub(">", "}")
 	html_trans_content = html_trans_content:gsub("'", "`")
 	
-	return  tostring(html_trans_content)
+	return html_trans_content
 end
 
 function Ryzhide:check_local_player_name()
@@ -2048,7 +2048,6 @@ function Ryzhide:game_over_most_wanted_not_found(most_wanted_name,current_round_
 		return
 	end
 	
-	
 	if(tonumber(self.reject_invite_round_id) == tonumber(current_round_id))then
 		return
 	end
@@ -2074,6 +2073,7 @@ function Ryzhide:game_over_most_wanted_not_found(most_wanted_name,current_round_
 			addOnDbChange(mainui, self.timer_str, "Ryzhide:timer_to_claim_rewards("..timer_claim_reward..")")
 		end
 	else
+	    Ryzhide:display_debug_messanges("already_close"..self.closed_most_wanted_not_found_hunter)
 		if(self.closed_most_wanted_not_found_hunter == 0)then
 			Ryzhide:build_most_wanted_not_found_hunter(most_wanted_name)
 		end
