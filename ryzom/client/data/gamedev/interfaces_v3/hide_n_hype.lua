@@ -96,7 +96,8 @@ if not Ryzhide then
 		duration_time_hint_2 = 180,
 		duration_time_hint_3 = 150,
 		duration_time_claim_reward = 180,
-		duration_time_most_wanted_offline = 180
+		duration_time_most_wanted_offline = 180,
+		needed_player_amount_to_start = 4
 	}
 end
 
@@ -403,6 +404,43 @@ function Ryzhide:check_have_team_member()
 	return team_member_return
 end
 
+function Ryzhide:check_for_update_server_config(json_data_from_join)
+	if(json_data_from_join == nil)then
+		return
+	end
+	
+	if(self.needed_player_amount_to_start ~= tonumber(json_data_from_join.needed_player_amount_to_start))then
+		--load needed_player_amount_to_start from server
+		self.needed_player_amount_to_start = tonumber(json_data_from_join.needed_player_amount_to_start)
+	end
+	
+	--set timer times load from server
+	if(self.duration_time_invite ~= tonumber(self.hide_n_hide_json_data.duration_time_invite))then
+		self.duration_time_invite = tonumber(self.hide_n_hide_json_data.duration_time_invite)
+	end
+	if(self.duration_time_prepartion ~= tonumber(self.hide_n_hide_json_data.duration_time_prepartion))then
+	self.duration_time_prepartion = tonumber(self.hide_n_hide_json_data.duration_time_prepartion)
+	end
+	if(self.duration_time_game_running ~= tonumber(self.hide_n_hide_json_data.duration_time_game_running))then
+		self.duration_time_game_running = tonumber(self.hide_n_hide_json_data.duration_time_game_running)
+	end
+	if(self.duration_time_hint_1 ~= tonumber(self.hide_n_hide_json_data.duration_time_hint_1))then
+		self.duration_time_hint_1 = tonumber(self.hide_n_hide_json_data.duration_time_hint_1)
+	end
+	if(self.duration_time_hint_2 ~= tonumber(self.hide_n_hide_json_data.duration_time_hint_2))then
+		self.duration_time_hint_2 = tonumber(self.hide_n_hide_json_data.duration_time_hint_2)
+	end
+	if(self.duration_time_hint_3 ~= tonumber(self.hide_n_hide_json_data.duration_time_hint_3))then
+		self.duration_time_hint_3 = tonumber(self.hide_n_hide_json_data.duration_time_hint_3)
+	end
+	if(self.duration_time_claim_reward ~= tonumber(self.hide_n_hide_json_data.duration_time_claim_reward))then
+		self.duration_time_claim_reward = tonumber(self.hide_n_hide_json_data.duration_time_claim_reward)
+	end
+	if(self.duration_time_most_wanted_offline ~= tonumber(self.hide_n_hide_json_data.duration_time_most_wanted_offline))then
+		self.duration_time_most_wanted_offline = tonumber(self.hide_n_hide_json_data.duration_time_most_wanted_offline)
+	end
+end
+
 --###################################### START load and start at login function #######################################
 
 
@@ -439,15 +477,18 @@ function Ryzhide:pars_json_data_login()
 				--set flag player is registrated
 				self.player_already_registerd = 1
 				
+				--load needed_player_amount_to_start from server
+				self.needed_player_amount_to_start = tonumber(self.hide_n_hide_json_data.needed_player_amount_to_start)
+				
 				--set timer times load from server
-				self.duration_time_invite = self.hide_n_hide_json_data.duration_time_invite
-				self.duration_time_prepartion = self.hide_n_hide_json_data.duration_time_prepartion
-				self.duration_time_game_running = self.hide_n_hide_json_data.duration_time_game_running
-				self.duration_time_hint_1 = self.hide_n_hide_json_data.duration_time_hint_1
-				self.duration_time_hint_2 = self.hide_n_hide_json_data.duration_time_hint_2
-				self.duration_time_hint_3 = self.hide_n_hide_json_data.duration_time_hint_3
-				self.duration_time_claim_reward = self.hide_n_hide_json_data.duration_time_claim_reward
-				self.duration_time_most_wanted_offline = self.hide_n_hide_json_data.duration_time_most_wanted_offline
+				self.duration_time_invite = tonumber(self.hide_n_hide_json_data.duration_time_invite)
+				self.duration_time_prepartion = tonumber(self.hide_n_hide_json_data.duration_time_prepartion)
+				self.duration_time_game_running = tonumber(self.hide_n_hide_json_data.duration_time_game_running)
+				self.duration_time_hint_1 = tonumber(self.hide_n_hide_json_data.duration_time_hint_1)
+				self.duration_time_hint_2 = tonumber(self.hide_n_hide_json_data.duration_time_hint_2)
+				self.duration_time_hint_3 = tonumber(self.hide_n_hide_json_data.duration_time_hint_3)
+				self.duration_time_claim_reward = tonumber(self.hide_n_hide_json_data.duration_time_claim_reward)
+				self.duration_time_most_wanted_offline = tonumber(self.hide_n_hide_json_data.duration_time_most_wanted_offline)
 				
 				Ryzhide:display_debug_messanges("ready: "..self.hide_n_hide_json_data.ready)
 				Ryzhide:display_debug_messanges("player_round_id: "..self.hide_n_hide_json_data.player_round_id)
@@ -921,6 +962,9 @@ function Ryzhide:pars_json_data_ask_for_join()
 					self.manuell_action = 0
 				elseif (self.hide_n_hide_json_data.success) then
 					if(self.hide_n_hide_json_data.success == "asked_to_join")then
+						--check we need update timed and needed player from server
+						Ryzhide:check_for_update_server_config(self.hide_n_hide_json_data)
+						
 						self.json_pull_counter = self.json_pull_counter + 1
 						--Ryzhide:display_asked_for_join_sucess(self.hide_n_hide_json_data.success)
 						self.json_data_ready = 0
@@ -928,7 +972,7 @@ function Ryzhide:pars_json_data_ask_for_join()
 						if(self.json_pull_counter == 1)then
 							Ryzhide:inti_invite_window(self.hide_n_hide_json_data)
 						elseif(self.json_pull_counter == 2)then
-							Ryzhide:build_invite_window(1212,2)
+							Ryzhide:build_invite_window()
 						elseif(self.json_pull_counter > 2)then
 							if(self.manuell_action == 0)then
 								Ryzhide:update_invite_window(self.hide_n_hide_json_data)
@@ -1110,11 +1154,15 @@ function Ryzhide:update_invite_window(json_data)
 	local player_online_text = mainui:find("player_online_text")
 	player_online_text:find("text").hardtext = json_data.reg_online_player
 	
-	if(tonumber(self.register_player_online) >= 3)then
+	Ryzhide:display_debug_messanges("reg_player: "..tonumber(json_data.reg_online_player).." needed_player: "..tonumber(self.needed_player_amount_to_start))
+	
+	if(tonumber(json_data.reg_online_player) >= tonumber(self.needed_player_amount_to_start))then
 		--set to green all ok
+		Ryzhide:display_debug_messanges("set_to_green")
 		player_online_text:find("text").color = "0 255 0 255"
 	else
-		--set to red all ok
+		--set to red not ok
+		Ryzhide:display_debug_messanges("set_to_red")
 		player_online_text:find("text").color = "255 0 0 255"
 	end
 	
