@@ -1604,6 +1604,7 @@ function Ryzhide:game_running_timer_stopped()
 	Ryzhide:display_debug_messanges("Timer_is_over_and_game_over")
 	self.need_json_update = 1
 	self.json_data_ready = 0
+	delArkPoints()
 	
 	Ryzhide:build_wait_start_window()
 end
@@ -1630,7 +1631,7 @@ function Ryzhide:check_player_are_in_special_state()
 		player_special_state = 69
 	end
 	
-	if(self.json_pull_counter > 4)then
+	if(self.json_pull_counter > 6)then
 		--now the tatus need to be fine and not allow to break
 		if(current_player_mode ~= "REST" or current_player_invisible == 0)then
 			player_special_state = 69
@@ -1641,12 +1642,11 @@ function Ryzhide:check_player_are_in_special_state()
 end
 
 function Ryzhide:pars_json_data_game_running_most_wanted()
-		self.save_x_pos,self.save_y_pos,self.save_z_pos = getPlayerPos()
 		local special_state = Ryzhide:check_player_are_in_special_state()
 
 		if(self.need_json_update == 1)then
 			self.need_json_update = 0
-			Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=heartbeat&x='..self.save_x_pos..'&y='..self.save_y_pos..'&z='..self.save_z_pos..'&special_state='..special_state)
+			Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=heartbeat&special_state='..special_state)
 		end
 		
 		if(self.current_round_end ~= 0)then
@@ -1671,6 +1671,7 @@ function Ryzhide:pars_json_data_game_running_most_wanted()
 					if(self.hide_n_hide_json_data.success == "ok_most_wanted_heartbeat")then
 						self.json_pull_counter = self.json_pull_counter + 1
 						--Ryzhide:display_game_running_sucess("sucess_heartbeat: "..self.hide_n_hide_json_data.success)
+						Ryzhide:display_hunter_on_map(self.hide_n_hide_json_data.hunter_pos_array)
 						self.json_data_ready = 0
 					end
 				else
@@ -1682,6 +1683,22 @@ function Ryzhide:pars_json_data_game_running_most_wanted()
 			
 			self.need_json_update = 1
 		end
+end
+
+function Ryzhide:display_hunter_on_map(hunter_pos_array)
+    if (type(hunter_pos_array) == "boolean") then
+        --reset only the map flags
+        delArkPoints()
+	else
+	    delArkPoints()
+		for _, positions in ipairs(hunter_pos_array) do
+            local xpos_hunter, ypos_hunter = positions:match("([^,]+),([^,]+)")
+            if(tonumber(xpos_hunter) ~= 0 or tonumber(ypos_hunter)~= 0)then
+                Ryzhide:display_debug_messanges("Hx:"..xpos_hunter.." Hy: "..ypos_hunter)
+                addLandMark(tonumber(xpos_hunter), tonumber(ypos_hunter), Ryzhide:load_translation("hide_n_hype_hunter"), "teammate_map.png","","","","","","")
+		    end
+		end
+	end
 end
 
 function Ryzhide:update_hint_data()
@@ -1777,7 +1794,12 @@ end
 function Ryzhide:pars_json_data_game_running_hunter()
 	if(self.need_json_update == 1 and self.manuell_action == 0)then
 		self.need_json_update = 0
-		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=jsonData&need_json_data=running_game')
+		local send_to_server_x = 0
+		local send_to_server_y = 0
+		local send_to_server_z = 0
+		
+		send_to_server_x,send_to_server_y,send_to_server_z = getPlayerPos()
+		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=jsonData&need_json_data=running_game&x='..send_to_server_x..'&y='..send_to_server_y)
 		Ryzhide:unlock_hints()
 	end
 	
@@ -2098,6 +2120,7 @@ function Ryzhide:game_over_most_wanted_found(hunter_name,most_wanted_name,curren
 	removeOnDbChange(mainui,self.timer_str)
 	
 	Ryzhide:check_local_player_name()
+	delArkPoints()
 	
 	if(self.player_name == most_wanted_name)then
 		if(self.reward_already_claimed == 0)then
