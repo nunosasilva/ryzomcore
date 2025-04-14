@@ -2448,7 +2448,7 @@ function Ryzhide:build_ask_for_abort_skip_game()
 	html_ask_for_abort_skip_game=[[<title>]]..Ryzhide:load_translation("hide_n_hype_you_realy_want_window")..[[</title>
 		<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
-				<td align="center" colspan="2"><img src="icon_unhappy.png" width="80" height="80" ></td>
+				<td align="center" colspan="2"><img src="icon_sad.png" width="80" height="80" ></td>
 			</tr>
 			
 			<tr>
@@ -2475,7 +2475,7 @@ function Ryzhide:build_ask_for_abort_unregister()
 	html_ask_for_abort_unregister=[[<title>]]..Ryzhide:load_translation("hide_n_hype_you_realy_want_window")..[[</title>
 		<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
-				<td align="center" colspan="2"><img src="icon_unhappy.png" width="80" height="80" ></td>
+				<td align="center" colspan="2"><img src="icon_sad.png" width="80" height="80" ></td>
 			</tr>
 			
 			<tr>
