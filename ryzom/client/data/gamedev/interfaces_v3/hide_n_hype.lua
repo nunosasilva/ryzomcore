@@ -167,7 +167,7 @@ function Ryzhide:position_json_load_window()
 	main_window_h = mainui.h
 	main_window_w = mainui.w
 	
-	if(main_window_x == 0 or main_window_y == 0 or main_window_h == 0 or main_window_w == 0)then
+	if(main_window_h == 0 or main_window_w == 0)then
 		local interface_window = getUI("ui:interface")
 		
 		self.main_window_old_x = 0
