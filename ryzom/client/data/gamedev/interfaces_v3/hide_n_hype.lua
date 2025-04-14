@@ -2,6 +2,7 @@ if not Ryzhide then
 	-- global Ryzhide class
 	Ryzhide = {
 		main_window_name = "ui:interface:hide_n_hype_main",
+		abort_window_name = "ui:interface:hide_n_hype_asked_abort",
 		timer_str = "@UI:VARIABLES:CURRENT_SERVER_TICK",
 		game_is_now_running = 0,
 		pull_data = 10,
@@ -147,10 +148,10 @@ function Ryzhide:update_timer(id,remaining_time_display,duration_display)
 end
 
 function Ryzhide:convert_secound_to_string(secound_to_convert)
-    if(secound_to_convert == nil)then
-        return "00:00"
-    end
-    
+	if(secound_to_convert == nil)then
+		return "00:00"
+	end
+	
 	local minutes = math.floor(secound_to_convert / 60)
 	local secs = secound_to_convert % 60
 	return string.format("%02d:%02d", minutes, secs)
@@ -285,9 +286,12 @@ function Ryzhide:display_message_to_player(msg_type, msg_option, msg_text)
 	displaySystemInfo(msg, msg_option)
 end
 
-function Ryzhide:open_resize_main_window(win_h, win_w, render_html_content)
-	local mainui = getUI(self.main_window_name)
+function Ryzhide:open_resize_window(window_id, win_h, win_w, render_html_content, close_function_id, close_function_parameter)
+	local mainui = getUI(window_id)
 	local mainui_html = mainui:find("html")
+	local mainui_close_button = mainui:find("rightbut")
+
+mainui.active = true
 	
 	if(mainui.active == false)then
 		mainui.active = true
@@ -297,11 +301,21 @@ function Ryzhide:open_resize_main_window(win_h, win_w, render_html_content)
 		mainui.opened = true
 	end
 	
+	if(close_function_id == "")then
+		mainui_close_button.active = false
+		mainui_close_button.onclick_l = ""
+		mainui_close_button.params_l =  ""
+	else
+		mainui_close_button.active = true
+		mainui_close_button.onclick_l = "lua"
+		mainui_close_button.params_l = "Ryzhide:"..close_function_id.."("..close_function_parameter..")"
+	end
+	
 	mainui.h = win_h
 	mainui.w = win_w
 
 	mainui_heade_open = mainui:find("header_opened")
-	mainui_heade_open.h = win_h
+	mainui_heade_open.h = 10
 	mainui_heade_open.w = win_w
 	
 	mainui_html:renderHtml(render_html_content)
@@ -312,7 +326,9 @@ function Ryzhide:close_window(window_id, function_id)
 		removeOnDbChange(getUI(self.main_window_name),self.timer_str)
 	end
 	
-	getUI(window_id).active=false
+	if(getUI(window_id) ~= nil)then
+		getUI(window_id).active=false
+	end
 end
 
 function Ryzhide:click_close_button(window_id)
@@ -332,7 +348,9 @@ function Ryzhide:click_close_button(window_id)
 		removeOnDbChange(getUI(self.main_window_name),self.timer_str)
 	end
 	
-	getUI(self.main_window_name).active=false
+	if(getUI(self.main_window_name) ~= nil)then
+		getUI(self.main_window_name).active=false
+	end
 end
 
 function Ryzhide:load_translation(translation_var)
@@ -371,15 +389,15 @@ function Ryzhide:distance_calc(x1, y1, z1, x2, y2, z2)
 end
 
 function Ryzhide:check_have_team_member()
-    local team_member_return = "false"
-    
-    local have_team_member = getUI("ui:interface:team_list_0")
-    if(have_team_member.active ~= nil)then
-        Ryzhide:display_debug_messanges("member: "..tostring(have_team_member.active))
-    	if(have_team_member.active ~= false)then
-    	    Ryzhide:display_debug_messanges("player_join_a_team"..tostring(have_team_member.active))
-    	    team_member_return = "true"
-    	end
+	local team_member_return = "false"
+	
+	local have_team_member = getUI("ui:interface:team_list_0")
+	if(have_team_member.active ~= nil)then
+		Ryzhide:display_debug_messanges("member: "..tostring(have_team_member.active))
+		if(have_team_member.active ~= false)then
+			Ryzhide:display_debug_messanges("player_join_a_team"..tostring(have_team_member.active))
+			team_member_return = "true"
+		end
 	end
 	
 	return team_member_return
@@ -513,19 +531,14 @@ end
 --###################################### START build and load registration window #######################################
 
 function Ryzhide:build_register_window()
-	local window_height = 225
+	local window_height = 270
 	local window_width = 365
-	local table_width = window_width - 15
 	
 	local html_ungister = ""
 	html_ungister=[[<title>]]..Ryzhide:load_translation("hide_n_hype_unregister_window")..[[</title>
-		<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+		<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
-				<td align="right"><div id="close_window_unregister_window" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:close_window_unregister_window;bg:w_win_close.png;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_to_close")..[[;lua_function:click_close_button;w:16;h:16;'></div></td>
-			</tr>
-			
-			<tr>
-				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype")..[[</h2></td>
+				<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype")..[[</h3></td>
 			</tr>
 			
 			<tr>
@@ -555,13 +568,9 @@ function Ryzhide:build_register_window()
 	
 	local html_register = ""
 	html_register=[[<title>]]..Ryzhide:load_translation("hide_n_hype_register_window")..[[</title>
-		<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+		<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
-				<td align="right"><div id="close_window_register_window" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:close_window_register_window;bg:w_win_close.png;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_to_close")..[[;lua_function:click_close_button;w:16;h:16;'></div></td>
-			</tr>
-			
-			<tr>
-				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype")..[[</h2></td>
+				<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype")..[[</h3></td>
 			</tr>
 			
 			<tr>
@@ -590,18 +599,18 @@ function Ryzhide:build_register_window()
 			</table>]]
 			
 	if(self.player_already_registerd == 1)then
-		Ryzhide:open_resize_main_window(window_height, window_width, html_ungister)
+		Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_ungister, "click_close_button","close_window_unregister_window")
 	else
-		Ryzhide:open_resize_main_window(window_height, window_width, html_register)
+		Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_register, "click_close_button","close_window_register_window")
 	end
 end
 
 function Ryzhide:open_register_window()
-    if(self.game_is_now_running == 1)then
-        Ryzhide:display_message_to_player('error', 'AMB', Ryzhide:load_translation("hide_n_hype_cannot_open_reg_dereg_window_because_game_is_running"))
-        return
-    end
-    
+	if(self.game_is_now_running == 1)then
+		Ryzhide:display_message_to_player('error', 'AMB', Ryzhide:load_translation("hide_n_hype_cannot_open_reg_dereg_window_because_game_is_running"))
+		return
+	end
+	
 	local mainui = getUI(self.main_window_name)
 	Ryzhide:build_register_window()
 	
@@ -645,18 +654,21 @@ function Ryzhide:pars_json_data_register()
 						Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_already_registerd"))
 						self.player_already_registerd = 1
 						Ryzhide:build_register_window()
+						self.json_data_ready = 0
 					elseif(self.hide_n_hide_json_data.error == "no_active_hide")then
-					    Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_no_active_hide"))
+						Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_no_active_hide"))
 						self.player_already_registerd = 0
 						Ryzhide:close_window(self.main_window_name, "")
+						self.json_data_ready = 0
 					else
 						display_register_error(self.hide_n_hide_json_data.error)
 					end
 				elseif (self.hide_n_hide_json_data.success) then
-				    self.player_already_registerd = 1
+					self.player_already_registerd = 1
 					Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_reg_sucesfully"))
 					Ryzhide:build_register_window()
 					Ryzhide:check_data_at_login()
+					self.json_data_ready = 0
 				else
 					Ryzhide:display_register_error("no 'error' or 'success' found")
 				end
@@ -671,10 +683,12 @@ function Ryzhide:pars_json_data_register()
 					if(self.hide_n_hide_json_data.error == "not_registerd")then
 						Ryzhide:display_unregister_error(Ryzhide:load_translation("hide_n_hype_not_registerd"))
 						self.player_already_registerd = 0
+						self.json_data_ready = 0
 						Ryzhide:build_register_window()
 					elseif(self.hide_n_hide_json_data.error == "no_active_hide")then
-					    Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_no_active_hide"))
+						Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_no_active_hide"))
 						self.player_already_registerd = 0
+						self.json_data_ready = 0
 						Ryzhide:close_window(self.main_window_name, "")
 					else
 						Ryzhide:display_unregister_error(self.hide_n_hide_json_data.error)
@@ -682,6 +696,7 @@ function Ryzhide:pars_json_data_register()
 				elseif (self.hide_n_hide_json_data.success) then
 					Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_unreg_sucesfully"))
 					self.player_already_registerd = 0
+					self.json_data_ready = 0
 					Ryzhide:build_register_window()
 				else
 					Ryzhide:display_unregister_error("no 'error' or 'success' found")
@@ -703,8 +718,7 @@ function Ryzhide:click_icon_registration(id)
 	end
 	
 	if(id == "unregister_accept")then
-		Ryzhide:display_debug_messanges("start_unregister_now")
-		Ryzhide:start_fetch_json_data("https://app.ryzom.com/app_ryzhide/?mode=unregister")
+		Ryzhide:build_ask_for_abort_unregister()
 	end
 	
 	local mainui_group = getUI(self.main_window_name):find(id)
@@ -720,13 +734,13 @@ end
 
 --###################################### START build and load invite window #######################################
 function Ryzhide:build_invite_window()
-	local window_height = 295
-	local window_width = 365
-	local table_width = window_width - 15
+	local window_height = 360
+	local window_width = 400
+	
 	
 	local html_invite_window=""
-	html_invite_window=[[<title>]]..Ryzhide:load_translation("hide_n_hype_a_new_hide_start_soon_window")..[[</title><br>
-			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+	html_invite_window=[[<title>]]..Ryzhide:load_translation("hide_n_hype_a_new_hide_start_soon_window")..[[</title>
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
 				<td align="center" colspan="2"><div id="hide_n_hype_timer_invite" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_invite;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_invite)..[[;'></div></td>
@@ -781,24 +795,24 @@ function Ryzhide:build_invite_window()
 			</tr>
 			</table>]]
 			
-	Ryzhide:open_resize_main_window(window_height, window_width, html_invite_window)
+	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_invite_window, "", "")
 end
 
 
 function Ryzhide:build_wait_start_window()
-	local window_height = 40
-	local window_width = 380
-	local table_width = window_width - 15
+	local window_height = 100
+	local window_width = 350
+	
 
 	local html_wait_for_start=""
-	html_wait_for_start=[[<title></title>
-			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+	html_wait_for_start=[[<title>....?!</title>
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
-				<td align="center"><h1>]]..Ryzhide:load_translation("hide_n_hype_wait_for_game_start")..[[</h1></td>
+				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_wait_for_game_start")..[[</h2></td>
 			</tr>
 			</table>]]
 			
-	Ryzhide:open_resize_main_window(window_height, window_width, html_wait_for_start)
+	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_wait_for_start, "", "")
 end
 
 function Ryzhide:open_ask_for_join_window(current_round_time,current_round)
@@ -835,7 +849,7 @@ function Ryzhide:open_ask_for_join_window(current_round_time,current_round)
 	self.reward_already_claimed = 0
 	self.manuell_action = 0
 	
-    self.hint_1_text = "????"
+	self.hint_1_text = "????"
 	self.hint_2_text = "????"
 	self.hint_3_text = "????"
 	self.hint_4_text = "????"
@@ -888,8 +902,8 @@ function Ryzhide:pars_json_data_ask_for_join()
 			end
 		end
 		
-		if(self.json_pull_counter_old > 3 and self.manuell_action == 1)then
-		    self.manuell_action = 0
+		if(self.json_pull_counter_old < self.json_pull_counter and self.manuell_action == 1)then
+			self.manuell_action = 0
 		end
 
 		if(self.json_data_ready == 1)then
@@ -898,7 +912,7 @@ function Ryzhide:pars_json_data_ask_for_join()
 					if(self.hide_n_hide_json_data.error == "not_registerd")then
 						Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_not_registerd"))
 					elseif(self.hide_n_hide_json_data.error == "not_allow_again")then
-					    Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_not_allow_again"))
+						Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_not_allow_again"))
 					else
 						Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_"..self.hide_n_hide_json_data.error))
 					end
@@ -937,6 +951,7 @@ function Ryzhide:pars_json_data_ask_for_join()
 						local message = Ryzhide:load_translation("hide_n_hype_ok_player_accept").." : "..Ryzhide:load_translation(message_as)
 						Ryzhide:display_asked_for_join_sucess(message)
 						self.manuell_action = 0
+						self.json_data_ready = 0
 					end
 				else
 					Ryzhide:display_asked_for_join_error("no 'error' or 'success' found")
@@ -982,7 +997,7 @@ function Ryzhide:inti_invite_window(json_data)
 		for _, name in ipairs(json_data.hunter_list) do
 			self.hunter_array = self.hunter_array + 1
 			if(self.player_name == name)then
-			    found_hunter = 1
+				found_hunter = 1
 				self.regist_as_hunter = 1
 				self.hunter_accept_image = "rap_invited_no_dm.tga"
 				self.hunter_accept_active = "false"
@@ -991,8 +1006,8 @@ function Ryzhide:inti_invite_window(json_data)
 	end
 	
 	if(found_hunter == 0)then
-	    self.hunter_accept_image = ""
-	    self.hunter_accept_active = "true"
+		self.hunter_accept_image = ""
+		self.hunter_accept_active = "true"
 	end
 	
 	if(self.hunter_array == 0)then
@@ -1011,7 +1026,7 @@ function Ryzhide:inti_invite_window(json_data)
 		for _, name in ipairs(json_data.hunter_and_most_wanted_list) do
 			self.hunter_or_most_wanted_array = self.hunter_or_most_wanted_array + 1
 			if(self.player_name == name)then
-			    found_most_wanted_hunter = 1
+				found_most_wanted_hunter = 1
 				self.regist_as_hunter_or_most_wanted = 1
 				self.hunter_or_most_wanted_accept_image = "rap_invited_no_dm.tga"
 				self.hunter_or_most_wanted_accept_active = "false"
@@ -1020,8 +1035,8 @@ function Ryzhide:inti_invite_window(json_data)
 	end
 	
 	if(found_most_wanted_hunter == 0)then
-	    self.hunter_or_most_wanted_accept_image = ""
-	    self.hunter_or_most_wanted_accept_active = "true"
+		self.hunter_or_most_wanted_accept_image = ""
+		self.hunter_or_most_wanted_accept_active = "true"
 	end
 	
 	if(self.hunter_or_most_wanted_array == 0)then
@@ -1040,7 +1055,7 @@ function Ryzhide:inti_invite_window(json_data)
 		for _, name in ipairs(json_data.most_wanted_list) do
 			self.most_wanted_array = self.most_wanted_array + 1
 			if(self.player_name == name)then
-			    found_most_wanted = 1
+				found_most_wanted = 1
 				self.regist_as_most_wanted = 1
 				self.most_wanted_accept_image = "rap_invited_no_dm.tga"
 				self.most_wanted_accept_active = "false"
@@ -1049,8 +1064,8 @@ function Ryzhide:inti_invite_window(json_data)
 	end
 	
 	if(found_most_wanted == 0)then
-	    self.most_wanted_accept_image = ""
-	    self.most_wanted_accept_active = "true"
+		self.most_wanted_accept_image = ""
+		self.most_wanted_accept_active = "true"
 	end
 	
 	if(self.most_wanted_array == 0)then
@@ -1137,7 +1152,7 @@ function Ryzhide:check_and_pars_player_infos(json_data,action_button,action_coun
 		for _, name in ipairs(json_data) do
 			count_array = count_array + 1
 			if(self.player_name == name)then
-			    found_player_in_list = 1
+				found_player_in_list = 1
 				Ryzhide:display_debug_messanges("player_name: "..self.player_name.." array_name: "..name)
 				regist_hunter_img:find("img1").texture = "rap_invited_no_dm.tga"
 				regist_hunter_img:find("ctrl").active = false
@@ -1146,7 +1161,7 @@ function Ryzhide:check_and_pars_player_infos(json_data,action_button,action_coun
 	end
 	
 	if(found_player_in_list == 0)then
-	    local regist_hunter_img = mainui:find(action_button)
+		local regist_hunter_img = mainui:find(action_button)
 		regist_hunter_img:find("img1").texture = ""
 		regist_hunter_img:find("ctrl").active = true
 	end
@@ -1180,16 +1195,16 @@ function Ryzhide:check_and_pars_player_infos(json_data,action_button,action_coun
 end
 
 function Ryzhide:click_icon_ask_for_join(id)
-    local have_team_member = Ryzhide:check_have_team_member()
+	local have_team_member = Ryzhide:check_have_team_member()
 	if(have_team_member == "true" and id ~= "reject_accept")then
-	    Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_you_cannot_be_in_team"))
-	    return
+		Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_you_cannot_be_in_team"))
+		return
 	end
 
 	if(id == "hunte_accept")then
 		self.player_click_to_register = 1
 		self.manuell_action = 1
-		self.json_pull_counter_old = self.json_pull_counter
+		self.json_pull_counter_old = self.json_pull_counter + 3
 		self.need_json_update = 0
 		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=accept_invite&accept_as=hunter')
 	end
@@ -1197,7 +1212,7 @@ function Ryzhide:click_icon_ask_for_join(id)
 	if(id == "hunter_or_mostwanted_accept")then
 		self.player_click_to_register = 1
 		self.manuell_action = 1
-		self.json_pull_counter_old = self.json_pull_counter
+		self.json_pull_counter_old = self.json_pull_counter + 3
 		self.need_json_update = 0
 		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=accept_invite&accept_as=hunter_and_most_wanted')
 	end
@@ -1205,23 +1220,13 @@ function Ryzhide:click_icon_ask_for_join(id)
 	if(id == "mostwanted_accept")then
 		self.player_click_to_register = 1
 		self.manuell_action = 1
-		self.json_pull_counter_old = self.json_pull_counter
+		self.json_pull_counter_old = self.json_pull_counter + 3
 		self.need_json_update = 0
 		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=accept_invite&accept_as=most_wanted')
 	end
 	
 	if(id == "reject_accept")then
-		self.player_click_to_register = 1
-		self.manuell_action = 1
-		self.json_pull_counter_old = self.json_pull_counter
-		self.need_json_update = 0
-		self.reject_invite_round_id = tonumber(self.current_round_id)
-		self.game_is_now_running = 0
-		
-		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=accept_invite&accept_as=reject')
-		removeOnDbChange(getUI(self.main_window_name),self.timer_str)
-		Ryzhide:close_window(self.main_window_name, "")
-		return
+		Ryzhide:build_ask_for_abort_skip_game()
 	end
 
 	local mainui_group = getUI(self.main_window_name):find(id)
@@ -1293,20 +1298,20 @@ end
 
 function Ryzhide:pars_json_data_wait_for_most_wanted()
 	if(self.player_type == "most_wanted")then
-    	local have_team_member = Ryzhide:check_have_team_member()
-        if(have_team_member == "true")then
-            Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_you_cannot_be_in_team"))
-            if(self.spawn_a_object == 2)then
-                Ryzhide:despawn_object(self.save_x_pos, self.save_y_pos, "in_team")
-            else
-                Ryzhide:despawn_object(0, 0, "in_team")
-            end
-            Ryzhide:close_window(self.main_window_name, "abort_because_in_team")
-        end
+		local have_team_member = Ryzhide:check_have_team_member()
+		if(have_team_member == "true")then
+			Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_you_cannot_be_in_team"))
+			if(self.spawn_a_object == 2)then
+				Ryzhide:despawn_object(self.save_x_pos, self.save_y_pos, "in_team")
+			else
+				Ryzhide:despawn_object(0, 0, "in_team")
+			end
+			Ryzhide:close_window(self.main_window_name, "abort_because_in_team")
+		end
 	end
 	
 	local mainui = getUI(self.main_window_name)
-    
+	
 	if(self.round_time_to_start ~= 0)then
 		local remaining_time = self.round_time_to_start - os.time()
 			
@@ -1369,13 +1374,13 @@ function Ryzhide:pars_json_data_wait_for_most_wanted()
 end
 
 function Ryzhide:build_hunter_window()
-	local window_height = 120
+	local window_height = 170
 	local window_width = 365
-	local table_width = window_width - 15
+	
 
 	local html_hunter=""
-	html_hunter=[[<title>]]..Ryzhide:load_translation("hide_n_hype_close_your_eyes_and_count_window")..[[</title><br>
-			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+	html_hunter=[[<title>]]..Ryzhide:load_translation("hide_n_hype_close_your_eyes_and_count_window")..[[</title>
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
 				<td align="center"><div id="hide_n_hype_timer_hunter" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_hunter;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_prepartion)..[[;'></div></td>
@@ -1383,21 +1388,22 @@ function Ryzhide:build_hunter_window()
 			</tr>
 			
 			<tr>
-				<td colspan="3" align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_wait_for_most_wanted")..[[</h2></td>
+				<td colspan="3" align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_wait_for_most_wanted")..[[</h3></td>
 			</tr>
 			</table>]]
 			
-	Ryzhide:open_resize_main_window(window_height, window_width, html_hunter)
+	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_hunter, "", "")
 end
 
 function Ryzhide:build_most_wanted_window()
-	local window_height = 450
+	local window_height = 500
 	local window_width = 415
-	local table_width = window_width - 15
+	local table_width = window_width + 15
+	
 
 	local html_most_wanted=""
-	html_most_wanted=[[<title>]]..Ryzhide:load_translation("hide_n_hype_go_and_hide_fast")..[[</title><br>
-			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+	html_most_wanted=[[<title>]]..Ryzhide:load_translation("hide_n_hype_go_and_hide_fast")..[[</title>
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
 				<td align="center" width="180"><div id="hide_n_hype_timer_hunter" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_hunter;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_prepartion)..[[;'></div></td>
@@ -1405,17 +1411,17 @@ function Ryzhide:build_most_wanted_window()
 			</tr>
 			
 			<tr>
-				<td align="center" colspan="3"><h2>]]..Ryzhide:load_translation("hide_n_hype_follow_this_rules")..[[</h2></td>
+				<td align="center" colspan="3"><h3>]]..Ryzhide:load_translation("hide_n_hype_follow_this_rules")..[[</h3></td>
 			</tr>
 			
 			<tr>
-				<td align="center" colspan="3"><h3>1. ]]..Ryzhide:load_translation("hide_n_hype_find_a_good_hiding_spot")..[[</h3></td>
+				<td align="center" colspan="3"><h4>1. ]]..Ryzhide:load_translation("hide_n_hype_find_a_good_hiding_spot")..[[</h4></td>
 			</tr>
 			<tr>
-				<td align="center" colspan="3"><h3>2. ]]..Ryzhide:load_translation("hide_n_hype_used_a_object_to_hide")..[[</h3></td>
+				<td align="center" colspan="3"><h4>2. ]]..Ryzhide:load_translation("hide_n_hype_used_a_object_to_hide")..[[</h4></td>
 			</tr>
 			<tr>
-				<td align="center" colspan="3"><h3>3. ]]..Ryzhide:load_translation("hide_n_hype_wait_of_start_of_the_round")..[[</h3></td>
+				<td align="center" colspan="3"><h4>3. ]]..Ryzhide:load_translation("hide_n_hype_wait_of_start_of_the_round")..[[</h4></td>
 			</tr>
 			
 			<tr>
@@ -1467,16 +1473,16 @@ function Ryzhide:build_most_wanted_window()
 			</tr>
 			</table>]]
 			
-	Ryzhide:open_resize_main_window(window_height, window_width, html_most_wanted)
+	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_most_wanted, "", "")
 end
 
 function Ryzhide:spawn_object(sheet_id)
-    local have_team_member = Ryzhide:check_have_team_member()
+	local have_team_member = Ryzhide:check_have_team_member()
 	if(have_team_member == "true")then
-	    Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_you_cannot_be_in_team"))
-	    return
+		Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_you_cannot_be_in_team"))
+		return
 	else
-	    webig:openUrlInBg("https://app.ryzom.com/app_arcc/index.php?action=mScript_Run&script=12811&command=reset_all&sheet_to_spawn="..sheet_id)
+		webig:openUrlInBg("https://app.ryzom.com/app_arcc/index.php?action=mScript_Run&script=12811&command=reset_all&sheet_to_spawn="..sheet_id)
 	end
 end
 
@@ -1526,6 +1532,8 @@ function Ryzhide:start_the_hide_now(time_to_end, most_wanted_name, current_round
 	Ryzhide:check_local_player_name()
 	
 	self.manuell_action = 0
+	self.json_pull_counter_old = 0
+	self.json_pull_counter = 0
 	self.need_json_update = 1
 	self.current_round_end = time_to_end
 	
@@ -1571,10 +1579,10 @@ function Ryzhide:check_player_are_in_special_state()
 	
 	local have_team_member = Ryzhide:check_have_team_member()
 	if(have_team_member == "true")then
-	    player_special_state = 69
+		player_special_state = 69
 	end
 	
-	if(self.json_pull_counter > 3)then
+	if(self.json_pull_counter > 4)then
 		--now the tatus need to be fine and not allow to break
 		if(current_player_mode ~= "REST" or current_player_invisible == 0)then
 			player_special_state = 69
@@ -1602,6 +1610,8 @@ function Ryzhide:pars_json_data_game_running_most_wanted()
 				Ryzhide:update_timer("hide_n_hype_timer_game_running_most_wanted",remaining_time, self.duration_time_game_running)
 			end
 		end
+		
+		Ryzhide:display_debug_messanges("json_pull_counter: "..self.json_pull_counter)
 
 		if(self.json_data_ready == 1)then
 			if (self.hide_n_hide_json_data) then
@@ -1613,6 +1623,7 @@ function Ryzhide:pars_json_data_game_running_most_wanted()
 					if(self.hide_n_hide_json_data.success == "ok_most_wanted_heartbeat")then
 						self.json_pull_counter = self.json_pull_counter + 1
 						--Ryzhide:display_game_running_sucess("sucess_heartbeat: "..self.hide_n_hide_json_data.success)
+						self.json_data_ready = 0
 					end
 				else
 					Ryzhide:display_game_running_error("no 'error' or 'success' found")
@@ -1626,11 +1637,6 @@ function Ryzhide:pars_json_data_game_running_most_wanted()
 end
 
 function Ryzhide:update_hint_data()
-	Ryzhide:display_debug_messanges("hint_1: "..self.hide_n_hide_json_data.hint_1)
-	Ryzhide:display_debug_messanges("hint_2: "..self.hide_n_hide_json_data.hint_2)
-	Ryzhide:display_debug_messanges("hint_3: "..self.hide_n_hide_json_data.hint_3)
-	Ryzhide:display_debug_messanges("hint_4: "..self.hide_n_hide_json_data.hint_4)
-	
 	self.hint_1_text = self.hide_n_hide_json_data.hint_1
 	self.hint_2_text = self.hide_n_hide_json_data.hint_2
 	self.hint_3_text = self.hide_n_hide_json_data.hint_3
@@ -1732,24 +1738,37 @@ function Ryzhide:pars_json_data_game_running_hunter()
 		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=check_found')
 	end
 	
+	Ryzhide:display_debug_messanges("old counter:"..self.json_pull_counter_old.."counter"..self.json_pull_counter)
+	Ryzhide:display_debug_messanges("data ready: "..self.json_data_ready.."manuell_action: "..self.manuell_action)
+	
+	if(self.json_pull_counter_old < self.json_pull_counter and self.manuell_action == 1)then
+		Ryzhide:display_debug_messanges("Timeout_reset")
+		self.manuell_action = 0
+		local mainui_group = getUI(self.main_window_name):find("check_found_most_wanted")
+		mainui_group:find("img1").texture = ""
+		mainui_group:find("ctrl").active = true
+	end
+	
 	Ryzhide:check_player_target()
 	
 	if(self.json_data_ready == 1)then
 			if (self.hide_n_hide_json_data) then
 				if (self.hide_n_hide_json_data.error) then
-					Ryzhide:display_debug_messanges("error: "..self.hide_n_hide_json_data.error.." m: "..self.manuell_action)
 					if(self.manuell_action == 1)then
-						
 						if(self.hide_n_hide_json_data.error == "not_near_most_wanted")then
-						    Ryzhide:display_try_found_error(Ryzhide:load_translation("hide_n_hype_"..self.hide_n_hide_json_data.error))
-						    Ryzhide:feedback_found_button("error")
+							Ryzhide:display_try_found_error(Ryzhide:load_translation("hide_n_hype_"..self.hide_n_hide_json_data.error))
+							Ryzhide:feedback_found_button("error")
 							self.manuell_action = 0
+							self.json_data_ready = 0
 						else
-						    Ryzhide:display_try_found_error(Ryzhide:load_translation(self.hide_n_hide_json_data.error))
+							Ryzhide:display_try_found_error(Ryzhide:load_translation(self.hide_n_hide_json_data.error))
 						end
 					end
 				elseif (self.hide_n_hide_json_data.success) then
-					Ryzhide:display_debug_messanges("success: "..self.hide_n_hide_json_data.success.." m: "..self.manuell_action)
+					Ryzhide:display_debug_messanges("success: "..self.hide_n_hide_json_data.success)
+					self.json_pull_counter = self.json_pull_counter + 1
+					self.json_data_ready = 0
+					
 					if(self.manuell_action == 1)then
 						if(self.hide_n_hide_json_data.success == "ok_you_found_most_wanted")then
 							if(self.hide_n_hide_json_data.success == "ok_you_found_most_wanted")then
@@ -1762,7 +1781,6 @@ function Ryzhide:pars_json_data_game_running_hunter()
 					else
 						Ryzhide:update_hint_data()
 					end
-					
 				else
 					Ryzhide:display_try_found_error("no 'error' or 'success' found")
 				end
@@ -1791,19 +1809,19 @@ function Ryzhide:pars_json_data_game_running_hunter()
 		if(remaining_time < 0)then
 			Ryzhide:game_running_timer_stopped()
 		else
-            local diff_remaining_time = self.duration_time_game_running - remaining_time
-            
-            Ryzhide:display_debug_messanges("diff_remaining_time: "..diff_remaining_time)
-            Ryzhide:display_debug_messanges("time_to_unlock_hint_1: "..time_to_unlock_hint_1)
-            Ryzhide:display_debug_messanges("time_to_unlock_hint_2: "..time_to_unlock_hint_2)
-            Ryzhide:display_debug_messanges("time_to_unlock_hint_3: "..time_to_unlock_hint_3)
-            
-            
-            Ryzhide:display_debug_messanges("remaining_time_hint_1: "..remaining_time_hint_1)
-            Ryzhide:display_debug_messanges("remaining_time_hint_2: "..remaining_time_hint_2)
-            Ryzhide:display_debug_messanges("remaining_time_hint_3: "..remaining_time_hint_3)
-            
-            if(remaining_time_hint_1 >= 0 and self.timer_hint_1 == 0)then
+			local diff_remaining_time = self.duration_time_game_running - remaining_time
+			
+			--Ryzhide:display_debug_messanges("diff_remaining_time: "..diff_remaining_time)
+			--Ryzhide:display_debug_messanges("time_to_unlock_hint_1: "..time_to_unlock_hint_1)
+			--Ryzhide:display_debug_messanges("time_to_unlock_hint_2: "..time_to_unlock_hint_2)
+			--Ryzhide:display_debug_messanges("time_to_unlock_hint_3: "..time_to_unlock_hint_3)
+			
+			
+			--Ryzhide:display_debug_messanges("remaining_time_hint_1: "..remaining_time_hint_1)
+			--Ryzhide:display_debug_messanges("remaining_time_hint_2: "..remaining_time_hint_2)
+			--Ryzhide:display_debug_messanges("remaining_time_hint_3: "..remaining_time_hint_3)
+			
+			if(remaining_time_hint_1 >= 0 and self.timer_hint_1 == 0)then
 				Ryzhide:update_timer("hide_n_hype_timer_game_running_hint",remaining_time_hint_1, self.duration_time_hint_1)
 			end
 			
@@ -1814,25 +1832,25 @@ function Ryzhide:pars_json_data_game_running_hunter()
 			if(remaining_time_hint_3 >= 0 and self.timer_hint_3 == 0 and self.timer_hint_1 == 1 and self.timer_hint_2 == 1)then
 				Ryzhide:update_timer("hide_n_hype_timer_game_running_hint",remaining_time_hint_3, self.duration_time_hint_3)
 			end
-        
-            --unlock hint_2
-            if(diff_remaining_time > time_to_unlock_hint_1 and self.timer_hint_1 == 0)then
-                self.timer_hint_1 = 1
+		
+			--unlock hint_2
+			if(diff_remaining_time > time_to_unlock_hint_1 and self.timer_hint_1 == 0)then
+				self.timer_hint_1 = 1
 				Ryzhide:display_debug_messanges("self.timer_hint_1")
-            end
-            
-            --unlock hint_3
-            if(diff_remaining_time > time_to_unlock_hint_2 and self.timer_hint_2 == 0)then
-                self.timer_hint_2 = 1
+			end
+			
+			--unlock hint_3
+			if(diff_remaining_time > time_to_unlock_hint_2 and self.timer_hint_2 == 0)then
+				self.timer_hint_2 = 1
 				Ryzhide:display_debug_messanges("self.timer_hint_2")
-            end
-            
-            --unlock hint_4
-            if(diff_remaining_time > time_to_unlock_hint_3 and self.timer_hint_3 == 0)then
-                self.timer_hint_3 = 1
+			end
+			
+			--unlock hint_4
+			if(diff_remaining_time > time_to_unlock_hint_3 and self.timer_hint_3 == 0)then
+				self.timer_hint_3 = 1
 				Ryzhide:display_debug_messanges("self.timer_hint_3")
-            end
-            
+			end
+			
 			Ryzhide:update_timer("hide_n_hype_timer_game_running_hunter",remaining_time, self.duration_time_game_running)
 		end
 	end
@@ -1842,10 +1860,10 @@ function Ryzhide:unlock_hints()
 	local mainui = getUI(self.main_window_name)
 	
 	if(self.hint_1_text ~= "????")then
-    	local hint_1_text_controll = mainui:find("hint_1")
-    	Ryzhide:display_debug_messanges("set_hint_1: "..self.hint_1_text)
-    	hint_1_text_controll:find("text").hardtext = self.hint_1_text
-    	hint_1_text_controll:find("text").color = "0 255 0 255"
+		local hint_1_text_controll = mainui:find("hint_1")
+		Ryzhide:display_debug_messanges("set_hint_1: "..self.hint_1_text)
+		hint_1_text_controll:find("text").hardtext = self.hint_1_text
+		hint_1_text_controll:find("text").color = "0 255 0 255"
 	end
 		
 	if(self.timer_hint_1 == 1 and self.hint_2_text ~= "????")then
@@ -1872,6 +1890,7 @@ function Ryzhide:click_icon_found_most_wanted(id)
 	local mainui = getUI(self.main_window_name)
 	
 	if(id == "check_found_most_wanted")then
+		self.json_pull_counter_old = self.json_pull_counter + 3
 		self.manuell_action = 1
 		self.need_json_update = 0
 		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=check_found')
@@ -1886,54 +1905,56 @@ function Ryzhide:click_icon_found_most_wanted(id)
 end
 
 function Ryzhide:build_game_running_most_wanted_window()
-	local window_height = 120
+	local window_height = 200
 	local window_width = 365
-	local table_width = window_width - 15
-
+	
 	local html_running_most_wanted=""
-	html_running_most_wanted=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_running_window")..[[</title><br>
-			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+	html_running_most_wanted=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_running_window")..[[</title>
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
 				<td align="center"><div id="hide_n_hype_timer_game_running_most_wanted" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_game_running_most_wanted;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_game_running)..[[;'></div></td>
 			</tr>
 			
 			<tr>
-				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_keep_calm")..[[</h2></td>
+				<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_keep_calm")..[[</h3></td>
+			</tr>
+			<tr>
+				<td align="center"><h4>]]..Ryzhide:load_translation("hide_n_hype_dont_break_the_afk_status")..[[</h4></td>
 			</tr>
 			</table>]]
-	Ryzhide:open_resize_main_window(window_height, window_width, html_running_most_wanted)
+	Ryzhide:open_resize_window(self.main_window_name,window_height, window_width, html_running_most_wanted, "", "")
 end
 
 function Ryzhide:build_game_running_hunter_window()
-	local window_height = 320
+	local window_height = 360
 	local window_width = 380
-	local table_width = window_width - 15
+	
 
 	local html_running_hunter=""
-	html_running_hunter=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_running_window")..[[</title><br>
-		   <table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+	html_running_hunter=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_running_window")..[[</title>
+		   <table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
 				<td align="center" colspan="2"><div id="hide_n_hype_timer_game_running_hunter" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_game_running_hunter;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_game_running)..[[;'></div></td>
 			</tr>
 			
 			<tr>
-				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_new_hint_in")..[[</h2></td>
-				<td align="center"><div id="hide_n_hype_timer_game_running_hint" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_game_running_hint;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_hint_1)..[[;'></td>
+				<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_new_hint_in")..[[</h3></td>
+				<td align="center"><div id="hide_n_hype_timer_game_running_hint" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_game_running_hint;font_size:25;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_hint_1)..[[;'></td>
 			</tr>
 			<tr>
-				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_hint_1")..[[</h2></td>
+				<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_hint_1")..[[</h3></td>
 				<td align="center"><div id="hint_1" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_text;id:hint_1;font_size:16;text_color:255 0 0 255;hardtext:????;w:250;'></div></td>
 			</tr>
 			<tr>
-				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_hint_2")..[[</h2></td>
+				<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_hint_2")..[[</h3></td>
 				<td align="center"><div id="hint_2" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_text;id:hint_2;font_size:16;text_color:255 0 0 255;hardtext:????;w:250;'></div></td>
 			</tr>
 			<tr>
-				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_hint_3")..[[</h2></td>
+				<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_hint_3")..[[</h3></td>
 				<td align="center"><div id="hint_3" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_text;id:hint_3;font_size:16;text_color:255 0 0 255;hardtext:????;w:250;'></div></td>
 			</tr>
 			<tr>
-				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_hint_4")..[[</h2></td>
+				<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_hint_4")..[[</h3></td>
 				<td align="center"><div id="hint_4" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_text;id:hint_4;font_size:16;text_color:255 0 0 255;hardtext:????;w:250;'></div></td>
 			</tr>
 			
@@ -1941,23 +1962,23 @@ function Ryzhide:build_game_running_hunter_window()
 				<td align="center" colspan="2"><div id="check_found_most_wanted" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:check_found_most_wanted;bg:r2_icon_animation_target.png;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_to_check_found_most_wanted")..[[;lua_function:click_icon_found_most_wanted;'></div></td>
 			</tr>
 			</table>]]
-	Ryzhide:open_resize_main_window(window_height, window_width, html_running_hunter)
+	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_running_hunter, "", "")
 end
 
 function Ryzhide:build_wait_finish_window()
-	local window_height = 40
+	local window_height = 100
 	local window_width = 380
-	local table_width = window_width - 15
+	
 
 	local html_wait_finish_window=""
-	html_wait_finish_window=[[<title></title>
-			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+	html_wait_finish_window=[[<title>....?!</title>
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
-				<td align="center"><h1>]]..Ryzhide:load_translation("hide_n_hype_wait_for_game_finish")..[[</h1></td>
+				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_wait_for_game_finish")..[[</h2></td>
 			</tr>
 			</table>]]
 			
-	Ryzhide:open_resize_main_window(window_height, window_width, html_wait_finish_window)
+	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_wait_finish_window, "", "")
 end
 
 
@@ -2080,13 +2101,13 @@ function Ryzhide:open_clain_reward_script()
 end
 
 function Ryzhide:build_finished_hunter(hunter_name,most_wanted_name)
-	local window_height = 285
+	local window_height = 330
 	local window_width = 365
-	local table_width = window_width - 15
+	
 
 	local html_finished_hunter=""
-	html_finished_hunter=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title><br>
-			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+	html_finished_hunter=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title>
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 				<tr>
 					<td align="center"><div id="hide_n_hype_timer_claim_reward" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_claim_reward;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_claim_reward)..[[;'></div></td>
 				</tr>
@@ -2096,11 +2117,11 @@ function Ryzhide:build_finished_hunter(hunter_name,most_wanted_name)
 				</tr>
 				
 				<tr>
-					<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_you_found_the_most_wanted")..[[</h2></td>
+					<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_you_found_the_most_wanted")..[[</h3></td>
 				</tr>
 				
 				<tr>
-					<td align="center"><h2>]]..most_wanted_name..[[</h2></td>
+					<td align="center"><h3>]]..most_wanted_name..[[</h3></td>
 				</tr>
 				
 				<tr>
@@ -2108,22 +2129,22 @@ function Ryzhide:build_finished_hunter(hunter_name,most_wanted_name)
 				</tr>
 				
 				<tr>
-					<td align="center"><a href="ah:lua&Ryzhide:open_clain_reward_script()"><h2>]]..Ryzhide:load_translation("hide_n_hype_click_here_to_claim_your_price")..[[</h2></a></td>
+					<td align="center"><a href="ah:lua&Ryzhide:open_clain_reward_script()"><h3>]]..Ryzhide:load_translation("hide_n_hype_click_here_to_claim_your_price")..[[</h3></a></td>
 				</tr>
 			</table>]]
-	Ryzhide:open_resize_main_window(window_height, window_width, html_finished_hunter)
+	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_finished_hunter, "", "")
 end
 
 function Ryzhide:build_finished_most_wanted(hunter_name,most_wanted_name)
-	local window_height = 315
+	local window_height = 370
 	local window_width = 380
-	local table_width = window_width - 15
+	
 
 	local html_finished_most_wanted=""
-	html_finished_most_wanted=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title><br>
-			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+	html_finished_most_wanted=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title>
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 				<tr>
-					<td align="center"><div id="hide_n_hype_timer_claim_reward" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_claim_reward;timer:03:00;'></div></td>
+					<td align="center"><div id="hide_n_hype_timer_claim_reward" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_claim_reward;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_claim_reward)..[[;'></div></td>
 				</tr>
 				
 				<tr>
@@ -2131,15 +2152,15 @@ function Ryzhide:build_finished_most_wanted(hunter_name,most_wanted_name)
 				</tr>
 				
 				<tr>
-					<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_time_to_come_out")..[[</h2></td>
+					<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_time_to_come_out")..[[</h3></td>
 				</tr>
 				
 				<tr>
-					<td align="center"><h2>]]..hunter_name..[[</h2></td>
+					<td align="center"><h3>]]..hunter_name..[[</h3></td>
 				</tr>
 				
 				<tr >
-					<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_found_you")..[[</h2></td>
+					<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_found_you")..[[</h3></td>
 				</tr>
 				
 				<tr>
@@ -2147,87 +2168,79 @@ function Ryzhide:build_finished_most_wanted(hunter_name,most_wanted_name)
 				</tr>
 				
 				<tr>
-					<td align="center"><a href="ah:lua&Ryzhide:open_clain_reward_script()"><h2>]]..Ryzhide:load_translation("hide_n_hype_click_here_to_claim_your_price")..[[</h2></a></td>
+					<td align="center"><a href="ah:lua&Ryzhide:open_clain_reward_script()"><h3>]]..Ryzhide:load_translation("hide_n_hype_click_here_to_claim_your_price")..[[</h3></a></td>
 				</tr>
 			</table>]]
 			
-	Ryzhide:open_resize_main_window(window_height, window_width, html_finished_most_wanted)
+	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_finished_most_wanted, "", "")
 end
 
 function Ryzhide:build_loos_hunter(hunter_name,most_wanted_name)
-	local window_height = 200
+	local window_height = 250
 	local window_width = 380
-	local table_width = window_width - 15
+	
 
 	local html_loos_hunter=""
 	html_loos_hunter=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title>
-			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
-				<tr>
-					<td align="right"><div id="close_window_build_loos_hunter" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:close_window_build_loos_hunter;bg:w_win_close.png;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_to_close")..[[;lua_function:click_close_button;w:16;h:16;'></div></td>
-				</tr>
-				
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 				<tr>
 					<td align="center"><img src="icon_unhappy.png" width="80" height="80" ></td>
 				</tr>
 				
 				<tr>
-					<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_better_luck_next_time")..[[</h2></td>
+					<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_better_luck_next_time")..[[</h3></td>
 				</tr>
 				
 				<tr>
-					<td align="center"><h2>]]..hunter_name..[[</h2></td>
+					<td align="center"><h3>]]..hunter_name..[[</h3></td>
 				</tr>
 				
 				<tr>
-					<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_has_out_searched_you")..[[</h2></td>
+					<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_has_out_searched_you")..[[</h3></td>
 				</tr>
 			</table>]]
 			
-	Ryzhide:open_resize_main_window(window_height, window_width, html_loos_hunter)
+	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_loos_hunter, "click_close_button", "close_window_build_loos_hunter")
 end
 
 function Ryzhide:build_most_wanted_not_found_hunter(most_wanted_name)
-	local window_height = 200
+	local window_height = 250
 	local window_width = 370
-	local table_width = window_width - 15
+	
 
 	local html_most_wanted_not_found_hunter=""
 	html_most_wanted_not_found_hunter=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title>
-			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
-				<tr>
-					<td align="right"><div id="close_window_build_most_wanted_not_found_hunter" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:close_window_build_most_wanted_not_found_hunter;bg:w_win_close.png;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_to_close")..[[;lua_function:click_close_button;w:16;h:16;'></div></td>
-				</tr>
-			
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 				<tr>
 					<td align="center"><img src="icon_unhappy.png" width="80" height="80" ></td>
 				</tr>
 				
 				<tr>
-					<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_better_luck_next_time")..[[</h2></td>
+					<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_better_luck_next_time")..[[</h3></td>
 				</tr>
 				
 				<tr>
-					<td align="center"><h2>]]..most_wanted_name..[[</h2></td>
+					<td align="center"><h3>]]..most_wanted_name..[[</h3></td>
 				</tr>
 				
 				<tr>
-					<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_keep_untouched_and_not_found")..[[</h2></td>
+					<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_keep_untouched_and_not_found")..[[</h3></td>
 				</tr>
 			</table>]]
 			
-	Ryzhide:open_resize_main_window(window_height, window_width, html_most_wanted_not_found_hunter)
+	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_most_wanted_not_found_hunter, "click_close_button", "close_window_build_most_wanted_not_found_hunter")
 end
 
 function Ryzhide:build_most_wanted_not_found_most_wanted()
-	local window_height = 255
+	local window_height = 310
 	local window_width = 365
-	local table_width = window_width - 15
+	
 
 	local html_most_wanted_not_found_most_wanted=""
-	html_most_wanted_not_found_most_wanted=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title><br>
-			<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+	html_most_wanted_not_found_most_wanted=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title>
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 				<tr>
-					<td align="center"><div id="hide_n_hype_timer_claim_reward" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_claim_reward;timer:03:00;'></div></td>
+					<td align="center"><div id="hide_n_hype_timer_claim_reward" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_claim_reward;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_claim_reward)..[[;'></div></td>
 				</tr>
 				
 				<tr>
@@ -2235,7 +2248,7 @@ function Ryzhide:build_most_wanted_not_found_most_wanted()
 				</tr>
 				
 				<tr>
-					<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_you_won_no_player_found_you")..[[</h2></td>
+					<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_you_won_no_player_found_you")..[[</h3></td>
 				</tr>
 				
 				<tr>
@@ -2243,11 +2256,11 @@ function Ryzhide:build_most_wanted_not_found_most_wanted()
 				</tr>
 				
 				<tr>
-					<td align="center"><a href="ah:lua&Ryzhide:open_clain_reward_script()"><h2>]]..Ryzhide:load_translation("hide_n_hype_click_here_to_claim_your_price")..[[</h2></a></td>
+					<td align="center"><a href="ah:lua&Ryzhide:open_clain_reward_script()"><h3>]]..Ryzhide:load_translation("hide_n_hype_click_here_to_claim_your_price")..[[</h3></a></td>
 				</tr>
 			</table>]]
 			
-	Ryzhide:open_resize_main_window(window_height, window_width, html_most_wanted_not_found_most_wanted)
+	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_most_wanted_not_found_most_wanted, "", "")
 end
 
 
@@ -2258,59 +2271,51 @@ end
 --###################################### Start error handling #######################################
 
 function Ryzhide:build_most_wanted_bad_position()
-	local window_height = 140
-	local window_width = 370
-	local table_width = window_width - 15
+	local window_height = 180
+	local window_width = 400
+	
 
 	local html_most_wanted_bad_position = ""
 	html_most_wanted_bad_position=[[<title>]]..Ryzhide:load_translation("hide_n_hype_abort_most_wanted_bad_position_window")..[[</title>
-		<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
-			<tr>
-				<td align="right"><div id="close_window_abort_most_wanted_bad_position_window" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:close_window_abort_most_wanted_bad_position_window;bg:w_win_close.png;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_to_close")..[[;lua_function:click_close_button;w:16;h:16;'></div></td>
-			</tr>
-			
+		<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
 				<td align="center"><img src="icon_dead.png" width="80" height="80" ></td>
 			</tr>
 			
 			<tr>
-				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_abort_most_wanted_bad_position")..[[</h2></td>
+				<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_abort_most_wanted_bad_position")..[[</h3></td>
 			</tr>
 		</table>]]
-		Ryzhide:open_resize_main_window(window_height, window_width, html_most_wanted_bad_position)
+		Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_most_wanted_bad_position, "click_close_button", "close_window_abort_most_wanted_bad_position_window")
 end
 
 function Ryzhide:build_error_not_enough_players()
-	local window_height = 165
+	local window_height = 200
 	local window_width = 370
-	local table_width = window_width - 15
+	
 
 	local html_error_not_enough_players = ""
 	html_error_not_enough_players=[[<title>]]..Ryzhide:load_translation("hide_n_hype_abort_not_enough_player_to_start_a_round_window")..[[</title>
-		<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
-			<tr>
-				<td align="right"><div id="close_window_abort_not_enough_player_to_start_a_round_window" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:close_window_abort_not_enough_player_to_start_a_round_window;bg:w_win_close.png;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_to_close")..[[;lua_function:click_close_button;w:16;h:16;'></div></td>
-			</tr>
-			
+		<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
 				<td align="center"><img src="icon_dead.png" width="80" height="80" ></td>
 			</tr>
 			
 			<tr>
-				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_abort_not_enough_player")..[[</h2></td>
+				<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_abort_not_enough_player")..[[</h3></td>
 			</tr>
 		</table>]]
-		Ryzhide:open_resize_main_window(window_height, window_width, html_error_not_enough_players)
+		Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_error_not_enough_players, "click_close_button", "close_window_abort_not_enough_player_to_start_a_round_window")
 end
 
 function Ryzhide:build_most_wanted_offline_window()
-	local window_height = 125
+	local window_height = 170
 	local window_width = 450
-	local table_width = window_width - 15
+	
 
 	local html_most_wanted_offline_window=""
-	html_most_wanted_offline_window=[[<title>]]..Ryzhide:load_translation("hide_n_hype_wait_for_most_wanted_come_back_online_window")..[[</title><br>
-		<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+	html_most_wanted_offline_window=[[<title>]]..Ryzhide:load_translation("hide_n_hype_wait_for_most_wanted_come_back_online_window")..[[</title>
+		<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr align="center">
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
 				<td align="center"><div id="hide_n_hype_timer_most_wanted_offline" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_most_wanted_offline;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_most_wanted_offline)..[[;'></div></td>
@@ -2318,61 +2323,53 @@ function Ryzhide:build_most_wanted_offline_window()
 			</tr>
 			
 			<tr>
-				<td colspan="3" align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_most_wanted_lost_connection")..[[</h2></td>
+				<td colspan="3" align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_most_wanted_lost_connection")..[[</h3></td>
 			</tr>
 		</table>]]
 			
-	Ryzhide:open_resize_main_window(window_height, window_width, html_most_wanted_offline_window)
+	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_most_wanted_offline_window, "", "")
 end
 
 function Ryzhide:build_most_wanted_offline()
-	local window_height = 140
+	local window_height = 200
 	local window_width = 370
-	local table_width = window_width - 15
+	
 
 	local html_most_wanted_offline = ""
 	html_most_wanted_offline=[[<title>]]..Ryzhide:load_translation("hide_n_hype_abort_most_wanted_offline_game_abort_window")..[[</title>
-		<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
-			<tr>
-				<td align="right"><div id="close_window_abort_most_wanted_offline_game_abort_window" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:close_window_abort_most_wanted_offline_game_abort_window;bg:w_win_close.png;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_to_close")..[[;lua_function:click_close_button;w:16;h:16;'></div></td>
-			</tr>
-			
+		<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
 				<td align="center"><img src="icon_dead.png" width="80" height="80" ></td>
 			</tr>
 			
 			<tr>
-				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_most_wanted_offline_game_abort")..[[</h2></td>
+				<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_most_wanted_offline_game_abort")..[[</h3></td>
 			</tr>
 		</table>]]
-		Ryzhide:open_resize_main_window(window_height, window_width, html_most_wanted_offline)
+		Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_most_wanted_offline, "click_close_button", "close_window_abort_most_wanted_offline_game_abort_window")
 end
 
 function Ryzhide:build_most_wanted_moved()
-	local window_height = 140
-	local window_width = 370
-	local table_width = window_width - 15
+	local window_height = 180
+	local window_width = 400
+	
 
 	local html_most_wanted_moved = ""
 	html_most_wanted_moved=[[<title>]]..Ryzhide:load_translation("hide_n_hype_abort_most_wanted_moved_window")..[[</title>
-		<table width="]]..table_width..[[" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
-			<tr>
-				<td align="right"><div id="close_window_abort_most_wanted_moved_window" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:close_window_abort_most_wanted_moved_window;bg:w_win_close.png;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_to_close")..[[;lua_function:click_close_button;w:16;h:16;'></div></td>
-			</tr>
-			
+		<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 			<tr>
 				<td align="center"><img src="icon_dead.png" width="80" height="80" ></td>
 			</tr>
 			
 			<tr>
-				<td align="center"><h2>]]..Ryzhide:load_translation("hide_n_hype_most_wanted_moved_game_abort")..[[</h2></td>
+				<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_most_wanted_moved_game_abort")..[[</h3></td>
 			</tr>
 		</table>]]
-		Ryzhide:open_resize_main_window(window_height, window_width, html_most_wanted_moved)
+		Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_most_wanted_moved, "click_close_button", "close_window_abort_most_wanted_moved_window")
 end
 
 function Ryzhide:abort_because_of(process_info_name,round_id)
-    self.game_is_now_running = 0
+	self.game_is_now_running = 0
 
 	if(self.game_is_full_loaded == 0)then
 		Ryzhide:display_debug_messanges("game_not_loaded -- abort_because_of: "..process_info_name)
@@ -2438,3 +2435,101 @@ function Ryzhide:run_timer_most_wanted_offline()
 end
 
 --###################################### END error handling #######################################
+
+
+
+--###################################### START asked_for_abort #######################################
+
+function Ryzhide:build_ask_for_abort_skip_game()
+	local window_height = 250
+	local window_width = 370
+	
+	local html_ask_for_abort_skip_game = ""
+	html_ask_for_abort_skip_game=[[<title>]]..Ryzhide:load_translation("hide_n_hype_you_realy_want_window")..[[</title>
+		<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+			<tr>
+				<td align="center" colspan="2"><img src="icon_unhappy.png" width="80" height="80" ></td>
+			</tr>
+			
+			<tr>
+				<td align="center" colspan="2"><h3>]]..Ryzhide:load_translation("hide_n_hype_you_realy_want_to_skip")..[[</h3></td>
+			</tr>
+			
+			<tr>
+				<td align="center" colspan="2">&nbsp;</td>
+			</tr>
+			
+			<tr>
+				<td align="center"><div id="abort_skip_yes" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:abort_skip_yes;bg:rap_invited_no_dm.png;w:46;h:46;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_yes")..[[;lua_function:click_icon_abort;'></div></td>
+				<td align="center"><div id="abort_skip_no" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:abort_skip_no;bg:w_answer_16_cancel.png;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_no")..[[;lua_function:click_icon_abort;'></div></td>
+			</tr>
+		</table>]]
+		Ryzhide:open_resize_window(self.abort_window_name, window_height, window_width, html_ask_for_abort_skip_game, "", "")
+end
+
+function Ryzhide:build_ask_for_abort_unregister()
+	local window_height = 270
+	local window_width = 370
+	
+	local html_ask_for_abort_unregister = ""
+	html_ask_for_abort_unregister=[[<title>]]..Ryzhide:load_translation("hide_n_hype_you_realy_want_window")..[[</title>
+		<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+			<tr>
+				<td align="center" colspan="2"><img src="icon_unhappy.png" width="80" height="80" ></td>
+			</tr>
+			
+			<tr>
+				<td align="center" colspan="2"><h3>]]..Ryzhide:load_translation("hide_n_hype_you_realy_want_to_unregister")..[[</h3></td>
+			</tr>
+			
+			<tr>
+				<td align="center" colspan="2"><h4>]]..Ryzhide:load_translation("hide_n_hype_you_will_loos_all_your_progress")..[[</h4></td>
+			</tr>
+			
+			<tr>
+				<td align="center"><div id="abort_unregister_yes" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:abort_unregister_yes;bg:rap_invited_no_dm.png;w:46;h:46;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_yes")..[[;lua_function:click_icon_abort;'></div></td>
+				<td align="center"><div id="abort_unregister_no" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_button_images;id:abort_unregister_no;bg:w_answer_16_cancel.png;tooltip:]]..Ryzhide:load_translation("hide_n_hype_click_no")..[[;lua_function:click_icon_abort;'></div></td>
+			</tr>
+		</table>]]
+		Ryzhide:open_resize_window(self.abort_window_name, window_height, window_width, html_ask_for_abort_unregister, "", "")
+end
+
+function Ryzhide:click_icon_abort(trigger_id)
+	if(trigger_id == "abort_skip_yes")then
+		self.player_click_to_register = 1
+		self.manuell_action = 1
+		self.json_pull_counter_old = self.json_pull_counter + 3
+		self.need_json_update = 0
+		self.reject_invite_round_id = tonumber(self.current_round_id)
+		self.game_is_now_running = 0
+		
+		Ryzhide:start_fetch_json_data('https://app.ryzom.com/app_ryzhide/?mode=accept_invite&accept_as=reject')
+		removeOnDbChange(getUI(self.main_window_name),self.timer_str)
+		Ryzhide:close_window(self.main_window_name, "")
+	end
+	
+	if(trigger_id == "abort_skip_no")then
+		local mainui_group = getUI(self.main_window_name):find("reject_accept")
+		if(mainui_group ~= nil)then
+			mainui_group:find("img1").texture = ""
+			mainui_group:find("ctrl").active = true
+		end
+	end
+	
+	if(trigger_id == "abort_unregister_yes")then
+		Ryzhide:display_debug_messanges("start_unregister_now")
+		Ryzhide:start_fetch_json_data("https://app.ryzom.com/app_ryzhide/?mode=unregister")
+	end
+	
+	if(trigger_id == "abort_unregister_no")then
+		local mainui_group = getUI(self.main_window_name):find("unregister_accept")
+		if(mainui_group ~= nil)then
+			mainui_group:find("img1").texture = ""
+			mainui_group:find("ctrl").active = true
+		end
+	end
+	
+	Ryzhide:close_window(self.abort_window_name, "")
+end
+
+--###################################### END asked_for_abort #######################################
