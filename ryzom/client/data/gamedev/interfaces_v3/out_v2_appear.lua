@@ -423,6 +423,8 @@ function outgame:launchGame()
 		end
 	end
 	runAH(getUICaller(), "proc", "proc_charsel_play")
+	-- reset webig
+	getUI("ui:outgame:appear:job_options:rpbg:html"):browse("https://app.ryzom.com/index.php?reset_webig=1")
 end
 
 function outgame:loadRPBGPage()
