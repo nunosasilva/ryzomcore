@@ -219,9 +219,9 @@ function Ryzhide:start_fetch_json_data(url_to_fetch)
 	self.load_animation = 0
 	self.load_animation_timer = 0
 	
-	framewin = getUI("ui:interface:load_pars_json")
-	setOnDraw(framewin, "Ryzhide:fetch_json_data('"..url_to_fetch.."')")
-	framewin.active=true
+	local load_pars_json_window_ui = getUI("ui:interface:load_pars_json")
+	setOnDraw(load_pars_json_window_ui, "Ryzhide:fetch_json_data('"..url_to_fetch.."')")
+	load_pars_json_window_ui.active=true
 end
 
 function Ryzhide:fetch_json_data(url_to_load)
@@ -415,29 +415,29 @@ function Ryzhide:check_for_update_server_config(json_data_from_join)
 	end
 	
 	--set timer times load from server
-	if(self.duration_time_invite ~= tonumber(self.hide_n_hide_json_data.duration_time_invite))then
-		self.duration_time_invite = tonumber(self.hide_n_hide_json_data.duration_time_invite)
+	if(self.duration_time_invite ~= tonumber(json_data_from_join.duration_time_invite))then
+		self.duration_time_invite = tonumber(json_data_from_join.duration_time_invite)
 	end
-	if(self.duration_time_prepartion ~= tonumber(self.hide_n_hide_json_data.duration_time_prepartion))then
-	self.duration_time_prepartion = tonumber(self.hide_n_hide_json_data.duration_time_prepartion)
+	if(self.duration_time_prepartion ~= tonumber(json_data_from_join.duration_time_prepartion))then
+	self.duration_time_prepartion = tonumber(json_data_from_join.duration_time_prepartion)
 	end
-	if(self.duration_time_game_running ~= tonumber(self.hide_n_hide_json_data.duration_time_game_running))then
-		self.duration_time_game_running = tonumber(self.hide_n_hide_json_data.duration_time_game_running)
+	if(self.duration_time_game_running ~= tonumber(json_data_from_join.duration_time_game_running))then
+		self.duration_time_game_running = tonumber(json_data_from_join.duration_time_game_running)
 	end
-	if(self.duration_time_hint_1 ~= tonumber(self.hide_n_hide_json_data.duration_time_hint_1))then
-		self.duration_time_hint_1 = tonumber(self.hide_n_hide_json_data.duration_time_hint_1)
+	if(self.duration_time_hint_1 ~= tonumber(json_data_from_join.duration_time_hint_1))then
+		self.duration_time_hint_1 = tonumber(json_data_from_join.duration_time_hint_1)
 	end
-	if(self.duration_time_hint_2 ~= tonumber(self.hide_n_hide_json_data.duration_time_hint_2))then
-		self.duration_time_hint_2 = tonumber(self.hide_n_hide_json_data.duration_time_hint_2)
+	if(self.duration_time_hint_2 ~= tonumber(json_data_from_join.duration_time_hint_2))then
+		self.duration_time_hint_2 = tonumber(json_data_from_join.duration_time_hint_2)
 	end
-	if(self.duration_time_hint_3 ~= tonumber(self.hide_n_hide_json_data.duration_time_hint_3))then
-		self.duration_time_hint_3 = tonumber(self.hide_n_hide_json_data.duration_time_hint_3)
+	if(self.duration_time_hint_3 ~= tonumber(json_data_from_join.duration_time_hint_3))then
+		self.duration_time_hint_3 = tonumber(json_data_from_join.duration_time_hint_3)
 	end
-	if(self.duration_time_claim_reward ~= tonumber(self.hide_n_hide_json_data.duration_time_claim_reward))then
-		self.duration_time_claim_reward = tonumber(self.hide_n_hide_json_data.duration_time_claim_reward)
+	if(self.duration_time_claim_reward ~= tonumber(json_data_from_join.duration_time_claim_reward))then
+		self.duration_time_claim_reward = tonumber(json_data_from_join.duration_time_claim_reward)
 	end
-	if(self.duration_time_most_wanted_offline ~= tonumber(self.hide_n_hide_json_data.duration_time_most_wanted_offline))then
-		self.duration_time_most_wanted_offline = tonumber(self.hide_n_hide_json_data.duration_time_most_wanted_offline)
+	if(self.duration_time_most_wanted_offline ~= tonumber(json_data_from_join.duration_time_most_wanted_offline))then
+		self.duration_time_most_wanted_offline = tonumber(json_data_from_join.duration_time_most_wanted_offline)
 	end
 end
 
@@ -692,17 +692,17 @@ function Ryzhide:pars_json_data_register()
 			if (self.hide_n_hide_json_data) then
 				if (self.hide_n_hide_json_data.error) then
 					if(self.hide_n_hide_json_data.error == "already_registerd")then
-						Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_already_registerd"))
+						Ryzhide:display_register_error(Ryzhide:load_translation("hide_n_hype_already_registerd"))
 						self.player_already_registerd = 1
 						Ryzhide:build_register_window()
 						self.json_data_ready = 0
 					elseif(self.hide_n_hide_json_data.error == "no_active_hide")then
-						Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_no_active_hide"))
+						Ryzhide:display_register_error(Ryzhide:load_translation("hide_n_hype_no_active_hide"))
 						self.player_already_registerd = 0
 						Ryzhide:close_window(self.main_window_name, "")
 						self.json_data_ready = 0
 					else
-						display_register_error(self.hide_n_hide_json_data.error)
+						Ryzhide:display_register_error(self.hide_n_hide_json_data.error)
 					end
 				elseif (self.hide_n_hide_json_data.success) then
 					self.player_already_registerd = 1
@@ -727,7 +727,7 @@ function Ryzhide:pars_json_data_register()
 						self.json_data_ready = 0
 						Ryzhide:build_register_window()
 					elseif(self.hide_n_hide_json_data.error == "no_active_hide")then
-						Ryzhide:display_register_sucess(Ryzhide:load_translation("hide_n_hype_no_active_hide"))
+						Ryzhide:display_unregister_error(Ryzhide:load_translation("hide_n_hype_no_active_hide"))
 						self.player_already_registerd = 0
 						self.json_data_ready = 0
 						Ryzhide:close_window(self.main_window_name, "")
@@ -1686,17 +1686,17 @@ function Ryzhide:pars_json_data_game_running_most_wanted()
 end
 
 function Ryzhide:display_hunter_on_map(hunter_pos_array)
-    if (type(hunter_pos_array) == "boolean") then
-        --reset only the map flags
-        delArkPoints()
+	if (type(hunter_pos_array) == "boolean") then
+		--reset only the map flags
+		delArkPoints()
 	else
-	    delArkPoints()
+		delArkPoints()
 		for _, positions in ipairs(hunter_pos_array) do
-            local xpos_hunter, ypos_hunter = positions:match("([^,]+),([^,]+)")
-            if(tonumber(xpos_hunter) ~= 0 or tonumber(ypos_hunter)~= 0)then
-                Ryzhide:display_debug_messanges("Hx:"..xpos_hunter.." Hy: "..ypos_hunter)
-                addLandMark(tonumber(xpos_hunter), tonumber(ypos_hunter), Ryzhide:load_translation("hide_n_hype_hunter"), "teammate_map.png","","","","","","")
-		    end
+			local xpos_hunter, ypos_hunter = positions:match("([^,]+),([^,]+)")
+			if(tonumber(xpos_hunter) ~= 0 or tonumber(ypos_hunter)~= 0)then
+				Ryzhide:display_debug_messanges("Hx:"..xpos_hunter.." Hy: "..ypos_hunter)
+				addLandMark(tonumber(xpos_hunter), tonumber(ypos_hunter), Ryzhide:load_translation("hide_n_hype_hunter"), "teammate_map.png","","","","","","")
+			end
 		end
 	end
 end
@@ -2095,7 +2095,7 @@ function Ryzhide:game_over_most_wanted_not_found(most_wanted_name,current_round_
 			addOnDbChange(mainui, self.timer_str, "Ryzhide:timer_to_claim_rewards("..timer_claim_reward..")")
 		end
 	else
-	    Ryzhide:display_debug_messanges("already_close"..self.closed_most_wanted_not_found_hunter)
+		Ryzhide:display_debug_messanges("already_close"..self.closed_most_wanted_not_found_hunter)
 		if(self.closed_most_wanted_not_found_hunter == 0)then
 			Ryzhide:build_most_wanted_not_found_hunter(most_wanted_name)
 		end
