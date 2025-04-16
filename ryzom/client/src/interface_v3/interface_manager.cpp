@@ -1017,6 +1017,7 @@ void CInterfaceManager::initInGame()
 	//CBotChatUI::refreshActiveWindows(); // bot chat windows are saved too..
 
 	CWidgetManager::getInstance()->activateMasterGroup ("ui:interface", true);
+	CLuaManager::getInstance().executeLuaScript("game:onLoadedUi()");
 
 	// Update the time in the ui database
 	_CheckMailNode = NLGUI::CDBManager::getInstance()->getDbProp("UI:VARIABLES:MAIL_WAITING");
@@ -1113,7 +1114,6 @@ void CInterfaceManager::loadUI()
 	}
 
 	configureQuitDialogBox();
-	CLuaManager::getInstance().executeLuaScript("game:onLoadedUi()");
 }
 
 // ------------------------------------------------------------------------------------------------
