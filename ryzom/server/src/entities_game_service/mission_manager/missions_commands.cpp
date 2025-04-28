@@ -3482,9 +3482,9 @@ NLMISC_COMMAND(getLastExchangeMount,"get tick of last exchange mount","<uid>")
 }
 
 //-----------------------------------------------
-NLMISC_COMMAND(mount,"mount the target","<uid>")
+NLMISC_COMMAND(mount,"mount the target","<uid> [<eid>]")
 {
-	if (args.size() != 1)
+	if (args.size() < 1)
 		return false;
 
 	GET_ACTIVE_CHARACTER;
@@ -3492,6 +3492,15 @@ NLMISC_COMMAND(mount,"mount the target","<uid>")
 	if ( c->getRiderEntity().isNull() )
 	{
 		CEntityId target = c->getTarget();
+
+		if (args.size() > 1)
+		{
+			CEntityId entityId(args[1]);
+			if (entityId != target)
+				log.displayNL("ERR: Bad target");
+		}
+
+
 		if( target.getType() == RYZOMID::creature || target.getType() == RYZOMID::npc )
 		{
 			CEntityBase * mount = CEntityBaseManager::getEntityBasePtr( target );
