@@ -441,6 +441,9 @@ function Ryzhide:check_for_update_server_config(json_data_from_join)
 	end
 end
 
+$forbidden_regions = _(hide_n_hype_forbidden_regions)
+hide_n_hype_forbidden_regions_txt = "$forbidden_regions"
+
 --###################################### START load and start at login function #######################################
 
 
@@ -572,7 +575,7 @@ end
 --###################################### START build and load registration window #######################################
 
 function Ryzhide:build_register_window()
-	local window_height = 270
+	local window_height = 290
 	local window_width = 365
 	
 	local html_ungister = ""
@@ -775,7 +778,7 @@ end
 
 --###################################### START build and load invite window #######################################
 function Ryzhide:build_invite_window()
-	local window_height = 360
+	local window_height = 420
 	local window_width = 400
 	
 	
@@ -786,6 +789,10 @@ function Ryzhide:build_invite_window()
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
 				<td align="center" colspan="2"><div id="hide_n_hype_timer_invite" class='ryzom-ui-grouptemplate' style='display:inline-block;template:hide_n_hype_timer;id:hide_n_hype_timer_invite;timer:]]..Ryzhide:convert_secound_to_string(self.duration_time_invite)..[[;'></div></td>
 				<td align="center" width="40"><img src="ico_time.png" width="40"></td>
+			</tr>
+			
+			<tr>
+				<td colspan="4" align="center"><font color="orange">]]..hide_n_hype_forbidden_regions_txt..[[</font></td>
 			</tr>
 			
 			<tr>
@@ -878,6 +885,10 @@ function Ryzhide:open_ask_for_join_window(current_round_time,current_round)
 	else
 		self.reject_invite_round_id = 0
 	end
+	
+	DynE.otherMapPoints["hidenhype_hunter"] = {}
+	delArkPoints()
+	DynE:AddOtherMapPoints()
 	
 	local mainui = getUI(self.main_window_name)
 	
@@ -1244,7 +1255,7 @@ end
 
 function Ryzhide:click_icon_ask_for_join(id)
 	local have_team_member = Ryzhide:check_have_team_member()
-	if(have_team_member == "true" and id ~= "reject_accept")then
+	if(have_team_member == "true" and id ~= "reject_accept" and id ~= "hunte_accept")then
 		Ryzhide:display_asked_for_join_error(Ryzhide:load_translation("hide_n_hype_you_cannot_be_in_team"))
 		return
 	end
@@ -1444,7 +1455,7 @@ function Ryzhide:build_hunter_window()
 end
 
 function Ryzhide:build_most_wanted_window()
-	local window_height = 500
+	local window_height = 530
 	local window_width = 415
 	local table_width = window_width + 15
 	
@@ -1470,6 +1481,10 @@ function Ryzhide:build_most_wanted_window()
 			</tr>
 			<tr>
 				<td align="center" colspan="3"><h4>3. ]]..Ryzhide:load_translation("hide_n_hype_wait_of_start_of_the_round")..[[</h4></td>
+			</tr>
+			
+			<tr>
+				<td align="center" colspan="3"><h4><font color="orange">4. ]]..hide_n_hype_forbidden_regions_txt..[[</font></h4></td>
 			</tr>
 			
 			<tr>
@@ -1604,7 +1619,10 @@ function Ryzhide:game_running_timer_stopped()
 	Ryzhide:display_debug_messanges("Timer_is_over_and_game_over")
 	self.need_json_update = 1
 	self.json_data_ready = 0
-	delArkPoints()
+	
+	DynE.otherMapPoints["hidenhype_hunter"] = {}
+    delArkPoints()
+	DynE:AddOtherMapPoints()
 	
 	Ryzhide:build_wait_start_window()
 end
@@ -1623,19 +1641,32 @@ function Ryzhide:check_player_are_in_special_state()
 	local current_player_mode = getPlayerMode()
 	local current_player_invisible = getDbProp("SERVER:USER:IS_INVISIBLE")
 	local have_team_member = "false"
+	local valid_a_check = 0
 	
 	local player_special_state = 0
 	
 	local have_team_member = Ryzhide:check_have_team_member()
 	if(have_team_member == "true")then
-		player_special_state = 69
+		valid_a_check = valid_a_check + 1
 	end
 	
 	if(self.json_pull_counter > 6)then
 		--now the tatus need to be fine and not allow to break
-		if(current_player_mode ~= "REST" or current_player_invisible == 0)then
-			player_special_state = 69
+		if(current_player_invisible == 0)then
+		    Ryzhide:display_debug_messanges("you_are_no_longer_invisible")
+		    valid_a_check = valid_a_check + 1
 		end
+		
+		if(current_player_mode ~= "REST")then
+		    if(current_player_mode ~= "SIT")then
+		        Ryzhide:display_debug_messanges("player_no_longer_rest_or_sit")
+		        valid_a_check = valid_a_check + 1
+		    end
+		end
+	end
+	
+	if(valid_a_check >= 1)then
+	    player_special_state = 69
 	end
 
 	return player_special_state
@@ -1688,16 +1719,22 @@ end
 function Ryzhide:display_hunter_on_map(hunter_pos_array)
 	if (type(hunter_pos_array) == "boolean") then
 		--reset only the map flags
+		DynE.otherMapPoints["hidenhype_hunter"] = {}
 		delArkPoints()
+		DynE:AddOtherMapPoints()
 	else
-		delArkPoints()
+	    DynE.otherMapPoints["hidenhype_hunter"] = {}
+	    
 		for _, positions in ipairs(hunter_pos_array) do
 			local xpos_hunter, ypos_hunter = positions:match("([^,]+),([^,]+)")
 			if(tonumber(xpos_hunter) ~= 0 or tonumber(ypos_hunter)~= 0)then
 				Ryzhide:display_debug_messanges("Hx:"..xpos_hunter.." Hy: "..ypos_hunter)
-				addLandMark(tonumber(xpos_hunter), tonumber(ypos_hunter), Ryzhide:load_translation("hide_n_hype_hunter"), "teammate_map.png","","","","","","")
+				table.insert(DynE.otherMapPoints["hidenhype_hunter"], {tonumber(xpos_hunter), tonumber(ypos_hunter), Ryzhide:load_translation("hide_n_hype_hunter"), "teammate_map.png"})
 			end
 		end
+		
+		delArkPoints()
+        DynE:AddOtherMapPoints()
 	end
 end
 
@@ -2060,7 +2097,7 @@ end
 --###################################### START build and load claim_your_price window #######################################
 
 
-function Ryzhide:game_over_most_wanted_not_found(most_wanted_name,current_round_id,timer_claim_reward)
+function Ryzhide:game_over_most_wanted_not_found(most_wanted_name,current_round_id,timer_claim_reward,most_wanted_position)
 	if(self.game_is_full_loaded == 0)then
 		Ryzhide:display_debug_messanges("game_not_loaded -- game_over_most_wanted_not_found")
 		return
@@ -2080,12 +2117,17 @@ function Ryzhide:game_over_most_wanted_not_found(most_wanted_name,current_round_
 	
 	Ryzhide:display_debug_messanges("game_over_most_wanted_not_found: "..timer_claim_reward)
 	Ryzhide:display_debug_messanges("most_wanted: "..most_wanted_name)
+	Ryzhide:display_debug_messanges("most_wanted_pos: "..most_wanted_position)
 	
 	if(most_wanted_name == "")then
 		Ryzhide:display_debug_messanges("error_most_wanted_name_empty")
 		Ryzhide:close_window(self.main_window_name, "")
 		return
 	end
+	
+	DynE.otherMapPoints["hidenhype_hunter"] = {}
+	delArkPoints()
+	DynE:AddOtherMapPoints()
 	
 	Ryzhide:check_local_player_name()
 	
@@ -2097,16 +2139,26 @@ function Ryzhide:game_over_most_wanted_not_found(most_wanted_name,current_round_
 	else
 		Ryzhide:display_debug_messanges("already_close"..self.closed_most_wanted_not_found_hunter)
 		if(self.closed_most_wanted_not_found_hunter == 0)then
-			Ryzhide:build_most_wanted_not_found_hunter(most_wanted_name)
+		    local xpos_most_wanted, ypos_most_wanted = most_wanted_position:match("([^,]+),([^,]+)")
+			if(tonumber(xpos_most_wanted) ~= 0 or tonumber(ypos_most_wanted)~= 0)then
+		       Ryzhide:build_most_wanted_not_found_hunter(most_wanted_name,tonumber(xpos_most_wanted),tonumber(ypos_most_wanted)) 
+		    else
+		        Ryzhide:build_most_wanted_not_found_hunter(most_wanted_name,0,0)
+		    end
 		end
 	end
 end
 
-function Ryzhide:game_over_most_wanted_found(hunter_name,most_wanted_name,current_round_id,timer_claim_reward)
+function Ryzhide:game_over_most_wanted_found(hunter_name,most_wanted_name,current_round_id,timer_claim_reward,most_wanted_position)
 	if(self.game_is_full_loaded == 0)then
 		Ryzhide:display_debug_messanges("game_not_loaded -- game_over_most_wanted_found")
 		return
 	end
+	
+	if(self.player_already_registerd == 0)then
+		return
+	end
+	
 	if(tonumber(self.reject_invite_round_id) == tonumber(current_round_id))then
 		return
 	end
@@ -2120,7 +2172,10 @@ function Ryzhide:game_over_most_wanted_found(hunter_name,most_wanted_name,curren
 	removeOnDbChange(mainui,self.timer_str)
 	
 	Ryzhide:check_local_player_name()
+	
+	DynE.otherMapPoints["hidenhype_hunter"] = {}
 	delArkPoints()
+	DynE:AddOtherMapPoints()
 	
 	if(self.player_name == most_wanted_name)then
 		if(self.reward_already_claimed == 0)then
@@ -2140,7 +2195,13 @@ function Ryzhide:game_over_most_wanted_found(hunter_name,most_wanted_name,curren
 		if(self.closed_loos_hunter == 0)then
 			self.player_type = "hunter"
 			Ryzhide:display_debug_messanges("You loose:"..hunter_name.." was faster then you")
-			Ryzhide:build_loos_hunter(hunter_name,most_wanted_name)
+			
+			local xpos_most_wanted, ypos_most_wanted = most_wanted_position:match("([^,]+),([^,]+)")
+			if(tonumber(xpos_most_wanted) ~= 0 or tonumber(ypos_most_wanted)~= 0)then
+		       Ryzhide:build_loos_hunter(hunter_name,most_wanted_name,tonumber(xpos_most_wanted),tonumber(ypos_most_wanted)) 
+		    else
+		       Ryzhide:build_loos_hunter(hunter_name,most_wanted_name,0,0)
+		    end
 		end
 	end
 end
@@ -2246,13 +2307,17 @@ function Ryzhide:build_finished_most_wanted(hunter_name,most_wanted_name)
 	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_finished_most_wanted, "", "")
 end
 
-function Ryzhide:build_loos_hunter(hunter_name,most_wanted_name)
+function Ryzhide:build_loos_hunter(hunter_name,most_wanted_name,pox_mostwanted,poy_mostwanted)
 	local window_height = 250
 	local window_width = 380
+	local show_map_or_not = 0
 	
-
-	local html_loos_hunter=""
-	html_loos_hunter=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title>
+	if(tonumber(pox_mostwanted) ~= 0 or tonumber(poy_mostwanted)~= 0)then
+	    show_map_or_not = 1
+	end
+	
+	local html_loos_hunter_without_map=""
+	html_loos_hunter_without_map=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title>
 			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 				<tr>
 					<td align="center"><img src="icon_unhappy.png" width="80" height="80" ></td>
@@ -2271,16 +2336,51 @@ function Ryzhide:build_loos_hunter(hunter_name,most_wanted_name)
 				</tr>
 			</table>]]
 			
-	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_loos_hunter, "click_close_button", "close_window_build_loos_hunter")
+	local html_loos_hunter_with_map=""
+	html_loos_hunter_with_map=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title>
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+				<tr>
+					<td align="center"><img src="icon_unhappy.png" width="80" height="80" ></td>
+				</tr>
+				
+				<tr>
+					<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_better_luck_next_time")..[[</h3></td>
+				</tr>
+				
+				<tr>
+					<td align="center"><h3>]]..hunter_name..[[</h3></td>
+				</tr>
+				
+				<tr>
+					<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_has_out_searched_you")..[[</h3></td>
+				</tr>
+				
+				<tr>
+					<td align="center"><img src="https://api.bmsite.net/maps/static?center=]]..pox_mostwanted..[[,]]..poy_mostwanted..[[&zoom=7&language=auto&markers=icon:npc|color:0xef4e4e|]]..pox_mostwanted..[[,]]..poy_mostwanted..[[&maptype=atys&mapmode=world&size=300x200" width="300" height="200" ></td>
+				</tr>
+			</table>]]
+			
+	if(show_map_or_not == 0)then		
+	    --dont show map bad pos
+	    Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_loos_hunter_without_map, "click_close_button", "close_window_build_loos_hunter")
+    else
+        window_height = 470
+        --show map good pos
+        Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_loos_hunter_with_map, "click_close_button", "close_window_build_loos_hunter")
+    end
 end
 
-function Ryzhide:build_most_wanted_not_found_hunter(most_wanted_name)
+function Ryzhide:build_most_wanted_not_found_hunter(most_wanted_name,pox_mostwanted,poy_mostwanted)
 	local window_height = 250
 	local window_width = 370
+	local show_map_or_not = 0
 	
-
-	local html_most_wanted_not_found_hunter=""
-	html_most_wanted_not_found_hunter=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title>
+	if(tonumber(pox_mostwanted) ~= 0 or tonumber(poy_mostwanted)~= 0)then
+	    show_map_or_not = 1
+	end
+	
+	local html_most_wanted_not_found_hunter_without_map=""
+	html_most_wanted_not_found_hunter_without_map=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title>
 			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
 				<tr>
 					<td align="center"><img src="icon_unhappy.png" width="80" height="80" ></td>
@@ -2299,7 +2399,38 @@ function Ryzhide:build_most_wanted_not_found_hunter(most_wanted_name)
 				</tr>
 			</table>]]
 			
-	Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_most_wanted_not_found_hunter, "click_close_button", "close_window_build_most_wanted_not_found_hunter")
+	local html_most_wanted_not_found_hunter_with_map=""
+	html_most_wanted_not_found_hunter_with_map=[[<title>]]..Ryzhide:load_translation("hide_n_hype_game_is_over_window")..[[</title>
+			<table width="100%" height="100%" cellpadding="2" cellspacing="2" border="]]..self.debug_window_border..[[">
+				<tr>
+					<td align="center"><img src="icon_unhappy.png" width="80" height="80" ></td>
+				</tr>
+				
+				<tr>
+					<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_better_luck_next_time")..[[</h3></td>
+				</tr>
+				
+				<tr>
+					<td align="center"><h3>]]..most_wanted_name..[[</h3></td>
+				</tr>
+				
+				<tr>
+					<td align="center"><h3>]]..Ryzhide:load_translation("hide_n_hype_keep_untouched_and_not_found")..[[</h3></td>
+				</tr>
+				
+				<tr>
+					<td align="center"><img src="https://api.bmsite.net/maps/static?center=]]..pox_mostwanted..[[,]]..poy_mostwanted..[[&zoom=7&language=auto&markers=icon:npc|color:0xef4e4e|]]..pox_mostwanted..[[,]]..poy_mostwanted..[[&maptype=atys&mapmode=world&size=300x200" width="300" height="200" ></td>
+				</tr>
+			</table>]]
+			
+	if(show_map_or_not == 0)then		
+	    --dont show map bad pos
+	    Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_most_wanted_not_found_hunter_without_map, "click_close_button", "close_window_build_most_wanted_not_found_hunter")
+    else
+        window_height = 470
+        --show map good pos
+        Ryzhide:open_resize_window(self.main_window_name, window_height, window_width, html_most_wanted_not_found_hunter_with_map, "click_close_button", "close_window_build_most_wanted_not_found_hunter")
+    end
 end
 
 function Ryzhide:build_most_wanted_not_found_most_wanted()
@@ -2484,10 +2615,23 @@ function Ryzhide:abort_because_of(process_info_name,round_id)
 	end
 end
 
-function Ryzhide:most_wanted_offline(time_until_abort)
+function Ryzhide:most_wanted_offline(time_until_abort,round_id)
 	local mainui = getUI(self.main_window_name)
 	removeOnDbChange(mainui, self.timer_str)
-
+	
+	if(self.game_is_full_loaded == 0)then
+		Ryzhide:display_debug_messanges("game_not_loaded -- abort_because_of: "..process_info_name)
+		return
+	end
+	
+	if(self.player_already_registerd == 0)then
+		return
+	end
+	
+	if(tonumber(self.reject_invite_round_id) == tonumber(round_id))then
+		return
+	end
+	
 	self.current_round_end = time_until_abort
 	Ryzhide:build_most_wanted_offline_window()
 	addOnDbChange(mainui, self.timer_str, "Ryzhide:run_timer_most_wanted_offline()")
@@ -2604,3 +2748,5 @@ function Ryzhide:click_icon_abort(trigger_id)
 end
 
 --###################################### END asked_for_abort #######################################
+
+debug("!!! Hide n Hype overload from Payload !!!!")
