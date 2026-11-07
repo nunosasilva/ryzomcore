@@ -1,10 +1,12 @@
-add_test_executable(nel_ligo_test
-        ut_ligo_primitive.test.cpp
-)
-target_link_libraries(nel_ligo_test
-        PRIVATE
-        NeL::ligo
-)
+if (WITH_LIGO)
+    add_test_executable(nel_ligo_test
+            ut_ligo_primitive.test.cpp
+    )
+    target_link_libraries(nel_ligo_test
+            PRIVATE
+            NeL::ligo
+    )
+endif ()
 
 add_test_executable(nel_misc_test
         ut_misc_base64.test.cpp
@@ -35,28 +37,36 @@ target_compile_definitions(nel_misc_test
 )
 
 
-add_test_executable(nel_net_test
-        ut_net_address.test.cpp
-        ut_net_layer3.test.cpp
-        ut_net_message.test.cpp
-        ut_net_module.test.cpp
-)
-target_link_libraries(nel_net_test
-        PRIVATE
-        NeL::misc
-        NeL::net
-)
+if (WITH_NET)
+    add_test_executable(nel_net_test
+            ut_net_address.test.cpp
+            ut_net_layer3.test.cpp
+            ut_net_message.test.cpp
+            ut_net_module.test.cpp
+    )
+    target_link_libraries(nel_net_test
+            PRIVATE
+            NeL::misc
+            NeL::net
+    )
+endif ()
 
 
-add_test_executable(nel_web_http_client_it
-        ut_web_http_client.it.cpp
-)
-target_link_libraries(nel_web_http_client_it
-        PRIVATE
-        NeL::web
-)
+# NeL::web is added by nel/src/CMakeLists.txt:7 under WITH_WEB OR WITH_GUI
+if (WITH_WEB OR WITH_GUI)
+    add_test_executable(nel_web_http_client_it
+            ut_web_http_client.it.cpp
+    )
+    target_link_libraries(nel_web_http_client_it
+            PRIVATE
+            NeL::web
+    )
+endif ()
 
-if (WITH_DRIVER_OPENAL)
+# NeL::sound needs the sound module (nel/src/CMakeLists.txt:31, WITH_SOUND),
+# NeL::sound::OpenAL the OpenAL driver (nel/src/sound/driver/CMakeLists.txt:23, WITH_DRIVER_OPENAL,
+# which defaults ON even with WITH_SOUND=OFF)
+if (WITH_SOUND AND WITH_DRIVER_OPENAL)
     add_test_executable(nel_sound_openal_it
             ut_sound_openal.it.cpp
     )
