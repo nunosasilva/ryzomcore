@@ -1338,7 +1338,7 @@ void prelogInit()
 
 
 		// Create a text context. We need to put the full path because we not already add search path
-		resetTextContext("uiFontSans", true);
+		resetTextContext("ryzom.ttf", true);
 
 		CInterfaceManager::getInstance()->setInterfaceScale(1.f, true);
 		CViewRenderer::getInstance()->setBilinearFiltering(ClientCfg.BilinearUI);

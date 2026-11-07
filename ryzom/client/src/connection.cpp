@@ -489,7 +489,7 @@ bool connection (const string &cookie, const string &fsaddr)
 	Actions.enable(false);
 	EditActions.enable(false);
 
-	resetTextContext("uiFontSans", true);
+	resetTextContext("ryzom.ttf", true);
 
 	if (InterfaceState == GOGOGO_IN_THE_GAME)
 	{
@@ -631,7 +631,7 @@ bool reconnection()
 	Actions.enable(false);
 	EditActions.enable(false);
 
-	resetTextContext("uiFontSans", true);
+	resetTextContext("ryzom.ttf", true);
 
 	if (InterfaceState == GOGOGO_IN_THE_GAME)
 	{
