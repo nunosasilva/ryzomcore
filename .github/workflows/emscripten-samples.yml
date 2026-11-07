@@ -189,6 +189,7 @@ jobs:
             nl_sample_planar_reflection \
             nl_sample_ppl \
             nl_sample_water \
+            nl_sample_landscape \
             nl_sample_font \
             nl_sample_gui \
             nl_sample_navigation
@@ -201,7 +202,7 @@ jobs:
         run: |
           mkdir -p pages
           # Copy built sample files
-          for sample in clip_plane nelvp planar_reflection ppl water font gui navigation; do
+          for sample in clip_plane nelvp planar_reflection ppl water landscape font gui navigation; do
             cp build/bin/nl_sample_${sample}.js pages/
             cp build/bin/nl_sample_${sample}.wasm pages/
             # Copy any embedded data files
@@ -210,7 +211,7 @@ jobs:
             fi
           done
           # Generate per-sample HTML host pages
-          for sample in clip_plane nelvp planar_reflection ppl water font gui navigation; do
+          for sample in clip_plane nelvp planar_reflection ppl water landscape font gui navigation; do
             title=$(echo "$sample" | sed 's/_/ /g; s/\b\(.\)/\u\1/g')
             cat > pages/nl_sample_${sample}.html << 'SAMPLEEOF'
           <!DOCTYPE html>
