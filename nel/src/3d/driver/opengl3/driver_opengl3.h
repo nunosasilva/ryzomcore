@@ -268,7 +268,7 @@ public:
 };
 
 // ***************************************************************************
-// Camera UBO data layout (std140, 288 bytes, matches GLSL NlCamera block)
+// Camera UBO data layout (std140, 352 bytes, matches GLSL NlCamera block)
 struct CCameraUBOData
 {
 	float viewMatrix[16];    // 64

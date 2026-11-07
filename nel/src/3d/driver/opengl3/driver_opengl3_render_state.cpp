@@ -383,6 +383,10 @@ void CDriverGL3::stageCameraUBO()
 	}
 
 	// Clip planes
+	// GCC 15 -Wstringop-overflow= "writing 16 bytes into a region of size 0 / at offset 112..192
+	// into 'viewMatrix' of size 64" is a false positive: it binds the float* destination to the
+	// struct's first member, not the 352-byte CCameraUBOData. clipPlane = 112 (64+16+12+4+8+4+4),
+	// stride 16, writes span 112..208, inside sizeof==352 (nlctassert in driver_opengl3.h).
 	for (uint i = 0; i < MaxClipPlanes; ++i)
 		memcpy(data.clipPlane[i], _ClipPlaneEye[i], 4 * sizeof(float));
 

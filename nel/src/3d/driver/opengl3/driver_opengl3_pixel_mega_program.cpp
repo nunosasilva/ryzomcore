@@ -377,6 +377,12 @@ void megaPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specular
 	if (fogOrPpl)
 	{
 		ss << "vec4 applyFog(vec4 col) {" << std::endl;
+		// NeL eye space is X=right, Y=INTO THE SCREEN, Z=up: the view matrix is built
+		// with columns (right, viewDirection, up) - see the sample camera in
+		// nel/samples/3d/landscape/main.cpp (jj = target-eye is the SECOND column).
+		// So the fog depth is ecPos.y, NOT ecPos.z (GL convention would be -z). setupFog
+		// start/end are WORLD-UNIT eye distances (legacy: glFogf(GL_FOG_START, start)
+		// at driver_opengl.cpp:1504), so z here is in world units too.
 		ss << "  float z = abs(ecPos.y / ecPos.w);" << std::endl;
 		ss << "  float fogFactor;" << std::endl;
 		ss << "  if (nlFogMode == 1) fogFactor = clamp(exp(-fogDensity * z), 0.0, 1.0);" << std::endl;

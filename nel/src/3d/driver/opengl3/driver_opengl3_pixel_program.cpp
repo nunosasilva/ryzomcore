@@ -652,6 +652,9 @@ void ppGenerate(std::string &result, const CPPBuiltin &desc, CGlExtensions &glex
 
 		ss << "vec4 applyFog(vec4 col)" << std::endl;
 		ss << "{" << std::endl;
+		// NeL eye space: X=right, Y=INTO THE SCREEN, Z=up (view matrix columns are
+		// right/viewDirection/up), so fog depth is ecPos.y, not GL's -z. start/end are
+		// WORLD-UNIT eye distances (legacy: glFogf(GL_FOG_START, start)).
 		ss << "  float z = abs(ecPos.y / ecPos.w);" << std::endl;
 		switch (desc.FogMode)
 		{
