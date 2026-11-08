@@ -71,15 +71,25 @@ bool			CNELU::initDriver (uint w, uint h, uint bpp, bool windowed, nlWindow syst
 	}
 #endif
 
-	// gl3 is asked for, not assumed: createGl3Driver() returns NULL when the
-	// OpenGL3 driver was not compiled in (WITH_DRIVER_OPENGL3=OFF) or cannot be
-	// loaded, and initDriver then falls back to the legacy GL driver instead of
-	// failing. That keeps this usable from every platform Ryzom builds on.
+	// gl3 is asked for, not assumed. Two different failure shapes, both handled:
+	// a static build returns NULL when the driver was not compiled in
+	// (WITH_DRIVER_OPENGL3=OFF -> no NL_OPENGL3_AVAILABLE, dru.cpp:145-152), while a
+	// dynamic build throws EDruOpengl3DriverNotFound when the DLL will not load
+	// (dru.cpp:168-171). initDriver falls back to the legacy GL driver either way.
 	if (!CNELU::Driver && gl3)
 	{
-		CNELU::Driver = CDRU::createGl3Driver();
-		if (!CNELU::Driver)
-			nlwarning("CNELU::initDriver: OpenGL3 driver not available, falling back to the legacy OpenGL driver");
+		bool gl3LoadThrew = false;
+		try
+		{
+			CNELU::Driver = CDRU::createGl3Driver();
+		}
+		catch (const EDru &e)
+		{
+			gl3LoadThrew = true;
+			nlwarning("CNELU::initDriver: OpenGL3 driver failed to load (%s), falling back to the legacy OpenGL driver", e.what());
+		}
+		if (!CNELU::Driver && !gl3LoadThrew)
+			nlwarning("CNELU::initDriver: OpenGL3 driver not compiled in, falling back to the legacy OpenGL driver");
 	}
 
 	if (!CNELU::Driver)
