@@ -43,6 +43,7 @@
 #include <nel/misc/time_nl.h>
 
 #include <cstdlib>
+#include <cstdio>   // sscanf (fog bounds from argv)
 
 #include <nel/3d/bezier_patch.h>
 #include <nel/3d/u_driver.h>
@@ -363,10 +364,15 @@ sint main(int argc, char **argv)
 	// 3rd/4th args: fog start/end in world units. Passing a huge range (1e5) means
 	// "fog off", which gives the reference frame for the fog A/B.
 	float fogStart = 90.f, fogEnd = 240.f;
-	if (argc > 4) // both fog bounds must be present: argv[argc] is NULL, and strtof(NULL) is UB
+	// sscanf, not strtof: strtof is C99 and is absent from the MSVC 2008 CRT, and vs2008.yml
+	// compiles this file (WITH_NEL_SAMPLES=ON, WITH_3D=ON). sscanf is already the pattern used
+	// by cluster_viewer/main.cpp:161 and by several tools.
+	if (argc > 4) // both fog bounds must be present: argv[argc] is NULL
 	{
-		fogStart = strtof(argv[3], 0);
-		fogEnd = strtof(argv[4], 0);
+		if (sscanf(argv[3], "%f", &fogStart) != 1)
+			fogStart = 90.f;
+		if (sscanf(argv[4], "%f", &fogEnd) != 1)
+			fogEnd = 240.f;
 	}
 #endif
 
