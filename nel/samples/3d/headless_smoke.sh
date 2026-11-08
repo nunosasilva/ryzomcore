@@ -109,10 +109,29 @@ else
 fi
 sleep 0.3
 
-# 1) driver / NeL errors and crash markers
-if grep -aqE '(ERR|FATAL) [0-9a-f]{6,} ' "$SAMPLE_LOG"; then
-  echo "FAIL: driver logged errors:"
-  grep -aE '(ERR|FATAL) [0-9a-f]{6,} ' "$SAMPLE_LOG" | head -10
+# 0) the frame must have been drawn by the driver this gate is about. Without it the
+#    test is a rubber stamp: a sample that silently fell back to the legacy OpenGL
+#    driver would pass while covering zero GL3 code, and the "only GL3-selecting
+#    samples are registered" list in CMakeLists.txt is a manual list, not a check.
+#    "3D: Light table size:" is logged by driver_opengl3.cpp:455 and by no other driver,
+#    so it proves the GL3 driver was created and got through init.
+if ! grep -aq "3D: Light table size:" "$SAMPLE_LOG"; then
+  echo "FAIL: no OpenGL3 driver banner in the log - the sample did not render under GL3"
+  fail=1
+fi
+
+# 1) driver / NeL errors and crash markers. NeL's tags are ERR WRN INF DBG STT AST UKN
+#    (displayer.cpp:59) - there is no FATAL tag, and a failed nlAssert logs AST, so
+#    AST is included and FATAL was dead weight. Mesa's own GLSL errors go to stderr
+#    as "ERROR: ..." with no NeL tag, so they need their own pattern.
+if grep -aqE '(ERR|AST) [0-9a-f]{6,} ' "$SAMPLE_LOG"; then
+  echo "FAIL: driver logged errors or assertions:"
+  grep -aE '(ERR|AST) [0-9a-f]{6,} ' "$SAMPLE_LOG" | head -10
+  fail=1
+fi
+if grep -aqE '^ERROR(:| \[)' "$SAMPLE_LOG"; then
+  echo "FAIL: raw GL/GLSL errors on stderr:"
+  grep -aE '^ERROR(:| \[)' "$SAMPLE_LOG" | head -10
   fail=1
 fi
 if grep -aqE 'User Crash Callback|Dumping call stack|Segmentation fault|Aborted' "$SAMPLE_LOG"; then
