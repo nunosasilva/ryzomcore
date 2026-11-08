@@ -776,6 +776,9 @@ void writeConfigFile(const char * configFileName)
 	fprintf(f,"UseDDS = \"%d\";\n",ViewerCfg.UseDDS?1:0);
 	fprintf(f,"AllPathRelative = \"%d\";\n",ViewerCfg.AllPathRelative?1:0);
 	fprintf(f,"Bank = \"%s\";\n",ViewerCfg.Bank.c_str());
+	// FarBank was read back with getVar() but never written, so a zviewer run with no
+	// cfg on disk wrote a cfg that the next run rejected (EUnknownVar -> nlerror -> abort).
+	fprintf(f,"FarBank = \"%s\";\n",ViewerCfg.FarBank.c_str());
 	fprintf(f,"ZonesPath = \"%s\";\n",ViewerCfg.ZonesPath.c_str());
 	fprintf(f,"IgPath = \"%s\";\n",ViewerCfg.IgPath.c_str());
 	fprintf(f,"ShapePath = \"%s\";\n",ViewerCfg.ShapePath.c_str());
@@ -885,8 +888,13 @@ void initViewerConfig(const char * configFileName)
 		CConfigFile::CVar &cvBank = cf.getVar("Bank");
 		ViewerCfg.Bank = cvBank.asString();
 		
-		CConfigFile::CVar &cvFarBank = cf.getVar("FarBank");
-		ViewerCfg.FarBank = cvFarBank.asString();
+		// Optional on purpose: writeConfigFile() did not emit FarBank (see below), so every
+		// zviewer.cfg on disk predating this fix lacks it, and getVar() would throw EUnknownVar
+		// and abort the tool. Absent means the historical behaviour - derive
+		// "<bank base>_su.farbank" from Bank (zviewer.cpp:390-392).
+		CConfigFile::CVar *cvFarBank = cf.getVarPtr("FarBank");
+		if (cvFarBank != nullptr)
+			ViewerCfg.FarBank = cvFarBank->asString();
 
 		CConfigFile::CVar &cvZonesPath = cf.getVar("ZonesPath");
 		ViewerCfg.ZonesPath = cvZonesPath.asString();
