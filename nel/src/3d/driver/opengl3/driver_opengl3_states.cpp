@@ -252,7 +252,7 @@ void CDriverGLStates3::polygonMode(GLenum mode)
 	{
 		m_CurPolygonMode = mode;
 #ifdef USE_OPENGLES3
-		// ES3 has no polygon mode, so this call is the no-op stub of stdopengl3.h:176-183
+		// ES3 has no polygon mode, so this call is the no-op stub of stdopengl3.h:176-181
 		// and the rasteriser stays GL_FILL. The only caller that asks for anything else is
 		// the debug render mode (driver_opengl3_render_state.cpp:116-122), which would otherwise
 		// silently keep drawing solid geometry.

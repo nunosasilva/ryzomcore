@@ -952,7 +952,10 @@ void initViewerConfig(const char * configFileName)
 		// Optional on purpose: writeConfigFile() did not emit FarBank (see below), so every
 		// zviewer.cfg on disk predating this fix lacks it, and getVar() would throw EUnknownVar
 		// and abort the tool. Absent means the historical behaviour - derive
-		// "<bank base>_su.farbank" from Bank (zviewer.cpp:390-392).
+		// "<bank base>_su.farbank" from Bank - see the "_su.farbank" derivation in
+		// initLandscape(). Named rather than cited by line number: these comments were written
+		// before later commits in the same series shifted the code down, and a line number rots
+		// on the next unrelated edit.
 		CConfigFile::CVar *cvFarBank = cf.getVarPtr("FarBank");
 		if (cvFarBank != nullptr)
 			ViewerCfg.FarBank = cvFarBank->asString();
