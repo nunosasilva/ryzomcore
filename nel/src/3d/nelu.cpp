@@ -71,11 +71,13 @@ bool			CNELU::initDriver (uint w, uint h, uint bpp, bool windowed, nlWindow syst
 	}
 #endif
 
-	// gl3 is asked for, not assumed. Two different failure shapes, both handled:
-	// a static build returns NULL when the driver was not compiled in
-	// (WITH_DRIVER_OPENGL3=OFF -> no NL_OPENGL3_AVAILABLE, dru.cpp:145-152), while a
-	// dynamic build throws EDruOpengl3DriverNotFound when the DLL will not load
-	// (dru.cpp:168-171). initDriver falls back to the legacy GL driver either way.
+	// gl3 is asked for, not assumed. Two different failure shapes from CDRU::createGl3Driver
+	// (nel/src/3d/dru.cpp), both handled: a static build returns NULL when the driver was
+	// not compiled in (WITH_DRIVER_OPENGL3=OFF -> no NL_OPENGL3_AVAILABLE), a dynamic build
+	// throws EDruOpengl3DriverNotFound when the DLL will not load. initDriver falls back to
+	// the legacy GL driver either way.
+	// Note this whole block sits in the #else of the __EMSCRIPTEN__ branch above, so on Web
+	// the GLES3 driver is always used and gl3 is ignored rather than honoured.
 	if (!CNELU::Driver && gl3)
 	{
 		bool gl3LoadThrew = false;

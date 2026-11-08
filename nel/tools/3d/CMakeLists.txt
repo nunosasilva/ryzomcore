@@ -109,7 +109,13 @@ IF(WITH_NEL_TOOLS AND WITH_3D)
   IF(WIN32)
 #    ADD_SUBDIRECTORY(lightmap_optimizer)
     IF(MFC_FOUND)
-      ADD_SUBDIRECTORY(object_viewer_exe)
+      # object_viewer_exe links NeL::sound, NeL::snd_lowlevel and the object_viewer_dll
+      # target built by ADD_SUBDIRECTORY(object_viewer) just above, which is itself gated
+      # on WITH_SOUND - so with sound off this configure would reference a target that was
+      # never created. tile_edit needs only NeL::misc + NeL::3d and stays ungated.
+      IF(WITH_SOUND)
+        ADD_SUBDIRECTORY(object_viewer_exe)
+      ENDIF()
       ADD_SUBDIRECTORY(tile_edit)
     ENDIF()
   ENDIF()
