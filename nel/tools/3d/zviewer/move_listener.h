@@ -112,6 +112,10 @@ private:
 	/// false if mouse is use to move
 	bool _MouseFree;
 
+	/// when true, mouse motion no longer rotates the camera: the angles are pinned
+	/// by the caller (see CMoveListener::lockRotation)
+	bool _RotationLocked;
+
 public:
 	
 	
@@ -189,6 +193,14 @@ public:
 
 	float getRotX() const { return _RotX; }
 	float getRotZ() const { return _RotZ; }
+
+	/// Pin the camera angles, and optionally stop mouse motion from changing them.
+	/// The headless capture harness needs this: operator() rotates the view from
+	/// mouse-move events, so without a pin two captures of the same scene show
+	/// different headings and cannot be compared pixel by pixel.
+	void setRotX(float rotX) { _RotX = rotX; }
+	void setRotZ(float rotZ) { _RotZ = rotZ; }
+	void lockRotation(bool lock) { _RotationLocked = lock; }
 
 	float getSpeed() const { return _TransSpeed; }
 

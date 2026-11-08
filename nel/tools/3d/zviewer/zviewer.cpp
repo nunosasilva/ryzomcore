@@ -96,6 +96,12 @@ struct CViewerConfig
 	float			ZFar;
 	float			LandscapeTileNear;
 	float			LandscapeThreshold;
+	// Camera pin. When CameraLocked is set, the view angles come from these two
+	// fields instead of drifting with mouse-move events, which is what makes a
+	// headless capture reproducible enough to diff pixel by pixel.
+	bool			CameraLocked;
+	float			CameraRotZ;
+	float			CameraRotX;
 	bool			LandscapeNoise;
 	// which driver NELU should create, and whether it may draw without a window.
 	// Gl3 asks for the OpenGL3 (shader) driver; CNELU::initDriver falls back to the
@@ -150,6 +156,9 @@ struct CViewerConfig
 		ZFar = 1000;
 		LandscapeTileNear = 50.0f;
 		LandscapeThreshold = 0.001f;
+		CameraLocked = false;
+		CameraRotZ = 0.0f;
+		CameraRotX = 0.0f;
 		LandscapeNoise = true;
 		Gl3 = false;
 		Offscreen = false;
@@ -538,6 +547,15 @@ void displayZones()
 	MoveListener.addToServer(CNELU::EventServer);
 	MoveListener.setPos( ViewerCfg.Position );	
 
+	// The pin has to be applied after init(): operator() would otherwise rotate the
+	// view again from the next mouse-move event.
+	if (ViewerCfg.CameraLocked)
+	{
+		MoveListener.setRotZ(ViewerCfg.CameraRotZ * Pi / 180.0f);
+		MoveListener.setRotX(ViewerCfg.CameraRotX * Pi / 180.0f);
+		MoveListener.lockRotation(true);
+	}
+
 	CNELU::Camera->setPerspective (float(80.0*Pi/180.0), 1.33f, 0.1f, 1000.0f);
 	
 	bool showInfos = true;
@@ -796,6 +814,9 @@ void writeConfigFile(const char * configFileName)
 	fprintf(f,"LandscapeTileNear = %f;\n", ViewerCfg.LandscapeTileNear);
 	fprintf(f,"LandscapeThreshold = %f;\n", ViewerCfg.LandscapeThreshold);
 	fprintf(f,"LandscapeNoise = %d;\n", (int)ViewerCfg.LandscapeNoise);
+	fprintf(f,"CameraLocked = %d;\n", ViewerCfg.CameraLocked ? 1 : 0);
+	fprintf(f,"CameraRotZ = %f;\n", ViewerCfg.CameraRotZ);
+	fprintf(f,"CameraRotX = %f;\n", ViewerCfg.CameraRotX);
 	fprintf(f,"BanksPath = \"%s\";\n",ViewerCfg.BanksPath.c_str());
 	fprintf(f,"TilesPath = \"%s\";\n",ViewerCfg.TilesPath.c_str());
 	fprintf(f,"UseDDS = \"%d\";\n",ViewerCfg.UseDDS?1:0);
@@ -933,6 +954,18 @@ void initViewerConfig(const char * configFileName)
 
 		CConfigFile::CVar &cvLandscapeNoise = cf.getVar("LandscapeNoise");
 		ViewerCfg.LandscapeNoise = cvLandscapeNoise.asInt() != 0;
+
+		// optional: absent in every cfg written before the pin existed, and the
+		// default keeps the old mouse-driven behaviour
+		CConfigFile::CVar *cvCameraLocked = cf.getVarPtr("CameraLocked");
+		if (cvCameraLocked)
+			ViewerCfg.CameraLocked = cvCameraLocked->asInt() != 0;
+		CConfigFile::CVar *cvCameraRotZ = cf.getVarPtr("CameraRotZ");
+		if (cvCameraRotZ)
+			ViewerCfg.CameraRotZ = cvCameraRotZ->asFloat();
+		CConfigFile::CVar *cvCameraRotX = cf.getVarPtr("CameraRotX");
+		if (cvCameraRotX)
+			ViewerCfg.CameraRotX = cvCameraRotX->asFloat();
 
 		CConfigFile::CVar &cvBanksPath = cf.getVar("BanksPath");
 		ViewerCfg.BanksPath = cvBanksPath.asString();

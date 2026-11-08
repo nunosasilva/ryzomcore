@@ -53,6 +53,7 @@ CMoveListener::CMoveListener()
 
 	_RotZ = 0;
 	_RotX = 0;
+	_RotationLocked = false;
 
 	_TransSpeed = 1.66f;
 	_RotSpeed = 1;
@@ -184,7 +185,7 @@ void CMoveListener::operator()(const CEvent& event)
 
 		if(!_MouseFree)
 		{
-			if(_CursorInit)
+			if(_CursorInit && !_RotationLocked)
 			{
 				float difx =  0.5f-mouseEvent->X;
 				if ( (float)fabs(difx) > eps)
