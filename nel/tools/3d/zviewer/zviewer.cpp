@@ -97,6 +97,12 @@ struct CViewerConfig
 	float			LandscapeTileNear;
 	float			LandscapeThreshold;
 	bool			LandscapeNoise;
+	// which driver NELU should create, and whether it may draw without a window.
+	// Gl3 asks for the OpenGL3 (shader) driver; CNELU::initDriver falls back to the
+	// legacy one when it is not compiled in, so this stays valid on every platform.
+	// Offscreen is what makes the tool drivable from a headless harness (Xvfb/CI).
+	bool			Gl3;
+	bool			Offscreen;
 	vector<string>	Zones;
 	vector<string>	Igs;
 
@@ -138,6 +144,8 @@ struct CViewerConfig
 		LandscapeTileNear = 50.0f;
 		LandscapeThreshold = 0.001f;
 		LandscapeNoise = true;
+		Gl3 = false;
+		Offscreen = false;
 
 		HeightFieldMaxZ= 100;
 		HeightFieldOriginX= 16000;
@@ -766,6 +774,8 @@ void writeConfigFile(const char * configFileName)
 	fprintf(f,"Background = { %d, %d, %d };\n", ViewerCfg.Background.R,ViewerCfg.Background.G,ViewerCfg.Background.B);
 	fprintf(f,"ZFar = %f;\n", ViewerCfg.ZFar);
 
+	fprintf(f,"Gl3 = %d;\n", ViewerCfg.Gl3?1:0);
+	fprintf(f,"Offscreen = %d;\n", ViewerCfg.Offscreen?1:0);
 	fprintf(f,"AutoLight = %d;\n", ViewerCfg.AutoLight?1:0);
 	fprintf(f,"LightDir = { %f, %f, %f };\n", ViewerCfg.LightDir.x, ViewerCfg.LightDir.y, ViewerCfg.LightDir.z);
 	fprintf(f,"LandscapeTileNear = %f;\n", ViewerCfg.LandscapeTileNear);
@@ -845,6 +855,18 @@ void initViewerConfig(const char * configFileName)
 
 		CConfigFile::CVar &cvEyesHeight = cf.getVar("EyesHeight");
 		ViewerCfg.EyesHeight = CVector(0,0,cvEyesHeight.asFloat());
+
+		// Optional, unlike the entries above: getVar() throws EUnknownVar (config_file.cpp:562),
+		// so a zviewer.cfg written before these knobs existed - including the one shipped in this
+		// directory, and every artist's copy on disk - must keep loading. Absent means the legacy
+		// driver and a real window, i.e. exactly the previous behaviour.
+		CConfigFile::CVar *cvGl3 = cf.getVarPtr("Gl3");
+		if (cvGl3 != nullptr)
+			ViewerCfg.Gl3 = cvGl3->asInt() ? true : false;
+
+		CConfigFile::CVar *cvOffscreen = cf.getVarPtr("Offscreen");
+		if (cvOffscreen != nullptr)
+			ViewerCfg.Offscreen = cvOffscreen->asInt() ? true : false;
 
 		CConfigFile::CVar &cvBackColor = cf.getVar("Background");
 		nlassert(cvBackColor.size()==3);
@@ -989,7 +1011,7 @@ int nltmain(int /* argc */, NLMISC::tchar ** /* argv */)
 		initViewerConfig("zviewer.cfg");
 
 		// Init NELU
-		NL3D::CNELU::init(ViewerCfg.Width, ViewerCfg.Height, CViewport(), ViewerCfg.Depth, ViewerCfg.Windowed, EmptyWindow, false, false);
+		NL3D::CNELU::init(ViewerCfg.Width, ViewerCfg.Height, CViewport(), ViewerCfg.Depth, ViewerCfg.Windowed, EmptyWindow, ViewerCfg.Offscreen, false, ViewerCfg.Gl3);
 		NL3D::CNELU::Driver->setWindowTitle(ucstring("NeL ZViewer"));
 		NL3D::CNELU::Camera->setTransformMode(ITransformable::DirectMatrix);
 

@@ -51,7 +51,7 @@ CEventServer		CNELU::EventServer;
 CEventListenerAsync	CNELU::AsyncListener;
 
 
-bool			CNELU::initDriver (uint w, uint h, uint bpp, bool windowed, nlWindow systemWindow, bool offscreen, bool direct3d)
+bool			CNELU::initDriver (uint w, uint h, uint bpp, bool windowed, nlWindow systemWindow, bool offscreen, bool direct3d, bool gl3)
 {
 	// Init debug system
 //	NLMISC::InitDebug();
@@ -70,6 +70,17 @@ bool			CNELU::initDriver (uint w, uint h, uint bpp, bool windowed, nlWindow syst
 		CNELU::Driver= CDRU::createD3DDriver();
 	}
 #endif
+
+	// gl3 is asked for, not assumed: createGl3Driver() returns NULL when the
+	// OpenGL3 driver was not compiled in (WITH_DRIVER_OPENGL3=OFF) or cannot be
+	// loaded, and initDriver then falls back to the legacy GL driver instead of
+	// failing. That keeps this usable from every platform Ryzom builds on.
+	if (!CNELU::Driver && gl3)
+	{
+		CNELU::Driver = CDRU::createGl3Driver();
+		if (!CNELU::Driver)
+			nlwarning("CNELU::initDriver: OpenGL3 driver not available, falling back to the legacy OpenGL driver");
+	}
 
 	if (!CNELU::Driver)
 	{
@@ -187,10 +198,10 @@ void			CNELU::releaseDriver()
 	}
 }
 
-bool			CNELU::init (uint w, uint h, CViewport viewport, uint bpp, bool windowed, nlWindow systemWindow, bool offscreen, bool direct3d)
+bool			CNELU::init (uint w, uint h, CViewport viewport, uint bpp, bool windowed, nlWindow systemWindow, bool offscreen, bool direct3d, bool gl3)
 {
 	NL3D::registerSerial3d();
-	if (initDriver(w,h,bpp,windowed,systemWindow,offscreen,direct3d))
+	if (initDriver(w,h,bpp,windowed,systemWindow,offscreen,direct3d,gl3))
 	{
 		initScene(viewport);
 		initEventServer();
