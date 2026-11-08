@@ -129,3 +129,27 @@ IF(WITH_INSTALL_LIBRARIES OR NOT WITH_STATIC_DRIVERS)
     INSTALL(TARGETS ${NLDRV_OGL_LIB} RUNTIME DESTINATION maxplugin COMPONENT drivers3d)
   ENDIF()
 ENDIF()
+
+# ---------------------------------------------------------------------------
+# CPU-only regression test for the nelvp -> GLSL converter (see main.cpp).
+#
+# Registered here, inside the driver's own directory, rather than under
+# nel/tools/3d: it calls CDriverGL3::convertNelvpToGLSL, which is declared in
+# this directory's private header (driver_opengl3.h) and is not part of NeL's
+# public 3D API, and it must link the driver library itself. That link only
+# works for a STATIC driver: the default build makes drivers MODULE plugins
+# exporting exactly two C symbols (driver_opengl3.def: NL3D_createIDriverInstance,
+# NL3D_interfaceVersion), so with WITH_STATIC_DRIVERS=OFF the symbol is not
+# exported and the test would fail to link. The gate states that limit rather
+# than hiding it - with shared drivers this test is simply not registered.
+#
+# Coverage of this target, honestly: build-client.yml sets no WITH_DRIVER* flag
+# at all and emscripten-samples.yml forces -DWITH_DRIVER_OPENGL3=OFF, so neither
+# builds the GL3 driver; vs2008.yml does build it but configures
+# -DWITH_NEL_TESTS=OFF -DWITH_TESTING=OFF, so the test is not registered there
+# either. The compile+run gate for this file is local (build-nel, static drivers)
+# unless a CI job turns both flags on - do not describe it as CI-covered.
+# ---------------------------------------------------------------------------
+IF(WITH_STATIC_DRIVERS AND (WITH_NEL_TESTS OR WITH_TESTING))
+  ADD_SUBDIRECTORY(nelvp_glsl_test)
+ENDIF()

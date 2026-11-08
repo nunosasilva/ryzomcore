@@ -1500,7 +1500,12 @@ private:
 
 	bool			compileVertexProgram(CVertexProgram *program) NL_OVERRIDE;
 	bool			compileInsertVertexProgram(CVertexProgram *program);
-	bool			convertNelvpToGLSL(CVertexProgram *program, bool linked, bool clip);
+	// static: the conversion is a pure function of the program's nelvp source - it
+	// reads no CDriverGL3 state (only the MaxClipPlanes enum) and writes only the
+	// new CSource it appends. Being static is what lets the CPU-only converter
+	// test in nelvp_glsl_test/ call it without constructing a driver (whose ctor
+	// does platform GL init: autorelease pool on macOS, HDC/RC handles on Windows).
+	static bool		convertNelvpToGLSL(CVertexProgram *program, bool linked, bool clip);
 	CUniformBuffer	*getNelvpUB(TProgram program) const;
 	void			flushNelvpUserVP();
 
