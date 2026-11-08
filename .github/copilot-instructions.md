@@ -43,7 +43,7 @@ emcmake cmake /path/to/ryzomcore \
 
 ```bash
 cd /tmp/embuild
-emmake make -j$(nproc) nl_sample_clip_plane nl_sample_nelvp nl_sample_planar_reflection nl_sample_ppl nl_sample_water nl_sample_font
+emmake make -j$(nproc) nl_sample_clip_plane nl_sample_nelvp nl_sample_planar_reflection nl_sample_ppl nl_sample_water nl_sample_landscape nl_sample_font
 ```
 
 ### Sample assets (nl_sample_water)
@@ -165,5 +165,5 @@ cmake /path/to/ryzomcore \
   -DWITH_WEB=OFF \
   -DCMAKE_BUILD_TYPE=Release
 
-make -j$(nproc) nl_sample_clip_plane nl_sample_nelvp nl_sample_planar_reflection nl_sample_ppl nl_sample_font
+make -j$(nproc) nl_sample_clip_plane nl_sample_nelvp nl_sample_planar_reflection nl_sample_ppl nl_sample_landscape nl_sample_font
 ```
