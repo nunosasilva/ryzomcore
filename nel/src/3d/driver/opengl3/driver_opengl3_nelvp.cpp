@@ -231,6 +231,22 @@ static void writeScalarSrcOperand(std::stringstream &ss, const CVPOperand &op, i
 		ss << ")";
 }
 
+// True when a destination operand has a GLSL name of its own. Shared by the
+// analysis pass (decides whether the discard sink must be declared) and by
+// writeDestOperand (decides what to emit), so the two can never disagree and
+// the generated shader can never reference an undeclared identifier.
+static bool destHasGLSLName(const CVPOperand &op)
+{
+	if (op.Type == CVPOperand::Variable || op.Type == CVPOperand::AddressRegister)
+		return true;
+	if (op.Type != CVPOperand::OutputRegister)
+		return false;
+	int enumVal = (int)op.Value.OutputRegisterValue;
+	if (enumVal == CVPOperand::OHPosition || enumVal == CVPOperand::OPointSize)
+		return true;
+	return s_OutputVaryingName[enumVal] != nullptr;
+}
+
 // Write a destination operand (LHS of assignment)
 static void writeDestOperand(std::stringstream &ss, const CVPOperand &op)
 {
@@ -252,8 +268,14 @@ static void writeDestOperand(std::stringstream &ss, const CVPOperand &op)
 			{
 				// Same two registers as in writeSrcOperand(): writing a back-face colour is
 				// dropped, so the back face keeps using o[COL0] and nothing else says so.
+				// The write still needs a well-formed LHS: emitting a comment as the LHS
+				// produced '/* unsupported output 3 */ = v0;', a GLSL syntax error that
+				// only surfaces as a failed shader compile at runtime (caught by the
+				// nelvp_glsl_test converter test; nothing shipped writes those registers
+				// today). It lands in the discard sink instead - a dead store the compiler
+				// removes - with the nlwarning still naming the dropped register.
 				nlwarning("GL3/nelvp: unsupported vertex program output register %d (back-face colour), dropping the write", enumVal);
-				ss << "/* unsupported output " << enumVal << " */";
+				ss << "_nelvpDroppedOut";
 				return;
 			}
 		}
@@ -262,7 +284,8 @@ static void writeDestOperand(std::stringstream &ss, const CVPOperand &op)
 		ss << "A0x";
 		return; // No write mask for address register
 	default:
-		ss << "/* unknown dest */";
+		// Same reason as the back-face colour case: a comment is not an LHS.
+		ss << "_nelvpDroppedOut";
 		return;
 	}
 
@@ -343,6 +366,7 @@ bool CDriverGL3::convertNelvpToGLSL(CVertexProgram *program, bool linked, bool c
 	bool tempUsed[12];
 	bool addressUsed = false;
 	bool indexedConstantUsed = false;
+	bool droppedOutputUsed = false; // some write has no GLSL target and needs the sink
 	int highestConstant = -1; // Highest constant register referenced (direct or indexed upper bound)
 	memset(inputUsed, 0, sizeof(inputUsed));
 	memset(outputUsed, 0, sizeof(outputUsed));
@@ -360,6 +384,11 @@ bool CDriverGL3::convertNelvpToGLSL(CVertexProgram *program, bool linked, bool c
 			tempUsed[instr.Dest.Value.VariableValue] = true;
 		else if (instr.Dest.Type == CVPOperand::AddressRegister)
 			addressUsed = true;
+
+		// A destination the converter cannot name (o[BFC0]/o[BFC1]) still needs an
+		// LHS, so it is written to a discard sink declared on demand.
+		if (!destHasGLSLName(instr.Dest))
+			droppedOutputUsed = true;
 
 		// Scan sources
 		for (uint s = 0; s < numSrc; s++)
@@ -492,6 +521,8 @@ bool CDriverGL3::convertNelvpToGLSL(CVertexProgram *program, bool linked, bool c
 	}
 	if (addressUsed)
 		ss << "int A0x = 0;\n";
+	if (droppedOutputUsed)
+		ss << "vec4 _nelvpDroppedOut = vec4(0.0); // sink: nelvp writes with no GLSL target\n";
 	ss << "\n";
 
 	// Translate instructions
