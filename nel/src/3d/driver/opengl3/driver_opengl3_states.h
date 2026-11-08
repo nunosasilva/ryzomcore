@@ -109,6 +109,9 @@ public:
 	TCullMode getCullMode() const;
 
 	/// glPolygonMode(GL_FRONT_AND_BACK, mode).
+	/// OpenGL ES 3.0 has no polygon mode at all (no GL_POLYGON_MODE in the state table),
+	/// so on that platform this resolves to the no-op stub of stdopengl3.h and only
+	/// GL_FILL is ever actually in effect. The first unsupported request warns once.
 	void polygonMode(GLenum mode);
 
 	/// @}
@@ -307,6 +310,10 @@ private:
 	bool m_CurCullFace;
 	TCullMode m_CullMode;
 	GLenum m_CurPolygonMode;
+#ifdef USE_OPENGLES3
+	// Set by the first request this driver cannot honour (see polygonMode()).
+	bool m_PolygonModeWarned;
+#endif
 
 	// Fragment operations
 	bool m_CurBlend;

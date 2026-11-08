@@ -42,6 +42,9 @@ CDriverGLStates3::CDriverGLStates3()
 	m_CurCullFace = true;
 	m_CullMode = CCW;
 	m_CurPolygonMode = GL_FILL;
+#ifdef USE_OPENGLES3
+	m_PolygonModeWarned = false;
+#endif
 
 	// Fragment operations
 	m_CurBlend = false;
@@ -145,7 +148,8 @@ void CDriverGLStates3::forceDefaults()
 	m_CurPolygonMode = GL_FILL;
 	glEnable(GL_CULL_FACE);
 	glCullFace(GL_BACK);
-	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // TODO GLES: not available
+	// No-op on ES3 (stdopengl3.h stub), where FILL is the only mode that exists anyway.
+	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
 	// Fragment operations
 	m_CurBlend = false;
@@ -183,7 +187,8 @@ void CDriverGLStates3::forceDefaults()
 	m_DepthRangeNear = 0.f;
 	m_DepthRangeFar = 1.f;
 	m_ZBias = 0.f;
-	glDepthRange(0, 1); // TODO GLES: glDepthRangef(0.f, 1.f);
+	// stdopengl3.h maps this to glDepthRangef(0.f, 1.f) on ES3, which is the ES spelling.
+	glDepthRange(0, 1);
 
 	// Clip planes
 	for (uint i = 0; i < MaxClipDistances; ++i)
@@ -246,7 +251,18 @@ void CDriverGLStates3::polygonMode(GLenum mode)
 #endif
 	{
 		m_CurPolygonMode = mode;
-		glPolygonMode(GL_FRONT_AND_BACK, mode); // TODO GLES: not available
+#ifdef USE_OPENGLES3
+		// ES3 has no polygon mode, so this call is the no-op stub of stdopengl3.h:176-183
+		// and the rasteriser stays GL_FILL. The only caller that asks for anything else is
+		// the debug render mode (driver_opengl3_render_state.cpp:116-122), which would otherwise
+		// silently keep drawing solid geometry.
+		if (mode != GL_FILL && !m_PolygonModeWarned)
+		{
+			m_PolygonModeWarned = true;
+			nlwarning("GL3: OpenGL ES 3.0 has no polygon mode, ignoring GL_LINE/GL_POINT");
+		}
+#endif
+		glPolygonMode(GL_FRONT_AND_BACK, mode);
 	}
 }
 
@@ -421,7 +437,8 @@ void CDriverGLStates3::updateDepthRange()
 {
 	H_AUTO_OGL(CDriverGLStates3_updateDepthRange)
 	float delta = m_ZBias * (m_DepthRangeFar - m_DepthRangeNear);
-	glDepthRange(delta + m_DepthRangeNear, delta + m_DepthRangeFar); // TODO GLES: glDepthRangef
+	// stdopengl3.h maps this to glDepthRangef on ES3 (the ES-only spelling of the same state).
+	glDepthRange(delta + m_DepthRangeNear, delta + m_DepthRangeFar);
 }
 
 void CDriverGLStates3::setDepthRange(float znear, float zfar)
