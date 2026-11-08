@@ -103,6 +103,13 @@ struct CViewerConfig
 	// Offscreen is what makes the tool drivable from a headless harness (Xvfb/CI).
 	bool			Gl3;
 	bool			Offscreen;
+	// Fog, mirroring the client's own contract at ryzom/client/src/fog_map.cpp:50-51
+	// (enableFog(true) then setupFog(start, end, colour), start/end in WORLD UNITS).
+	// Off by default so the tool keeps drawing exactly what it drew before.
+	bool			Fog;
+	float			FogStart;
+	float			FogEnd;
+	CRGBA			FogColor;
 	vector<string>	Zones;
 	vector<string>	Igs;
 
@@ -146,6 +153,10 @@ struct CViewerConfig
 		LandscapeNoise = true;
 		Gl3 = false;
 		Offscreen = false;
+		Fog = false;
+		FogStart = 0.0f;
+		FogEnd = 100.0f;
+		FogColor = CRGBA(154, 172, 224, 255);
 
 		HeightFieldMaxZ= 100;
 		HeightFieldOriginX= 16000;
@@ -776,6 +787,10 @@ void writeConfigFile(const char * configFileName)
 
 	fprintf(f,"Gl3 = %d;\n", ViewerCfg.Gl3?1:0);
 	fprintf(f,"Offscreen = %d;\n", ViewerCfg.Offscreen?1:0);
+	fprintf(f,"Fog = %d;\n", ViewerCfg.Fog?1:0);
+	fprintf(f,"FogStart = %.2f;\n", ViewerCfg.FogStart);
+	fprintf(f,"FogEnd = %.2f;\n", ViewerCfg.FogEnd);
+	fprintf(f,"FogColor = \"%d,%d,%d\";\n", (int)ViewerCfg.FogColor.R, (int)ViewerCfg.FogColor.G, (int)ViewerCfg.FogColor.B);
 	fprintf(f,"AutoLight = %d;\n", ViewerCfg.AutoLight?1:0);
 	fprintf(f,"LightDir = { %f, %f, %f };\n", ViewerCfg.LightDir.x, ViewerCfg.LightDir.y, ViewerCfg.LightDir.z);
 	fprintf(f,"LandscapeTileNear = %f;\n", ViewerCfg.LandscapeTileNear);
@@ -867,6 +882,30 @@ void initViewerConfig(const char * configFileName)
 		CConfigFile::CVar *cvOffscreen = cf.getVarPtr("Offscreen");
 		if (cvOffscreen != nullptr)
 			ViewerCfg.Offscreen = cvOffscreen->asInt() ? true : false;
+
+		// Optional for the same reason as Gl3/Offscreen. FogStart/FogEnd are WORLD-UNIT
+		// eye distances (what setupFog feeds to the fog UBO), not 0..1 fractions.
+		CConfigFile::CVar *cvFog = cf.getVarPtr("Fog");
+		if (cvFog != nullptr)
+			ViewerCfg.Fog = cvFog->asInt() ? true : false;
+		CConfigFile::CVar *cvFogStart = cf.getVarPtr("FogStart");
+		if (cvFogStart != nullptr)
+			ViewerCfg.FogStart = cvFogStart->asFloat();
+		CConfigFile::CVar *cvFogEnd = cf.getVarPtr("FogEnd");
+		if (cvFogEnd != nullptr)
+			ViewerCfg.FogEnd = cvFogEnd->asFloat();
+		CConfigFile::CVar *cvFogColor = cf.getVarPtr("FogColor");
+		if (cvFogColor != nullptr)
+		{
+			// "r,g,b". sscanf, not strtof/stof: MSVC 2008's CRT has no strtof (vs2008.yml
+			// builds the NeL tools with -DWITH_NEL_TOOLS=ON) and stof is C++11.
+			int fr = 0, fg = 0, fb = 0;
+			std::string fogCol = cvFogColor->asString();
+			if (sscanf(fogCol.c_str(), "%d,%d,%d", &fr, &fg, &fb) == 3)
+				ViewerCfg.FogColor = CRGBA((uint8)fr, (uint8)fg, (uint8)fb, 255);
+			else
+				nlwarning("ZV: FogColor \"%s\" is not \"r,g,b\", keeping the default", fogCol.c_str());
+		}
 
 		CConfigFile::CVar &cvBackColor = cf.getVar("Background");
 		nlassert(cvBackColor.size()==3);
@@ -1013,6 +1052,14 @@ int nltmain(int /* argc */, NLMISC::tchar ** /* argv */)
 		// Init NELU
 		NL3D::CNELU::init(ViewerCfg.Width, ViewerCfg.Height, CViewport(), ViewerCfg.Depth, ViewerCfg.Windowed, EmptyWindow, ViewerCfg.Offscreen, false, ViewerCfg.Gl3);
 		NL3D::CNELU::Driver->setWindowTitle(ucstring("NeL ZViewer"));
+
+		// Fog is driver state, set once. Same call pair the client uses per fog map
+		// (ryzom/client/src/fog_map.cpp:50-51).
+		if (ViewerCfg.Fog)
+		{
+			NL3D::CNELU::Driver->enableFog(true);
+			NL3D::CNELU::Driver->setupFog(ViewerCfg.FogStart, ViewerCfg.FogEnd, ViewerCfg.FogColor);
+		}
 		NL3D::CNELU::Camera->setTransformMode(ITransformable::DirectMatrix);
 
 		// Init the font manager
