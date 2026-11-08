@@ -788,8 +788,8 @@ void writeConfigFile(const char * configFileName)
 	fprintf(f,"Gl3 = %d;\n", ViewerCfg.Gl3?1:0);
 	fprintf(f,"Offscreen = %d;\n", ViewerCfg.Offscreen?1:0);
 	fprintf(f,"Fog = %d;\n", ViewerCfg.Fog?1:0);
-	fprintf(f,"FogStart = %.2f;\n", ViewerCfg.FogStart);
-	fprintf(f,"FogEnd = %.2f;\n", ViewerCfg.FogEnd);
+	fprintf(f,"FogStart = %f;\n", ViewerCfg.FogStart);
+	fprintf(f,"FogEnd = %f;\n", ViewerCfg.FogEnd);
 	fprintf(f,"FogColor = \"%d,%d,%d\";\n", (int)ViewerCfg.FogColor.R, (int)ViewerCfg.FogColor.G, (int)ViewerCfg.FogColor.B);
 	fprintf(f,"AutoLight = %d;\n", ViewerCfg.AutoLight?1:0);
 	fprintf(f,"LightDir = { %f, %f, %f };\n", ViewerCfg.LightDir.x, ViewerCfg.LightDir.y, ViewerCfg.LightDir.z);
