@@ -174,7 +174,15 @@ static void writeSrcOperand(std::stringstream &ss, const CVPOperand &op, int reg
 			else if (s_OutputVaryingName[enumVal])
 				ss << s_OutputVaryingName[enumVal];
 			else
+			{
+				// The only nullptr entries of s_OutputVaryingName not already handled above are
+				// OBackFacePrimaryColor / OBackFaceSecondaryColor (vertex_program_parse.h:130,
+				// which itself notes they are unsupported on some implementations; driver.h:1353
+				// documents the semantic - o[BFC0]/o[BFC1] colour the back face instead of o[COL0]).
+				// Reading one here yields black, silently, without this line.
+				nlwarning("GL3/nelvp: unsupported vertex program output register %d (back-face colour), reading it as vec4(0.0)", enumVal);
 				ss << "/* unsupported output " << enumVal << " */vec4(0.0)";
+			}
 		}
 		break;
 	case CVPOperand::AddressRegister:
@@ -242,6 +250,9 @@ static void writeDestOperand(std::stringstream &ss, const CVPOperand &op)
 				ss << s_OutputVaryingName[enumVal];
 			else
 			{
+				// Same two registers as in writeSrcOperand(): writing a back-face colour is
+				// dropped, so the back face keeps using o[COL0] and nothing else says so.
+				nlwarning("GL3/nelvp: unsupported vertex program output register %d (back-face colour), dropping the write", enumVal);
 				ss << "/* unsupported output " << enumVal << " */";
 				return;
 			}
