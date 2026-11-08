@@ -25,6 +25,7 @@
 #include "nel/3d/tessellation.h"
 #include "nel/3d/vertex_buffer.h"
 #include "nel/3d/vertex_program.h"
+#include "nel/3d/uniform_buffer.h"
 
 
 namespace NL3D
@@ -33,6 +34,9 @@ namespace NL3D
 
 class	IDriver;
 class	CVertexProgram;
+class CVertexProgramLandscapeUBO;
+class CUniformBuffer;
+class CUniformBufferFormat;
 
 
 // ***************************************************************************
@@ -125,6 +129,29 @@ public:
 	void			activate(uint vpId);
 	void			activateVP(uint vpId);
 	inline CVertexProgramLandscape *getVP(uint vpId) const { return _VertexProgram[vpId]; }
+
+	/// \name UBO based GLSL landscape vertex program (GL3 driver only, Tile type only).
+	// @{
+	// True if the hand-written GLSL/UBO program is active for that vpId (instead of
+	// the nelvp one). Callers must then feed the NlLandscape UBO, not individual
+	// uniforms.
+	bool			isUBOVertexProgram(uint vpId) const { return _VertexProgramUBO[vpId] != 0; }
+	CVertexProgramLandscapeUBO *getUBOVP(uint vpId) const { return _VertexProgramUBO[vpId]; }
+	// The shared UBO holding refineCenter/tileDist/pzbModelPosition, NULL if not active.
+	CUniformBuffer *getUBOBuffer() const { return _LandscapeUB; }
+
+	// UBO member offsets (in bytes) in the NlLandscape UBO, filled by the program ctor.
+	struct CLandscapeUBOOffsets
+	{
+		sint RefineCenter;
+		sint TileDist;
+		sint PZBModelPosition;
+	};
+	static const CLandscapeUBOOffsets &uboOffsets();
+	// Shared UBO format (std140 layout of NlLandscape), built by the VP ctor.
+	static NLMISC::CSmartPtr<CUniformBufferFormat> _UBFormat;
+	static CLandscapeUBOOffsets _UBOOffsets;
+	// @}
 	// @}
 
 
@@ -183,11 +210,46 @@ public:
 	// Vertex Program , NULL if not enabled.
 private:
 	NLMISC::CSmartPtr<CVertexProgramLandscape> _VertexProgram[MaxVertexProgram];
+	// Hand-written GLSL/UBO twin programs (Tile only). NULL on drivers without UBO support.
+	NLMISC::CSmartPtr<CVertexProgramLandscapeUBO> _VertexProgramUBO[MaxVertexProgram];
+	// Shared UBO for the landscape VP data (set-and-discard per draw call).
+	NLMISC::CRefPtr<CUniformBuffer> _LandscapeUB;
 	void				deleteVertexProgram();
 	void				setupVBFormatAndVertexProgram(bool withVertexProgram);
 	// @}
 
 };
+
+// ***************************************************************************
+/**
+ * Hand-written GLSL landscape vertex program, Tile type only.
+ *
+ * Same job as the nelvp Tile program (geomorph blend + projection + uv copy), but
+ * reads its data from a user UBO (binding UBBindingVertexProgram, 'NlLandscape')
+ * instead of individual named uniforms, following the CVertexProgramWindTreeUBO
+ * precedent. modelViewProjection and the fog basis come from the builtin NlModel/
+ * NlCamera UBOs, so only landscape specific data is in our own block. The nelvp
+ * 'o[FOGC]' output is dropped: the GL3 mega pixel program computes fog per
+ * fragment from ecPos.
+ */
+class CVertexProgramLandscapeUBO : public CVertexProgram
+{
+public:
+	struct CIdx
+	{
+		uint ProgramConstants0;
+		uint RefineCenter;
+		uint TileDist;
+		uint PZBModelPosition;
+	};
+	CVertexProgramLandscapeUBO(bool lightMap);
+	virtual ~CVertexProgramLandscapeUBO() NL_OVERRIDE { }
+	virtual void buildInfo() NL_OVERRIDE;
+public:
+	const CIdx &idx() const { return m_Idx; }
+	CIdx m_Idx;
+};
+
 
 class CVertexProgramLandscape : public CVertexProgram
 {

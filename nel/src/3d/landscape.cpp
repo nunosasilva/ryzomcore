@@ -1253,11 +1253,32 @@ void			CLandscape::render(const CVector &refineCenter, const CVector &frontVecto
 			for (uint i = 0; i < nbvp; ++i)
 			{
 				CVertexProgramLandscape *program = vb.getVP(i);
-				if (program)
+				CVertexProgramLandscapeUBO *uboProgram = vb.getUBOVP(i);
+				if (program || uboProgram)
 				{
 					// activate the program to set the uniforms in the program state for all programs
 					// note: when uniforms are driver state, the indices must be the same across programs
 					vb.activateVP(i);
+
+					if (uboProgram)
+					{
+						// UBO path (GL3): the landscape data goes to the NlLandscape
+						// UBO. The modelViewProjection matrix and the projection
+						// basis are read by the shader from the builtin NlModel/NlCamera
+						// UBOs, and fog is computed per fragment by the mega pixel
+						// program, so only the landscape specific data is uploaded.
+						CUniformBuffer *ub = vb.getUBOBuffer();
+						nlassert(ub);
+						const CLandscapeVBAllocator::CLandscapeUBOOffsets &off =
+							CLandscapeVBAllocator::uboOffsets();
+						ub->lock();
+						ub->set(off.RefineCenter, refineCenter);
+						ub->set(off.TileDist, NLMISC::CVector2f(CLandscapeGlobals::TileDistFarSqr, CLandscapeGlobals::OOTileDistDeltaSqr));
+						ub->set(off.PZBModelPosition, _PZBModelPosition);
+						ub->unlock();
+						driver->bindUniformBuffer(UBBindingVertexProgram, ub);
+						continue;
+					}
 
 					// c[0..3] take the ModelViewProjection Matrix.
 					driver->setUniformMatrix(IDriver::VertexProgram, program->getUniformIndex(CProgramIndex::ModelViewProjection), IDriver::ModelViewProjection, IDriver::Identity);
