@@ -324,6 +324,25 @@ static void testRefusals()
 	check(!NLDRIVERGL3::CDriverGL3::convertNelvpToGLSL(&unknownOp, true, false),
 		"an opcode the converter does not implement must refuse, not emit partial GLSL");
 	check(unknownOp.getSourceNb() == 1, "unsupported opcode must not add a source");
+
+	// Why the converter's *source*-side unsupported branches are dead code: the parser
+	// never lets an output or address register appear as a source operand at all
+	// (CVPParser::parseOp2, vertex_program_parse.cpp:674-678). Pinned here so that if that
+	// guard is ever relaxed, the converter's rvalue emission has to be revisited too.
+	CVertexProgram srcOutReg("!!VP1.0\n"
+		"	MOV\tR0.xyzw, v[0];\n"
+		"	RCP\tR1.x, o[COL0].x;\n"
+		"	MOV\to[HPOS], R0;\n"
+		"	END\n");
+	check(!NLDRIVERGL3::CDriverGL3::convertNelvpToGLSL(&srcOutReg, true, false),
+		"an output register as a SOURCE must be refused by the parser");
+	CVertexProgram srcAddrReg("!!VP1.0\n"
+		"	MOV\tR0.xyzw, v[0];\n"
+		"	RCP\tR1.x, a0.x;\n"
+		"	MOV\to[HPOS], R0;\n"
+		"	END\n");
+	check(!NLDRIVERGL3::CDriverGL3::convertNelvpToGLSL(&srcAddrReg, true, false),
+		"an address register as a scalar SOURCE must be refused by the parser");
 }
 
 // ----------------------------------------------------------------------------

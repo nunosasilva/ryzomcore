@@ -166,6 +166,13 @@ static void writeSrcOperand(std::stringstream &ss, const CVPOperand &op, int reg
 		break;
 	case CVPOperand::OutputRegister:
 		{
+			// UNREACHABLE as things stand: CVPParser::parseOp2 (vertex_program_parse.cpp:674-678)
+			// rejects Src1/Src2/Src3 of type OutputRegister or AddressRegister, so an output register
+			// can never be a source operand - unlike the DEST side in writeDestOperand(), which the
+			// parser does accept and which is where the real unsupported-output case lives. Kept
+			// because it is what the rvalue text must look like if that parser guard is ever
+			// relaxed: a comment is fine as a PREFIX to an rvalue ('/* … */vec4(0.0)'), where it is
+			// not a legal LHS. Pinned by nelvp_glsl_test (testRefusals).
 			int enumVal = (int)op.Value.OutputRegisterValue;
 			if (enumVal == CVPOperand::OHPosition)
 				ss << "gl_Position";
@@ -179,7 +186,9 @@ static void writeSrcOperand(std::stringstream &ss, const CVPOperand &op, int reg
 				// OBackFacePrimaryColor / OBackFaceSecondaryColor (vertex_program_parse.h:130,
 				// which itself notes they are unsupported on some implementations; driver.h:1353
 				// documents the semantic - o[BFC0]/o[BFC1] colour the back face instead of o[COL0]).
-				// Reading one here yields black, silently, without this line.
+				// GL3 has no two-sided vertex-program colour at all: the mega-PP never reads a
+				// back-face colour, so unlike the legacy driver (driver_opengl_vertex_program.cpp:307-311,
+				// which warns and aliases BFC0 -> GL_OUTPUT_COLOR0_EXT) there is nothing to alias to.
 				nlwarning("GL3/nelvp: unsupported vertex program output register %d (back-face colour), reading it as vec4(0.0)", enumVal);
 				ss << "/* unsupported output " << enumVal << " */vec4(0.0)";
 			}
@@ -221,7 +230,10 @@ static void writeScalarSrcOperand(std::stringstream &ss, const CVPOperand &op, i
 		ss << "v" << (int)op.Value.InputRegisterValue;
 		break;
 	default:
-		ss << "/* unknown operand */0.0";
+		// Unreachable today (parseOp2 restricts scalar sources to constant/variable/input), but
+		// the text must still be swizzlable: writeScalarSwizzle() appends '.x' unconditionally,
+		// and '0.0.x' is not valid GLSL - a float literal cannot be swizzled. Emit a vector.
+		ss << "/* unknown operand */vec4(0.0)";
 		break;
 	}
 
