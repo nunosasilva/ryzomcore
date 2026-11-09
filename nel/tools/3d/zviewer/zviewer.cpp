@@ -103,6 +103,12 @@ struct CViewerConfig
 	float			CameraRotZ;
 	float			CameraRotX;
 	bool			LandscapeNoise;
+	// Micro-vegetation (grass/plants): off by default so the established capture
+	// baseline stays byte-identical. Enabling it is what exercises the vegetation
+	// vertex program (D.2 in AGENTS_trackD.md), which nothing else in this tool
+	// reached before.
+	bool			Vegetable;
+	float			VegetableDensity;
 	// which driver NELU should create, and whether it may draw without a window.
 	// Gl3 asks for the OpenGL3 (shader) driver; CNELU::initDriver falls back to the
 	// legacy one when it is not compiled in, so this stays valid on every platform.
@@ -160,6 +166,8 @@ struct CViewerConfig
 		CameraRotZ = 0.0f;
 		CameraRotX = 0.0f;
 		LandscapeNoise = true;
+		Vegetable = false;
+		VegetableDensity = 1.0f;
 		Gl3 = false;
 		Offscreen = false;
 		Fog = false;
@@ -340,6 +348,10 @@ void displayOrientation()
 /*********************************************************\
 					displayZone()
 \*********************************************************/
+// Set the first time the vegetation has been applied in the render loop (see the call
+// site: it has to happen after the landscape has a driver, not at setup time).
+static bool s_VegetableApplied = false;
+
 void displayZones()
 {
 	const float zFarStep = 5.0f;
@@ -686,6 +698,25 @@ void displayZones()
 		CNELU::Driver->clearZBuffer();
 		CNELU::Scene->render();
 
+		// Micro-vegetation, applied after the FIRST render on purpose.
+		// CLandscape::setDriver() only runs from CLandscapeModel::clip() during the first
+		// traversal (landscape_model.cpp:179), and CLandscape::isVegetableActive() is
+		// _VegetableManagerEnabled && _DriverOkForVegetable. Calling enableVegetable()
+		// before that point leaves _DriverOkForVegetable false, so it computes no
+		// vegetable IG, never retries, and the capture silently shows nothing. Same four
+		// calls the client makes (ryzom/client/src/continent_manager.cpp:238-245).
+		if (ViewerCfg.Vegetable && !s_VegetableApplied)
+		{
+			s_VegetableApplied = true;
+			Landscape->Landscape.setVegetableWind(CVector(0.5f, 0.5f, 0.0f).normed(), 0.5f, 1.0f, 0.0f);
+			Landscape->Landscape.setVegetableUpdateLightingFrequency(1.0f / 20.0f);
+			Landscape->Landscape.setVegetableDensity(ViewerCfg.VegetableDensity);
+			Landscape->Landscape.enableVegetable(true);
+			nlinfo("ZV: vegetable enabled after first render: active=%d density=%.2f faces=%u",
+				(int)Landscape->Landscape.isVegetableActive(), ViewerCfg.VegetableDensity,
+				Landscape->Landscape.getNumVegetableFaceRendered());
+		}
+
 				
 		if(showInfos)
 		{
@@ -814,6 +845,8 @@ void writeConfigFile(const char * configFileName)
 	fprintf(f,"LandscapeTileNear = %f;\n", ViewerCfg.LandscapeTileNear);
 	fprintf(f,"LandscapeThreshold = %f;\n", ViewerCfg.LandscapeThreshold);
 	fprintf(f,"LandscapeNoise = %d;\n", (int)ViewerCfg.LandscapeNoise);
+	fprintf(f,"Vegetable = %d;\n", ViewerCfg.Vegetable ? 1 : 0);
+	fprintf(f,"VegetableDensity = %f;\n", ViewerCfg.VegetableDensity);
 	fprintf(f,"CameraLocked = %d;\n", ViewerCfg.CameraLocked ? 1 : 0);
 	fprintf(f,"CameraRotZ = %f;\n", ViewerCfg.CameraRotZ);
 	fprintf(f,"CameraRotX = %f;\n", ViewerCfg.CameraRotX);
@@ -954,6 +987,14 @@ void initViewerConfig(const char * configFileName)
 
 		CConfigFile::CVar &cvLandscapeNoise = cf.getVar("LandscapeNoise");
 		ViewerCfg.LandscapeNoise = cvLandscapeNoise.asInt() != 0;
+
+		// Optional: a zviewer.cfg written before vegetation support lacks these.
+		CConfigFile::CVar *cvVegetable = cf.getVarPtr("Vegetable");
+		if (cvVegetable != nullptr)
+			ViewerCfg.Vegetable = cvVegetable->asInt() != 0;
+		CConfigFile::CVar *cvVegetableDensity = cf.getVarPtr("VegetableDensity");
+		if (cvVegetableDensity != nullptr)
+			ViewerCfg.VegetableDensity = cvVegetableDensity->asFloat();
 
 		// optional: absent in every cfg written before the pin existed, and the
 		// default keeps the old mouse-driven behaviour
