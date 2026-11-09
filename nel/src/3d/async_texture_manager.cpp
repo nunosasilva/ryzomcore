@@ -63,10 +63,21 @@ void		CAsyncTextureManager::CTextureEntry::createCoarseBitmap()
 
 	// copy the bitmap.
 	CoarseBitmap= *Texture;
-	// remove all mipmaps, and convert to DXTC1 (if possible, ie if was DXTC5 or DXTC3 as example)
+	// Remove all mipmaps. The copy keeps whatever format the texture already has, on purpose:
+	//
+	// It used to call convertToType(CBitmap::DXTC1) here, under a TODO marker. That function has no
+	// DXTC1 case (it falls through to `return false`), and NeL has no DXTC *encoder* at all - only
+	// decompressDXT1/3/5 - so the call silently did nothing. Nothing needs it to succeed either:
+	// the only consumer, CLodCharacterTmpBitmap::build(), converts whatever it gets to RGBA and
+	// reads pixels generically (lod_character_manager.cpp:851-860). So the "conversion" was a
+	// memory optimisation that never happened, on a cold async path, for textures that ship as
+	// DDS (typically already DXTC3/5, i.e. at most 2x the memory of DXTC1).
+	//
+	// If that memory ever matters, the options are, in order of preference: a small encoder here
+	// next to the decoders (dependency-free), or vendoring stb_dxt.h (public domain, single header,
+	// C89). Do NOT pull squish into nel/misc: it is a tool-only dependency today
+	// (nel/tools/3d/s3tc_compressor_lib), and the runtime is deliberately dependency-free.
 	CoarseBitmap.releaseMipMaps();
-	// TODODO: conversion to DXTC1
-	CoarseBitmap.convertToType(CBitmap::DXTC1);
 
 	/* The CLod impostor texturing samples this copy with 8-bit shifts, so it must be at most
 		NL3D_CLOD_TMP_BITMAP_MAX_SIZE on each side. The mip levels skipped at load guarantee that for a
