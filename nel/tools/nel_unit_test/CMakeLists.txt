@@ -11,6 +11,7 @@ endif ()
 add_test_executable(nel_misc_test
         ut_misc_base64.test.cpp
         ut_misc_bitmap.test.cpp
+        ut_misc_bitmap_ktx.test.cpp
         ut_misc_co_task.test.cpp
         ut_misc_command.test.cpp
         ut_misc_common.test.cpp

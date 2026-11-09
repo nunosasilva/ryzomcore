@@ -59,7 +59,7 @@ static void ktxReadRaw32(NLMISC::IStream &f, uint32 &val)
 /*-------------------------------------------------------------------*\
 							readKTX
 \*-------------------------------------------------------------------*/
-uint8 CBitmap::readKTX( NLMISC::IStream &f, uint mipMapSkip )
+uint8 CBitmap::readKTX( NLMISC::IStream &f, uint mipMapSkip, uint32 maxSize )
 {
 	/* ***********************************************
 	 *	WARNING: This Class/Method must be thread-safe (ctor/dtor/serial): no static access for instance
@@ -164,6 +164,16 @@ uint8 CBitmap::readKTX( NLMISC::IStream &f, uint mipMapSkip )
 	if (pixelWidth == 0)
 	{
 		nlwarning("KTX: invalid texture width (0)");
+		return 0;
+	}
+
+	// Same contract as the DDS reader (readDDSHeader, "header[2] > maxSize"): this is the
+	// only place that sees the header before anything is allocated, and it must refuse a
+	// hostile size rather than let a huge width/height reach resize(). Without this the
+	// KTX path would be the one reader that bypasses CBitmap::loadUntrusted's limit.
+	if (pixelWidth > maxSize || pixelHeight > maxSize)
+	{
+		nlwarning("KTX: %ux%u image exceeds the limit of %u in '%s'", pixelWidth, pixelHeight, maxSize, f.getStreamName().c_str());
 		return 0;
 	}
 

@@ -214,11 +214,11 @@ uint8 CBitmap::readImage(NLMISC::IStream &f, uint mipMapSkip, uint32 maxSize)
 	if (fileType == KTX_HEADER)
 	{
 #ifdef NEL_ALL_BITMAP_WHITE
-		uint8 result = readKTX(f, mipMapSkip);
+		uint8 result = readKTX(f, mipMapSkip, maxSize);
 		MakeWhite (*this);
 		return result;
 #else // NEL_ALL_BITMAP_WHITE
-		return readKTX(f, mipMapSkip);
+		return readKTX(f, mipMapSkip, maxSize);
 #endif // NEL_ALL_BITMAP_WHITE
 	}
 

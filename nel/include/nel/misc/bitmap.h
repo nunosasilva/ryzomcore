@@ -170,7 +170,7 @@ private :
 	 * \param mipMapSkip number of mipmaps to skip
 	 * \return image depth if succeed, 0 else
 	 */
-	uint8 readKTX( NLMISC::IStream &f, uint mipMapSkip );
+	uint8 readKTX( NLMISC::IStream &f, uint mipMapSkip, uint32 maxSize );
 
 
 	/**
