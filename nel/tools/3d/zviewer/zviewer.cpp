@@ -31,6 +31,10 @@
 #include <nel/3d/camera.h>
 #include <nel/3d/landscape_model.h>
 #include <nel/3d/landscape.h>
+#include <nel/3d/decal.h>
+#include <nel/3d/transformable.h>
+#include <nel/3d/visual_collision_manager.h>
+#include <nel/misc/file.h>
 #include <nel/3d/text_context.h>
 #include <nel/3d/mini_col.h>
 #include <nel/3d/nelu.h>
@@ -109,6 +113,12 @@ struct CViewerConfig
 	// reached before.
 	bool			Vegetable;
 	float			VegetableDensity;
+	// A projected decal on the landscape. This is the only place in the tree that drives
+	// CShadowPolyReceiver::receiveDecal() - the terrain half of the decal system, which is
+	// what the client uses for ring decals. nl_sample_decal covers the collision-mesh half.
+	bool			Decal;
+	float			DecalRadius;
+	float			DecalForward; // metres ahead of the camera; the splat lands on the ground
 	// which driver NELU should create, and whether it may draw without a window.
 	// Gl3 asks for the OpenGL3 (shader) driver; CNELU::initDriver falls back to the
 	// legacy one when it is not compiled in, so this stays valid on every platform.
@@ -168,6 +178,9 @@ struct CViewerConfig
 		LandscapeNoise = true;
 		Vegetable = false;
 		VegetableDensity = 1.0f;
+		Decal = false;
+		DecalRadius = 25.0f;
+		DecalForward = 40.0f;
 		Gl3 = false;
 		Offscreen = false;
 		Fog = false;
@@ -351,6 +364,55 @@ void displayOrientation()
 // Set the first time the vegetation has been applied in the render loop (see the call
 // site: it has to happen after the landscape has a driver, not at setup time).
 static bool s_VegetableApplied = false;
+
+// Ditto for the decal: the landscape must have tessellated at least once, because the decal
+// collects its receiver triangles from the faces that are already registered in the
+// landscape's CShadowPolyReceiver (patch.cpp:906, appendToShadowPolyReceiver).
+static bool s_DecalApplied = false;
+static CDecal *s_Decal = NULL;
+static uint32 s_DecalFrames = 0;
+
+// Generated once, like the sample's: a 128x128 RGBA ring, written next to the viewer and
+// removed on exit. Kept out of the repo and out of the data tree.
+static const char *ZVIEWER_DECAL_TEXTURE = "zviewer_decal.tga";
+
+static void buildViewerDecalTexture(NLMISC::CBitmap &bmp)
+{
+	const uint32 size = 128;
+	bmp.resize(size, size, NLMISC::CBitmap::RGBA);
+	uint8 *px = bmp.getPixels().getPtr();
+	const float center = (float)size * 0.5f;
+	const float radius = (float)size * 0.44f;
+	for (uint32 y = 0; y < size; ++y)
+	{
+		for (uint32 x = 0; x < size; ++x)
+		{
+			const float dx = (float)x + 0.5f - center;
+			const float dy = (float)y + 0.5f - center;
+			const float d = sqrtf(dx * dx + dy * dy);
+			uint8 *p = px + ((size_t)y * size + x) * 4;
+			if (d > radius)
+			{
+				p[0] = p[1] = p[2] = p[3] = 0;
+				continue;
+			}
+			float alpha = 1.f;
+			if (d > radius - 2.f)
+				alpha = (radius - d) * 0.5f;
+			uint8 r = 240, g = 200, b = 40; // yellow ring, so it reads against green terrain
+			if (d < (float)size * 0.34f)
+			{
+				r = 200; g = 120; b = 20;
+				if (d < (float)size * 0.10f)
+				{
+					r = 255; g = 255; b = 240;
+				}
+			}
+			p[0] = r; p[1] = g; p[2] = b;
+			p[3] = (uint8)(alpha * 255.f);
+		}
+	}
+}
 
 void displayZones()
 {
@@ -705,6 +767,92 @@ void displayZones()
 		// before that point leaves _DriverOkForVegetable false, so it computes no
 		// vegetable IG, never retries, and the capture silently shows nothing. Same four
 		// calls the client makes (ryzom/client/src/continent_manager.cpp:238-245).
+		// One projected decal on the terrain, created after the first render so that the
+		// landscape has tessellated and its faces are registered in the shadow poly receiver.
+		if (ViewerCfg.Decal && !s_DecalApplied)
+		{
+			s_DecalApplied = true;
+
+			// CDecal::computeDecal() returns early (with a warning) when the scene has no
+			// visual collision manager, even though the terrain triangles come from the
+			// landscape and not from this manager. It stays empty on purpose: this decal has
+			// no object receiver, which is exactly the landscape-only configuration.
+			CVisualCollisionManager *vcm = new CVisualCollisionManager();
+			CNELU::Scene->setVisualCollisionManagerForShadow(vcm);
+
+			NLMISC::CBitmap bmp;
+			buildViewerDecalTexture(bmp);
+			std::string texPath = NLMISC::CPath::getCurrentPath();
+			if (texPath.empty() || texPath[texPath.size() - 1] != '/')
+				texPath += '/';
+			texPath += ZVIEWER_DECAL_TEXTURE;
+			{
+				NLMISC::COFile out;
+				const bool wrote = out.open(texPath) && bmp.writeTGA(out, 32);
+				out.close();
+				if (!wrote)
+					nlwarning("zviewer: could not write '%s'; no decal", texPath.c_str());
+			}
+
+			CDecal *decal = dynamic_cast<CDecal *>(CNELU::Scene->createModel(DecalId));
+			if (decal != NULL)
+			{
+				const CVector pos = MoveListener.getPos();
+				decal->setTransformMode(ITransformable::DirectMatrix);
+				decal->setTexture(texPath);
+
+				// UDecal::setWorldMatrixForSpot() hardcodes z = 0 (decal.cpp: setPos(x-r, y-r, 0)),
+				// and the world bounding box it derives is what selects receiver triangles from
+				// the landscape's grid. On terrain at z = 420 that box covers nothing, so the
+				// decal silently collects 0 vertices. Build the same matrix at the ground
+				// height instead: the four side clip planes are vertical, so only the bbox
+				// needs the right z.
+				const float groundZ = pos.z - ViewerCfg.EyesHeight.z;
+
+				// Ahead of the camera, not under it: a decal centred on the camera's own XY sits
+				// at the bottom edge of the view (or below it) and looks like "nothing drawn".
+				// Forward comes from the same rotation the view matrix uses
+				// (move_listener.cpp:163-167: rotZ then rotX, camera looks along +Y).
+				CMatrix camRot;
+				camRot.identity();
+				camRot.rotateZ(MoveListener.getRotZ());
+				camRot.rotateX(MoveListener.getRotX());
+				CVector forward = camRot * CVector(0.f, 1.f, 0.f);
+				forward.normalize();
+
+				const CVector spot = pos + forward * ViewerCfg.DecalForward;
+				CMatrix decalMat;
+				decalMat.setScale(2.f * ViewerCfg.DecalRadius);
+				decalMat.setPos(CVector(spot.x - ViewerCfg.DecalRadius, spot.y - ViewerCfg.DecalRadius, groundZ));
+				decal->setMatrix(decalMat);
+				// NOT static: the terrain LOD changes as the camera moves, so the receiver
+				// triangles change and the clipped geometry has to be recomputed.
+				decal->setStatic(false);
+				decal->setDiffuse(CRGBA(255, 255, 255, 255));
+				s_Decal = decal;
+				nlinfo("ZV: decal at (%.1f, %.1f) %.0f m ahead, radius %.1f m",
+					spot.x, spot.y, ViewerCfg.DecalForward, ViewerCfg.DecalRadius);
+			}
+			else
+			{
+				nlwarning("zviewer: createModel(DecalId) failed");
+			}
+		}
+
+		// Report the clipped geometry a few frames in. getVertices() returns an empty set on
+		// its first call on purpose (CDecal's "first-frame skip", decal.cpp:220), so probing
+		// it at creation time always reads 0 and says nothing about whether it works.
+		if (s_Decal != NULL && s_DecalFrames < 6)
+		{
+			++s_DecalFrames;
+			if (s_DecalFrames == 6)
+			{
+				const std::vector<CVector> &verts = s_Decal->getVertices(false);
+				nlinfo("ZV: decal receiver geometry: %u vertices, %u triangles",
+					(uint)verts.size(), (uint)(verts.size() / 3));
+			}
+		}
+
 		if (ViewerCfg.Vegetable && !s_VegetableApplied)
 		{
 			s_VegetableApplied = true;
@@ -847,6 +995,9 @@ void writeConfigFile(const char * configFileName)
 	fprintf(f,"LandscapeNoise = %d;\n", (int)ViewerCfg.LandscapeNoise);
 	fprintf(f,"Vegetable = %d;\n", ViewerCfg.Vegetable ? 1 : 0);
 	fprintf(f,"VegetableDensity = %f;\n", ViewerCfg.VegetableDensity);
+	fprintf(f,"Decal = %d;\n", ViewerCfg.Decal ? 1 : 0);
+	fprintf(f,"DecalRadius = %f;\n", ViewerCfg.DecalRadius);
+	fprintf(f,"DecalForward = %f;\n", ViewerCfg.DecalForward);
 	fprintf(f,"CameraLocked = %d;\n", ViewerCfg.CameraLocked ? 1 : 0);
 	fprintf(f,"CameraRotZ = %f;\n", ViewerCfg.CameraRotZ);
 	fprintf(f,"CameraRotX = %f;\n", ViewerCfg.CameraRotX);
@@ -995,6 +1146,15 @@ void initViewerConfig(const char * configFileName)
 		CConfigFile::CVar *cvVegetableDensity = cf.getVarPtr("VegetableDensity");
 		if (cvVegetableDensity != nullptr)
 			ViewerCfg.VegetableDensity = cvVegetableDensity->asFloat();
+		CConfigFile::CVar *cvDecal = cf.getVarPtr("Decal");
+		if (cvDecal != nullptr)
+			ViewerCfg.Decal = cvDecal->asInt() != 0;
+		CConfigFile::CVar *cvDecalRadius = cf.getVarPtr("DecalRadius");
+		if (cvDecalRadius != nullptr)
+			ViewerCfg.DecalRadius = cvDecalRadius->asFloat();
+		CConfigFile::CVar *cvDecalForward = cf.getVarPtr("DecalForward");
+		if (cvDecalForward != nullptr)
+			ViewerCfg.DecalForward = cvDecalForward->asFloat();
 
 		// optional: absent in every cfg written before the pin existed, and the
 		// default keeps the old mouse-driven behaviour
