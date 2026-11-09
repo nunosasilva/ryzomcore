@@ -1016,6 +1016,34 @@ bool CDriverGL3::release()
 	}
 #endif
 
+	// Delete the GL program objects and the program pipeline here, while the GL context
+	// is still current (destroyWindow() comes later). CProgramDrvInfosGL3's destructor
+	// cannot do it: some program owners are file-scope CRefPtr statics (for instance
+	// CMeshVPWindTree::_VertexProgramUBO in meshvp_wind_tree.cpp), so a drv-info can be
+	// destroyed during static destruction, long after this context is gone, and
+	// nglDeleteProgram would then run against no context. Here the context is
+	// guaranteed, and zeroing the ids keeps those late destructors harmless.
+	{
+		uint numPrograms = 0;
+		for (TGPUPrgDrvInfoPtrList::iterator it = _GPUPrgDrvInfos.begin(); it != _GPUPrgDrvInfos.end(); ++it)
+		{
+			CProgramDrvInfosGL3 *di = static_cast<CProgramDrvInfosGL3 *>(*it);
+			if (di != nullptr && di->getProgramId() != 0)
+			{
+				nglDeleteProgram(di->getProgramId());
+				di->setProgramId(0);
+				++numPrograms;
+			}
+		}
+		if (ppoId != 0)
+		{
+			nglDeleteProgramPipelines(1, &ppoId);
+			ppoId = 0;
+		}
+		if (numPrograms != 0)
+			nlinfo("GL3: released %u program object(s) and the program pipeline", numPrograms);
+	}
+
 	// Call IDriver::release() before, to destroy textures, shaders and VBs...
 	IDriver::release();
 

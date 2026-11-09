@@ -2969,7 +2969,13 @@ IProgramDrvInfos(drv, it)
 
 CProgramDrvInfosGL3::~CProgramDrvInfosGL3()
 {
-	// FIXME GL3: Is this not released?!
+	// The GL program object is NOT deleted here on purpose: this destructor can run after
+	// the GL context is gone (some program owners are file-scope CRefPtr statics - see
+	// CMeshVPWindTree::_VertexProgramUBO), and nglDeleteProgram would then have no current
+	// context. CDriverGL3::release() deletes every program id while the context is still
+	// alive and zeroes it here, so this is a no-op in the normal shutdown path and the
+	// only remaining case is a program destroyed after the context, whose GL object died
+	// with the context anyway.
 	programId = 0;
 }
 
