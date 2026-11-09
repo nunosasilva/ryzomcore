@@ -550,6 +550,7 @@ public:
 
 	virtual bool			clearZBuffer(float zval=1) NL_OVERRIDE;
 	virtual bool			clearStencilBuffer(sint stencilval=0) NL_OVERRIDE;
+	virtual bool			clearDepthStencil(float zval=1, sint stencilval=0) NL_OVERRIDE;
 	virtual void			setColorMask (bool bRed, bool bGreen, bool bBlue, bool bAlpha) NL_OVERRIDE;
 	virtual void			setDepthRange(float znear, float zfar) NL_OVERRIDE;
 	virtual	void			getDepthRange(float &znear, float &zfar) const NL_OVERRIDE;
