@@ -296,3 +296,43 @@ TEST(CBitmapKTX, LoadRefusesSizeAboveMaxInsteadOfAllocating)
 	EXPECT_NO_THROW(depth = bitmap.load(stream)) << "an oversized header must be refused, not allocated";
 	EXPECT_EQ(0, (int)depth);
 }
+
+// The declared size of a LEVEL is as untrusted as the header: a small image could otherwise
+// ask for a megabyte-sized level buffer before anything looks at it. Both layouts are
+// exercised - the compressed block layout and the uncompressed row layout. load() is used on
+// purpose: loadUntrusted() would swallow the resulting exception and pass either way, so the
+// test would not bite. Only the bound makes these calls return 0 instead of throwing.
+TEST(CBitmapKTX, RejectOversizedLevel)
+{
+	const size_t levelSizeOffset = 12 + 13 * 4;
+	const uint32 oversize = 0x00100000u; // 1 MiB claimed for a 64-byte / 16-byte level
+
+	// 4x4 RGBA8: legal header, level claims 1 MiB.
+	TBytes pixels(64, 0x33);
+	TBytes ktx = buildKTX(4, 4, GL_UNSIGNED_BYTE__, 1, GL_RGBA__, GL_RGBA8__, GL_RGBA__, pixels);
+	for (uint32 i = 0; i < 4; ++i)
+		ktx[levelSizeOffset + i] = (uint8)((oversize >> (8 * i)) & 0xff);
+	{
+		CMemStream stream(true);
+		stream.fill(const_cast<uint8 *>(&ktx[0]), (uint32)ktx.size());
+		CBitmap bitmap;
+		uint8 depth = 1;
+		EXPECT_NO_THROW(depth = bitmap.load(stream)) << "uncompressed level size must be bounded";
+		EXPECT_EQ(0, (int)depth);
+	}
+
+	// 4x4 DXT5: one 16-byte block, level claims 1 MiB.
+	TBytes blocks(16, 0x44);
+	TBytes ktx2 = buildKTX(4, 4, 0, 0, 0, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT__,
+		GL_COMPRESSED_RGBA_S3TC_DXT5_EXT__, blocks);
+	for (uint32 i = 0; i < 4; ++i)
+		ktx2[levelSizeOffset + i] = (uint8)((oversize >> (8 * i)) & 0xff);
+	{
+		CMemStream stream(true);
+		stream.fill(const_cast<uint8 *>(&ktx2[0]), (uint32)ktx2.size());
+		CBitmap bitmap;
+		uint8 depth = 1;
+		EXPECT_NO_THROW(depth = bitmap.load(stream)) << "compressed level size must be bounded";
+		EXPECT_EQ(0, (int)depth);
+	}
+}

@@ -331,7 +331,18 @@ uint8 CBitmap::readKTX( NLMISC::IStream &f, uint mipMapSkip, uint32 maxSize )
 
 		if (compressed)
 		{
-			// For DXTC compressed data, store directly
+			// For DXTC compressed data, store directly - but the declared size has to fit
+			// what this level can possibly hold. imageSize comes straight from the file, and
+			// a 4x4 image could otherwise declare 4 GB and be resized before anything looks.
+			uint32 blockBytes = (PixelFormat == DXTC1) ? 8u : 16u; // DXT1 is 8 bytes/block, DXT3/5 are 16
+			uint32 blocksW = (w + 3) / 4;
+			uint32 blocksH = (h + 3) / 4;
+			uint32 maxLevelBytes = blocksW * blocksH * blockBytes;
+			if (imageSize > maxLevelBytes)
+			{
+				nlwarning("KTX: compressed level %u declares %u bytes for %ux%u, at most %u expected", (uint)m, imageSize, w, h, maxLevelBytes);
+				return 0;
+			}
 			_Data[m].resize(imageSize);
 			f.serialBuffer(_Data[m].getPtr(), imageSize);
 		}
@@ -345,6 +356,15 @@ uint8 CBitmap::readKTX( NLMISC::IStream &f, uint mipMapSkip, uint32 maxSize )
 			if (imageSize < srcSize)
 			{
 				nlwarning("KTX: imageSize %u too small for %ux%u with %u bpp (expected %u)", imageSize, w, h, srcBpp, srcSize);
+				return 0;
+			}
+			// The KTX spec allows a level to be padded, but not to declare an arbitrary
+			// size: cap it at the padded row layout plus at most one row of slack, so a
+			// hostile header cannot make the temporary buffer huge on its own.
+			uint32 maxLevelBytes = srcSize + rowStride;
+			if (imageSize > maxLevelBytes)
+			{
+				nlwarning("KTX: level %u declares %u bytes for %ux%u, at most %u expected", (uint)m, imageSize, w, h, maxLevelBytes);
 				return 0;
 			}
 
