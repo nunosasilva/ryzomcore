@@ -468,11 +468,22 @@ void		CVisualCollisionMesh::receiveDecal(const NLMISC::CMatrix &instanceMatrix, 
 
 				if (clippedTri.Vertices.size() >= 3)
 				{
+					// clipPolygonBack() repeats a vertex that lies exactly on a clip plane, which
+					// the fan below turns into zero-area triangles. Measured on a receiver quad
+					// whose edges sit on the decal's own bbox planes: 12 vertices / 4 triangles
+					// instead of 6 / 2, half of them degenerate. They cost fillrate and they make
+					// the batch look wrong in any vertex-count diagnostic, so drop them here -
+					// "no repeated vertices" is exactly the property the fan needs.
 					for(uint k=0; k<clippedTri.Vertices.size() - 2; ++k)
 					{
-						decalContext.DestTris->push_back( clippedTri.Vertices[0]     );
-						decalContext.DestTris->push_back( clippedTri.Vertices[k + 1] );
-						decalContext.DestTris->push_back( clippedTri.Vertices[k + 2] );
+						const CVector &v0 = clippedTri.Vertices[0];
+						const CVector &v1 = clippedTri.Vertices[k + 1];
+						const CVector &v2 = clippedTri.Vertices[k + 2];
+						if (((v1 - v0) ^ (v2 - v0)).sqrnorm() < 1e-12f)
+							continue;
+						decalContext.DestTris->push_back( v0 );
+						decalContext.DestTris->push_back( v1 );
+						decalContext.DestTris->push_back( v2 );
 					}
 				}
 			}
