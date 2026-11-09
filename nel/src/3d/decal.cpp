@@ -274,11 +274,19 @@ void CDecal::computeDecal(const bool useVertexProgram)
 {
 CScene *sc = getOwnerScene();
 
+// A decal does not need an object receiver: a decal placed on the terrain collects all of its
+// triangles from the landscape's shadow poly receiver below. Requiring the collision manager here
+// meant a landscape-only decal silently did nothing unless the caller also created an - unused -
+// CVisualCollisionManager (nl_sample_decal does exactly that just to satisfy this check).
 CVisualCollisionManager *vcm = sc->getVisualCollisionManagerForShadow();
 if (!vcm)
 {
-nlwarning("CDecal::computeDecal: VisualCollisionManager not available");
-return;
+static bool warned = false;
+if (!warned)
+{
+nlinfo("CDecal::computeDecal: no VisualCollisionManager, collecting landscape triangles only");
+warned = true;
+}
 }
 
 CDecalContext &context = _DecalContext;
@@ -308,10 +316,13 @@ context.WorldClipPlanes[i].invert();
 context.WorldMatrix = getWorldMatrix();
 context.ClipDownFacing = _ClipDownFacing;
 
-// Clear and collect triangles via visual collision (objects/meshes)
+// Clear and collect triangles via visual collision (objects/meshes), if there is a manager
 _Vertices.clear();
 context.DestTris = &_Vertices;
+if (vcm)
+{
 vcm->receiveDecal(context);
+}
 
 // Also collect triangles from landscape's shadow poly receiver (terrain)
 CRenderTrav &renderTrav = sc->getRenderTrav();

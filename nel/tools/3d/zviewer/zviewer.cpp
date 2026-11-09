@@ -788,12 +788,10 @@ void displayZones()
 		{
 			s_DecalApplied = true;
 
-			// CDecal::computeDecal() returns early (with a warning) when the scene has no
-			// visual collision manager, even though the terrain triangles come from the
-			// landscape and not from this manager. It stays empty on purpose: this decal has
-			// no object receiver, which is exactly the landscape-only configuration.
-			CVisualCollisionManager *vcm = new CVisualCollisionManager();
-			CNELU::Scene->setVisualCollisionManagerForShadow(vcm);
+			// No CVisualCollisionManager: this decal's receiver is the terrain, which the
+			// landscape's shadow poly receiver supplies. computeDecal() used to demand a
+			// collision manager anyway (and with an empty one the result was identical), so
+			// this is the landscape-only configuration the check used to forbid.
 
 			NLMISC::CBitmap bmp;
 			buildViewerDecalTexture(bmp);

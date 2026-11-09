@@ -376,9 +376,10 @@ private:
 			return;
 		}
 
-		// 3. Register it with the scene. CDecal::computeDecal() returns early with a warning
-		//    when the scene has no visual collision manager for shadows, so this manager is
-		//    not optional: it is what supplies the receiver triangles.
+		// 3. Register it with the scene. This sample's receiver is a *mesh*, so it needs the
+		//    collision manager: that is where mesh receivers come from. A decal whose receiver
+		//    is the terrain does not need one (zviewer's Decal knob runs without it) - the
+		//    landscape's shadow poly receiver supplies those triangles.
 		m_Vcm = m_Scene->createVisualCollisionManager();
 		m_Scene->setVisualCollisionManagerForShadow(m_Vcm);
 		UVisualCollisionMesh ucm;
