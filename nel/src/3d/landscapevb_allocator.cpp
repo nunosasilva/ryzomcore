@@ -741,8 +741,10 @@ void			CLandscapeVBAllocator::setupUBOPrograms(bool withLightMapVariant)
 	// reject THIS source - a strict ES 3.0 / core-profile / WebGL2 compiler is enough. A
 	// hard assert there would turn "this GPU dislikes my GLSL" into a crash, which is
 	// worse than the pre-D.1a behaviour. Fall back to the nelvp path for this allocator
-	// instead, the way CMeshVPWindTree retries after a UBO compile failure
-	// (meshvp_wind_tree.cpp:1066-1071).
+	// instead, like CMeshVPWindTree::isMBRVpOk does for the wind tree: it tries the UBO
+	// program and keeps the variant programs as the path that actually runs when that
+	// fails. (It does not retry the same program; _VertexProgramUBO->m_CompileFailed
+	// caches the failure and the loop below it compiles the variants.)
 	bool ok = _Driver->compileVertexProgram(_VertexProgramUBO[0]);
 	if (ok && withLightMapVariant)
 		ok = _Driver->compileVertexProgram(_VertexProgramUBO[1]);
@@ -767,10 +769,19 @@ void			CLandscapeVBAllocator::setupUBOPrograms(bool withLightMapVariant)
 		return;
 	}
 
-	// One UBO per allocator, shared by that allocator's variants: the values it carries
-	// (refineCenter, tileDist, pzbModelPosition) are identical for all three types
-	// (landscape.cpp computes them once per frame), but each allocator binds its own
-	// before its own draw, so no pass can read another pass's buffer.
+	// One UBO per allocator, shared by that allocator's variants.
+	//
+	// The isolation this does NOT give you: CDriverGL3::bindUniformBuffer keeps ONE slot
+	// per TUBBinding (_BoundUserUB[], driver_opengl3_uniform_buffer.cpp:244-262) and
+	// flushUserUBOs binds it as context state (forceBindUniformBufferBase), and every
+	// program here uses the same binding point, UBBindingVertexProgram == 0
+	// (uniform_buffer.h:71). So the most recently bound buffer is what ALL of them read -
+	// "each allocator binds its own" would not protect anything. It is safe only because
+	// CLandscape::renderEx uploads identical values to every allocator from one loop
+	// (refineCenter / TileDistFarSqr / _PZBModelPosition), so whichever buffer is current
+	// holds the same numbers. That in turn holds because the three programs read exactly
+	// the same three values; give Far1 its own value later and you must give it its own
+	// binding point, not just its own buffer.
 	if (!_LandscapeUB)
 	{
 		_LandscapeUB = new CUniformBuffer();
