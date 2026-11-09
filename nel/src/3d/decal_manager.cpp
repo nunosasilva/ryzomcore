@@ -209,95 +209,121 @@ void CDecalManager::flush(CScene *sc)
 	drv->activeVertexBuffer(_VB);
 	drv->setupModelMatrix(CMatrix::Identity);
 
-	// Iterate over each material group
-	TDecalMap::iterator matIt = _Decals.begin();
-	TDecalMap::iterator matEnd = _Decals.end();
+	// The vertex buffer is ring-buffered (CVertexBuffer::FullStream), so a lock re-bases the
+	// region a draw addresses. Interleaving locks and draws therefore renders only the first
+	// batch of a frame - measured with the sample's --multi scenario (4 decals clipped,
+	// 1 drawn) before this was restructured. Now a chunk of vertices is filled under ONE lock,
+	// released, and only then are that chunk's draws issued.
+	//
+	// A chunk is one buffer's worth of vertices. Overflow needs a second chunk, which is why
+	// this walks a flat list instead of nesting group/decal loops: a batch must never straddle
+	// a lock boundary.
+	struct TDrawBatch
+	{
+		CMaterial *Mat;
+		uint32 FirstVertex;
+		uint32 NumVerts;
+	};
 
-	for (; matIt != matEnd; ++matIt)
+	std::vector<TDrawBatch> batches;
+	std::vector<CDecal *> sorted; // decals in group order, priority-sorted inside a group
+
+	TDecalMap::iterator matIt = _Decals.begin();
+	for (; matIt != _Decals.end(); ++matIt)
 	{
 		std::vector<CDecal*> &decals = matIt->second;
-
 		if (decals.empty())
 			continue;
-
-		// Sort decals by priority within this material group (lower priority first)
+		// Lower priority values are rendered first.
 		std::sort(decals.begin(), decals.end(), decalPriorityCompare);
-
-		// Track current texture and material for batching
-		ITexture *curTex = NULL;
-		CMaterial *batchMat = NULL;
-		uint32 vbOffset = 0;
-
 		for (uint d = 0; d < decals.size(); ++d)
+			sorted.push_back(decals[d]);
+	}
+
+	CVertexBufferReadWrite *vba = NULL;
+	uint32 vbOffset = 0;
+
+	for (uint d = 0; d < sorted.size(); ++d)
+	{
+		CDecal *decal = sorted[d];
+		std::vector<CVector> &verts = decal->getVertices(false);
+		if (verts.empty())
+			continue;
+
+		const std::vector<CUV> &uvs = decal->getUVs();
+		const std::vector<NLMISC::CRGBA> &colors = decal->getColors();
+		const bool hasUVs = (uvs.size() == verts.size());
+		const bool hasColors = (colors.size() == verts.size());
+
+		const uint32 length = (uint32)verts.size();
+		uint32 srcOffset = 0;
+		while (srcOffset < length)
 		{
-			CDecal *decal = decals[d];
-
-			// Get this decal's precomputed vertices, UVs and colors
-			std::vector<CVector> &verts = decal->getVertices(false);
-			const std::vector<CUV> &uvs = decal->getUVs();
-			const std::vector<NLMISC::CRGBA> &colors = decal->getColors();
-
-			if (verts.empty())
-				continue;
-
-			CMaterial &mat = decal->getMaterial();
-			ITexture *tex = mat.getTexture(0);
-
-			// Flush on texture change
-			if (tex != curTex && vbOffset > 0)
+			if (vba == NULL)
 			{
-				nlassert(vbOffset % 3 == 0);
-				drv->renderRawTriangles(*batchMat, 0, vbOffset / 3);
+				if (!batches.empty())
+				{
+					// Close the previous chunk: unlock first, then draw what it holds.
+					delete vba; // (null here; kept for symmetry)
+				}
+				vba = new CVertexBufferReadWrite();
+				_VB.lock(*vba);
 				vbOffset = 0;
 			}
-			curTex = tex;
-			batchMat = &mat;
 
-			uint32 length = (uint32)verts.size();
-			uint32 srcOffset = 0;
-			bool hasUVs = (uvs.size() == verts.size());
-			bool hasColors = (colors.size() == verts.size());
-
-			while (srcOffset < length)
+			uint32 space = NL3D_DECAL_VB_MAX_VERTICES - vbOffset;
+			if (space == 0)
 			{
-				uint32 remaining = length - srcOffset;
-				uint32 space = NL3D_DECAL_VB_MAX_VERTICES - vbOffset;
-
-				// Flush if VB is full
-				if (space == 0)
+				// Full: release the lock, draw this chunk, and start the next one.
+				delete vba;
+				vba = NULL;
+				for (uint b = 0; b < batches.size(); ++b)
 				{
-					nlassert(vbOffset % 3 == 0);
-					drv->renderRawTriangles(mat, 0, vbOffset / 3);
-					vbOffset = 0;
-					space = NL3D_DECAL_VB_MAX_VERTICES;
+					nlassert(batches[b].NumVerts != 0 && (batches[b].NumVerts % 3) == 0);
+					drv->renderRawTriangles(*batches[b].Mat, batches[b].FirstVertex, batches[b].NumVerts / 3);
 				}
-
-				uint32 batch = std::min(remaining, space);
-
-				{
-					CVertexBufferReadWrite vba;
-					_VB.lock(vba);
-					for (uint32 i = 0; i < batch; ++i)
-					{
-						uint32 vi = vbOffset + i;
-						uint32 si = srcOffset + i;
-						*vba.getVertexCoordPointer(vi) = verts[si];
-						vba.setTexCoord(vi, 0, hasUVs ? uvs[si] : CUV(0, 0));
-						vba.setColor(vi, hasColors ? colors[si] : CRGBA::White);
-					}
-				}
-
-				vbOffset += batch;
-				srcOffset += batch;
+				batches.clear();
+				continue;
 			}
-		}
 
-		// Flush remaining vertices for this material group
-		if (vbOffset > 0 && batchMat)
-		{
-			nlassert(vbOffset % 3 == 0);
-			drv->renderRawTriangles(*batchMat, 0, vbOffset / 3);
-			vbOffset = 0;
+			const uint32 batch = std::min(length - srcOffset, space);
+			for (uint32 i = 0; i < batch; ++i)
+			{
+				const uint32 vi = vbOffset + i;
+				const uint32 si = srcOffset + i;
+				*vba->getVertexCoordPointer(vi) = verts[si];
+				vba->setTexCoord(vi, 0, hasUVs ? uvs[si] : CUV(0, 0));
+				vba->setColor(vi, hasColors ? colors[si] : CRGBA::White);
+			}
+
+			// One batch per decal segment. Grouping by texture pointer buys nothing here:
+			// every CDecal owns its own CMaterial (CDecal::_Mat) and setTexture() creates a
+			// new CTextureFile per decal, so two decals never share a texture pointer.
+			if (!batches.empty() && batches.back().Mat == &decal->getMaterial() &&
+				batches.back().FirstVertex + batches.back().NumVerts == vbOffset)
+			{
+				batches.back().NumVerts += batch;
+			}
+			else
+			{
+				TDrawBatch nb;
+				nb.Mat = &decal->getMaterial();
+				nb.FirstVertex = vbOffset;
+				nb.NumVerts = batch;
+				batches.push_back(nb);
+			}
+
+			vbOffset += batch;
+			srcOffset += batch;
 		}
+	}
+
+	delete vba; // unlock the last chunk
+	vba = NULL;
+
+	for (uint b = 0; b < batches.size(); ++b)
+	{
+		nlassert(batches[b].NumVerts != 0 && (batches[b].NumVerts % 3) == 0);
+		drv->renderRawTriangles(*batches[b].Mat, batches[b].FirstVertex, batches[b].NumVerts / 3);
 	}
 }
