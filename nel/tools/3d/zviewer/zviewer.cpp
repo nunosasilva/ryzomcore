@@ -113,6 +113,11 @@ struct CViewerConfig
 	// reached before.
 	bool			Vegetable;
 	float			VegetableDensity;
+	// The micro-vegetation atlas. The client reads it from the continent data
+	// ("MicroVeget", continent.cpp:440) and loads it per season; without it the grass
+	// sprites have no texture and the material's alpha test discards them, which looks
+	// exactly like "vegetation does not render".
+	std::string		VegetableTexture;
 	// A projected decal on the landscape. This is the only place in the tree that drives
 	// CShadowPolyReceiver::receiveDecal() - the terrain half of the decal system, which is
 	// what the client uses for ring decals. nl_sample_decal covers the collision-mesh half.
@@ -178,6 +183,7 @@ struct CViewerConfig
 		LandscapeNoise = true;
 		Vegetable = false;
 		VegetableDensity = 1.0f;
+		VegetableTexture = "microveget_fyros_wi.dds";
 		Decal = false;
 		DecalRadius = 25.0f;
 		DecalForward = 40.0f;
@@ -515,6 +521,15 @@ void displayZones()
 	string seasonPostfix = farBank.substr(idx,3);
 	Landscape->Landscape.TileBank.postfixTileFilename (seasonPostfix.c_str());
 	Landscape->Landscape.TileBank.postfixTileVegetableDesc (seasonPostfix.c_str());
+
+	// The vegetable descriptors are NOT inside the bank: each tile set stores the *name* of a
+	// .vegetset file (CTileSet::_TileVegetableDescFileName) and the lists are loaded from it
+	// separately. The client does this from CLandscapeUser::flushTiles()
+	// (landscape_user.cpp:101, "must load the vegetables descriptor" before initTileBanks),
+	// and zviewer never did - which is why enabling vegetables here instantiated nothing:
+	// active was 1 but every tile reported an empty vegetable list and no vegetation vertex
+	// program was ever compiled.
+	Landscape->Landscape.TileBank.loadTileVegetableDescs();
 
 	// Init light color
 	CNELU::clearBuffers(CRGBA(0,0,0));
@@ -859,6 +874,12 @@ void displayZones()
 			Landscape->Landscape.setVegetableWind(CVector(0.5f, 0.5f, 0.0f).normed(), 0.5f, 1.0f, 0.0f);
 			Landscape->Landscape.setVegetableUpdateLightingFrequency(1.0f / 20.0f);
 			Landscape->Landscape.setVegetableDensity(ViewerCfg.VegetableDensity);
+			// This is NOT optional in practice. Without the atlas the grass sprites have no
+			// texture, the material's alpha test discards every fragment, and the result looks
+			// exactly like "vegetation never renders" - the CLandscapeModel gate says active,
+			// the nelvp vegetation programs compile and get drawn, and no pixel changes.
+			if (!ViewerCfg.VegetableTexture.empty())
+				Landscape->Landscape.loadVegetableTexture(ViewerCfg.VegetableTexture);
 			Landscape->Landscape.enableVegetable(true);
 			nlinfo("ZV: vegetable enabled after first render: active=%d density=%.2f faces=%u",
 				(int)Landscape->Landscape.isVegetableActive(), ViewerCfg.VegetableDensity,
@@ -995,6 +1016,7 @@ void writeConfigFile(const char * configFileName)
 	fprintf(f,"LandscapeNoise = %d;\n", (int)ViewerCfg.LandscapeNoise);
 	fprintf(f,"Vegetable = %d;\n", ViewerCfg.Vegetable ? 1 : 0);
 	fprintf(f,"VegetableDensity = %f;\n", ViewerCfg.VegetableDensity);
+	fprintf(f,"VegetableTexture = \"%s\";\n", ViewerCfg.VegetableTexture.c_str());
 	fprintf(f,"Decal = %d;\n", ViewerCfg.Decal ? 1 : 0);
 	fprintf(f,"DecalRadius = %f;\n", ViewerCfg.DecalRadius);
 	fprintf(f,"DecalForward = %f;\n", ViewerCfg.DecalForward);
@@ -1146,6 +1168,9 @@ void initViewerConfig(const char * configFileName)
 		CConfigFile::CVar *cvVegetableDensity = cf.getVarPtr("VegetableDensity");
 		if (cvVegetableDensity != nullptr)
 			ViewerCfg.VegetableDensity = cvVegetableDensity->asFloat();
+		CConfigFile::CVar *cvVegetableTexture = cf.getVarPtr("VegetableTexture");
+		if (cvVegetableTexture != nullptr)
+			ViewerCfg.VegetableTexture = cvVegetableTexture->asString();
 		CConfigFile::CVar *cvDecal = cf.getVarPtr("Decal");
 		if (cvDecal != nullptr)
 			ViewerCfg.Decal = cvDecal->asInt() != 0;
