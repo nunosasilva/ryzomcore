@@ -733,12 +733,38 @@ const char* NL3D_LandscapeTileLightMapEndProgram=
 void			CLandscapeVBAllocator::setupUBOPrograms(bool withLightMapVariant)
 {
 	_VertexProgramUBO[0] = new CVertexProgramLandscapeUBO(_Type, false);
-	nlverify(_Driver->compileVertexProgram(_VertexProgramUBO[0]));
-
 	if (withLightMapVariant)
-	{
 		_VertexProgramUBO[1] = new CVertexProgramLandscapeUBO(_Type, true);
-		nlverify(_Driver->compileVertexProgram(_VertexProgramUBO[1]));
+
+	// Deliberately not nlverify: supportBuiltinUBO() is an unconditional 'true' for the
+	// whole GL3 driver (driver_opengl3.h:1497), so a driver that accepts UBOs can still
+	// reject THIS source - a strict ES 3.0 / core-profile / WebGL2 compiler is enough. A
+	// hard assert there would turn "this GPU dislikes my GLSL" into a crash, which is
+	// worse than the pre-D.1a behaviour. Fall back to the nelvp path for this allocator
+	// instead, the way CMeshVPWindTree retries after a UBO compile failure
+	// (meshvp_wind_tree.cpp:1066-1071).
+	bool ok = _Driver->compileVertexProgram(_VertexProgramUBO[0]);
+	if (ok && withLightMapVariant)
+		ok = _Driver->compileVertexProgram(_VertexProgramUBO[1]);
+
+	if (!ok)
+	{
+		nlwarning("GL3: landscape %s UBO/GLSL program failed to compile, falling back to nelvp for this allocator",
+			(_Type == CLandscapeVBAllocator::Far0) ? "Far0" :
+			(_Type == CLandscapeVBAllocator::Far1) ? "Far1" : "Tile");
+
+		_VertexProgramUBO[0] = 0;
+		_VertexProgramUBO[1] = 0;
+		_VertexProgram[0] = new CVertexProgramLandscape(_Type);
+		if (withLightMapVariant)
+			_VertexProgram[1] = new CVertexProgramLandscape(_Type, true);
+
+		// The nelvp path is what every driver used before this work, so if even that
+		// fails there is nothing left to try: keep the original hard failure.
+		nlverify(_Driver->compileVertexProgram(_VertexProgram[0]));
+		if (withLightMapVariant)
+			nlverify(_Driver->compileVertexProgram(_VertexProgram[1]));
+		return;
 	}
 
 	// One UBO per allocator, shared by that allocator's variants: the values it carries
