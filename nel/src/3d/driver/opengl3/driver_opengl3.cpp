@@ -375,7 +375,16 @@ CDriverGL3::CDriverGL3()
 	m_SupportSSO = true; // GL 3.3: separable shader objects supported
 #endif
 	_DriverGLStates.setPPClipPlanes(m_PPClipPlanes);
-	// m_SupportNonUBOs = false; // testing strict mode, linked-only always implies ubo-only // TODO
+	// There is deliberately no "strict UBO-only" switch (the old TODO here asked for
+	// m_SupportNonUBOs): the linked path already enforces it, per program, where it
+	// actually matters. CDriverGL3::compileProgram rejects any source compiled for the
+	// linked profile that still has a non-UBO uniform - "has non-UBO uniforms (linked
+	// path requires UBOs only)", driver_opengl3_program.cpp:384 - because m_LinkedMegaShaders
+	// is true on both GL 3.3 and ES 3.0 (:370/:374 above), so every program the engine
+	// builds goes through that check. The separable path (m_SupportSSO, desktop only, used
+	// as the fallback after a mega-program link failure) is exempt on purpose: a global
+	// switch would turn "this compiler could not link the mega program" into "the fallback
+	// is refused as well".
 
 #if !FINAL_VERSION && defined(NL_DEBUG)
 	m_BuildUnusedPrograms = false; // set to test compilation of all possible mega shader variants

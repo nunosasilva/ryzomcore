@@ -1648,7 +1648,6 @@ private:
 	bool m_PPClipPlanes;            // Use PP-based clip plane discard instead of native gl_ClipDistance
 	bool m_LinkedMegaShaders;       // Use linked VP+PP programs instead of SSO for mega path
 	bool m_SupportSSO;              // Support separable shader objects
-	// bool m_SupportNonUBOs;          // Support programs with non-ubo uniforms // TODO
 	bool m_UseMegaShaders;          // Select mega VP/PP variants (false = per-material compiled shaders)
 	bool m_UseMegaLightTableUBO;    // Select mega VP/PP variants with light table UBO
 	bool m_UseMegaCameraUBO;        // Select mega VP/PP variants with camera state UBO
