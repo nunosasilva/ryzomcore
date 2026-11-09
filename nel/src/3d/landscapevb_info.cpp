@@ -99,11 +99,15 @@ void		CFarVertexBufferInfo::setupVertexBuffer(CVertexBuffer &vb, bool forVertexP
 		TexCoordOff0= vb.getTexCoordOff(0);
 		TexCoordOff1= vb.getTexCoordOff(1);
 		// GeomInfoOff/DeltaPosOff/AlphaInfoOff are only ever assigned in the
-		// forVertexProgram branch above, yet CLandscape::renderEx fills the VB through them
-		// unconditionally (patch_render.cpp:1060-1065, :1150-1155) via
-		// CurVBPtr + GeomInfoOff. Left uninitialised here, a layout/program mismatch is an
-		// out-of-range write guarded only by CHECK_VBA_RANGE, not a wrong draw. Zero them so
-		// the mismatch is deterministic and caught instead of undefined.
+		// forVertexProgram branch above, yet the landscape fills the VB through them from
+		// its OWN layout decision (fillFar0/fillFar1/fillTileVertexVB, patch_render.cpp:1060-1065
+		// /:1150-1155/:1222-1227 - the else arm of the VertexProgramEnabled guard, which does
+		// not re-check this flag) via CurVBPtr + GeomInfoOff. So a layout/program mismatch
+		// writes through an uninitialised offset, and nothing catches it: CHECK_VBA_RANGE
+		// compiles to a no-op unless NL_DEBUG_VB is defined (debug_vb.h:25), and even with
+		// it on, offset 0 is IN RANGE and the write lands on StartPos (v[0]). Zeroing makes
+		// the mismatch a deterministic wrong write instead of a read of uninitialised memory
+		// - it removes the UB, it does not make the mismatch detectable.
 		GeomInfoOff= 0;
 		DeltaPosOff= 0;
 		AlphaInfoOff= 0;

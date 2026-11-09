@@ -323,7 +323,7 @@ void			CLandscapeVBAllocator::activateVP(uint vpId)
 	nlassert(_Driver);
 
 	// A VB can be laid out for one program family only, so the two families must never
-	// both be live for the same vpId: setupVertexBuffer (landscapevb_allocator.cpp:261/275)
+	// both be live for the same vpId: setupVertexBuffer (landscapevb_allocator.cpp:263/277)
 	// derives the attribute layout from "a program exists", and a half-set allocator would
 	// silently pick one. Assert it instead of resolving the ambiguity by priority.
 	nlassert(!( _VertexProgram[vpId] && _VertexProgramUBO[vpId] ));
