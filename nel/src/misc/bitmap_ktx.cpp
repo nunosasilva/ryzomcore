@@ -185,6 +185,17 @@ uint8 CBitmap::readKTX( NLMISC::IStream &f, uint mipMapSkip, uint32 maxSize )
 	if (numberOfMipmapLevels == 0)
 		numberOfMipmapLevels = 1;
 
+	// The same limit the DDS reader enforces on its header (readDDSHeader,
+	// "header[6] > MAX_MIPMAP"). Without this, the level count is later truncated to a
+	// uint8: a file claiming 256 levels would become 0, read no level at all, and still
+	// return a valid-looking depth with _Width/_Height set and _Data[0] EMPTY - which the
+	// texture uploader would then treat as a real image.
+	if (numberOfMipmapLevels > MAX_MIPMAP)
+	{
+		nlwarning("KTX: %u mipmap levels exceeds the limit of %u in '%s'", numberOfMipmapLevels, (uint)MAX_MIPMAP, f.getStreamName().c_str());
+		return 0;
+	}
+
 	//-------------- Skip key/value data
 	if (bytesOfKeyValueData > 0)
 	{

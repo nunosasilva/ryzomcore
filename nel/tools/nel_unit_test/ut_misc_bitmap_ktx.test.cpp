@@ -336,3 +336,28 @@ TEST(CBitmapKTX, RejectOversizedLevel)
 		EXPECT_EQ(0, (int)depth);
 	}
 }
+
+// The level COUNT is untrusted too. It used to be cast to uint8 before any limit was applied,
+// so a file claiming 256 levels became 0, no level was read at all, and the reader still
+// returned a valid-looking depth with _Width/_Height set and _Data[0] empty - a bitmap the
+// texture uploader would happily try to upload. DDS refuses this in its header check
+// (bitmap.cpp:610, "header[6] > MAX_MIPMAP"); KTX now does the same.
+TEST(CBitmapKTX, RejectTooManyMipmapLevels)
+{
+	TBytes pixels(2 * 2 * 4, 0x21);
+	// 256 is chosen because (uint8)256 == 0, which is exactly what made the old code report
+	// success with an empty level 0. 17 (one over the limit) is checked too.
+	const uint32 claimed[] = { 17, 256 };
+	for (uint32 c = 0; c < sizeof(claimed) / sizeof(claimed[0]); ++c)
+	{
+		TBytes ktx = buildKTX(2, 2, GL_UNSIGNED_BYTE__, 1, GL_RGBA__, GL_RGBA8__, GL_RGBA__, pixels,
+			1, 0, claimed[c]);
+		CMemStream stream(true);
+		stream.fill(const_cast<uint8 *>(&ktx[0]), (uint32)ktx.size());
+		CBitmap bitmap;
+		uint8 depth = 1;
+		EXPECT_NO_THROW(depth = bitmap.load(stream)) << "mipmap count " << claimed[c];
+		EXPECT_EQ(0, (int)depth) << "mipmap count " << claimed[c] << " must be refused";
+		EXPECT_EQ(0u, (uint32)bitmap.getWidth());
+	}
+}
