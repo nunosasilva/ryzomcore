@@ -86,10 +86,11 @@ const float DECAL_RADIUS = 6.f;
 
 // Generated texture, written next to the working directory and removed on exit.
 const char *DECAL_TEXTURE_FILE = "nl_sample_decal_hit.tga";
+const char *DECAL_TEXTURE_FILE_2 = "nl_sample_decal_hit2.tga";
 
 // A 128x128 RGBA hit marker: soft red disc with a darker ring and a white centre, fully
 // transparent outside. Built in memory so the sample carries no binary asset.
-void buildDecalTexture(CBitmap &bmp)
+void buildDecalTexture(CBitmap &bmp, bool green = false)
 {
 	const uint32 size = 128;
 	bmp.resize(size, size, CBitmap::RGBA);
@@ -119,13 +120,13 @@ void buildDecalTexture(CBitmap &bmp)
 				alpha = (radius - d) * 0.5f;
 			if (alpha < 0.f) alpha = 0.f;
 
-			uint8 r = 220, g = 40, b = 30;
+			uint8 r = green ? 40 : 220, g = green ? 220 : 40, b = green ? 60 : 30;
 			if (d < ringMin)
 			{
-				r = 140; g = 20; b = 20;
+				r = green ? 20 : 140; g = green ? 140 : 20; b = green ? 30 : 20;
 				if (d < (float)size * 0.10f)
 				{
-					r = 255; g = 240; b = 240;
+					r = 255; g = 255; b = 240;
 				}
 			}
 
@@ -150,11 +151,45 @@ CMatrix buildCamWorldMatrix(const CVector &eye, const CVector &target, const CVe
 	return camWorld;
 }
 
+// Write a generated decal texture next to the working directory and return its absolute path.
+// The decal API takes a file name and loads through CPath/CTextureFile, so the file has to exist.
+string writeDecalTexture(const char *name, bool green)
+{
+	CBitmap bmp;
+	buildDecalTexture(bmp, green);
+	string path = CPath::getCurrentPath();
+	if (path.empty() || (path[path.size() - 1] != '/'))
+		path += '/';
+	path += name;
+	COFile out; // COFile is the output stream (CIFile is read-only)
+	const bool wrote = out.open(path) && bmp.writeTGA(out, 32);
+	out.close();
+	if (!wrote)
+		nlwarning("Could not write '%s'", path.c_str());
+	return path;
+}
+
+// Create one decal. Returns an empty UDecal on failure.
+UDecal addDecal(UScene *scene, const string &texture, const CVector2f &pos, float radius, uint8 priority)
+{
+	UDecal decal = scene->createDecal();
+	if (decal.empty())
+		return decal;
+	decal.setTransformMode(UTransformable::DirectMatrix);
+	decal.setTexture(texture);
+	decal.setWorldMatrixForSpot(pos, radius);
+	decal.setStatic(true);
+	decal.setClippingMode(2); // geometry clipping
+	decal.setDiffuse(CRGBA(255, 255, 255, 255));
+	decal.setPriority(priority);
+	return decal;
+}
+
 class CDecalDemo : public IEventListener
 {
 public:
 	CDecalDemo(bool createDecal, bool legacy)
-		: m_CloseWindow(false), m_CreateDecal(createDecal), m_StartTime(0.0), m_LegacyDriver(legacy)
+		: m_Scenario(SCENE_SINGLE), m_CloseWindow(false), m_CreateDecal(createDecal), m_StartTime(0.0), m_LegacyDriver(legacy)
 	{
 #ifdef __EMSCRIPTEN__
 		m_Driver = UDriver::createDriver(0, UDriver::OpenGlEs3);
@@ -208,6 +243,23 @@ public:
 			setupDecal();
 
 		m_StartTime = CTime::ticksToSecond(CTime::getPerformanceTime());
+	}
+
+	// Scenarios that change the decal setup have to run after the constructor (the CLI is parsed
+	// after the object exists), so this re-runs the decal setup for them.
+	void setScenario(int scenario)
+	{
+		if (scenario == 0)
+			return;
+		for (uint i = 0; i < m_Decals.size(); ++i)
+		{
+			if (!m_Decals[i].empty())
+				m_Scene->deleteDecal(m_Decals[i]);
+		}
+		m_Decals.clear();
+		m_Scenario = (scenario == 1) ? SCENE_MULTI : SCENE_FADE;
+		if (m_CreateDecal)
+			setupDecal();
 	}
 
 	~CDecalDemo()
@@ -355,23 +407,53 @@ private:
 		}
 		CPath::addSearchPath(CPath::getCurrentPath(), true, false);
 
-		// 5. Create and place the decal. setWorldMatrixForSpot() builds the unit-cube volume
+		// 5. Create and place the decal(s). setWorldMatrixForSpot() builds the unit-cube volume
 		//    from a 2D position and a radius; the four side clip planes are vertical, so it
 		//    lands on a horizontal receiver regardless of its height.
-		m_Decal = m_Scene->createDecal();
-		if (m_Decal.empty())
+		if (m_Scenario == SCENE_MULTI)
+		{
+			// Three decals, two textures, different priorities: this is the batching path.
+			// CDecalManager groups by material and must flush its vertex buffer whenever the
+			// texture changes, so a frame with two textures exercises code that a single
+			// decal never reaches.
+			const string texGreen = writeDecalTexture(DECAL_TEXTURE_FILE_2, true);
+			m_Decals.push_back(addDecal(m_Scene, texPath, CVector2f(-8.f, -8.f), 2.f, 0));
+			m_Decals.push_back(addDecal(m_Scene, texGreen, CVector2f(0.f, 0.f), 2.f, 3));
+			m_Decals.push_back(addDecal(m_Scene, texPath, CVector2f(8.f, 8.f), 2.f, 7));
+			for (uint i = 0; i < m_Decals.size(); ++i)
+			{
+				if (m_Decals[i].empty())
+					nlwarning("scenario multi: decal %u could not be created", i);
+			}
+			nlinfo("Scenario multi: %u decals, 2 textures, priorities 0/3/7", (uint)m_Decals.size());
+			return;
+		}
+
+		UDecal decal = m_Scene->createDecal();
+		if (decal.empty())
 		{
 			nlwarning("UScene::createDecal failed; no decal will be drawn");
 			return;
 		}
 		// setWorldMatrixForSpot() goes through CTransform::setMatrix(), which asserts unless
 		// the object is in DirectMatrix mode (transformable.h:167).
-		m_Decal.setTransformMode(UTransformable::DirectMatrix);
-		m_Decal.setTexture(texPath);
-		m_Decal.setWorldMatrixForSpot(CVector2f(0.f, 0.f), DECAL_RADIUS);
-		m_Decal.setStatic(true);    // the receiver never moves: clip once
-		m_Decal.setClippingMode(2); // geometry clipping
-		m_Decal.setDiffuse(CRGBA(255, 255, 255, 255));
+		decal.setTransformMode(UTransformable::DirectMatrix);
+		decal.setTexture(texPath);
+		decal.setWorldMatrixForSpot(CVector2f(0.f, 0.f), DECAL_RADIUS);
+		decal.setStatic(true);    // the receiver never moves: clip once
+		decal.setClippingMode(2); // geometry clipping
+		decal.setDiffuse(CRGBA(255, 255, 255, 255));
+
+		if (m_Scenario == SCENE_FADE)
+		{
+			// A configured vertical fade: opaque at z = 0, transparent at z = 8. This is the
+			// other branch of computeColors() - the one the "degenerate range" fix had to keep
+			// working - and the receiver is only at z = 0, so the fade is flat here; what it
+			// proves is that a real range does not collapse the decal to nothing.
+			decal.setBottomBlend(0.f, 8.f);
+			decal.setTopBlend(0.f, 8.f);
+			nlinfo("Scenario fade: bottom/top blend 0..8 m");
+		}
 
 		nlinfo("Decal created: %u-triangle receiver, radius %.1f m, texture %s",
 			(uint)(triangles.size() / 3), DECAL_RADIUS, texPath.c_str());
@@ -383,8 +465,10 @@ private:
 	CFrustum	m_Frustum;
 	CVisualCollisionMesh *m_CollisionMesh;
 	UVisualCollisionManager *m_Vcm;
-	UDecal		m_Decal;
+	std::vector<UDecal> m_Decals;
 	CVertexBuffer m_ShadowVB; // must outlive m_CollisionMesh (build() stores a pointer)
+	enum TScenario { SCENE_SINGLE = 0, SCENE_MULTI, SCENE_FADE };
+	TScenario	m_Scenario;
 	bool		m_CloseWindow;
 	bool		m_CreateDecal;
 	double		m_StartTime;
@@ -413,6 +497,7 @@ sint main(int argc, char **argv)
 
 	bool createDecal = true;
 	bool legacy = false;
+	int scenario = 0;
 #ifdef NL_OS_WINDOWS
 	if (cmdline && strstr(cmdline, "--no-decal") != NULL)
 		createDecal = false;
@@ -423,15 +508,21 @@ sint main(int argc, char **argv)
 			createDecal = false;
 		else if (strcmp(argv[i], "--legacy") == 0)
 			legacy = true;
+		else if (strcmp(argv[i], "--multi") == 0)
+			scenario = 1;
+		else if (strcmp(argv[i], "--fade") == 0)
+			scenario = 2;
 	}
 #endif
 
 #ifdef __EMSCRIPTEN__
 	static CDecalDemo demo(createDecal, legacy);
+	demo.setScenario(scenario);
 	g_Demo = &demo;
 	emscripten_set_main_loop(emscriptenMainLoop, 0, 1);
 #else
 	CDecalDemo demo(createDecal, legacy);
+	demo.setScenario(scenario);
 	demo.run();
 #endif
 
