@@ -98,6 +98,15 @@ void		CFarVertexBufferInfo::setupVertexBuffer(CVertexBuffer &vb, bool forVertexP
 	{
 		TexCoordOff0= vb.getTexCoordOff(0);
 		TexCoordOff1= vb.getTexCoordOff(1);
+		// GeomInfoOff/DeltaPosOff/AlphaInfoOff are only ever assigned in the
+		// forVertexProgram branch above, yet CLandscape::renderEx fills the VB through them
+		// unconditionally (patch_render.cpp:1060-1065, :1150-1155) via
+		// CurVBPtr + GeomInfoOff. Left uninitialised here, a layout/program mismatch is an
+		// out-of-range write guarded only by CHECK_VBA_RANGE, not a wrong draw. Zero them so
+		// the mismatch is deterministic and caught instead of undefined.
+		GeomInfoOff= 0;
+		DeltaPosOff= 0;
+		AlphaInfoOff= 0;
 		TexCoordPointer0= Accessor.getTexCoordPointer(0, 0);
 		TexCoordPointer1= Accessor.getTexCoordPointer(0, 1);
 
@@ -179,6 +188,10 @@ void		CNearVertexBufferInfo::setupVertexBuffer(CVertexBuffer &vb, bool forVertex
 		TexCoordPointer0= Accessor.getTexCoordPointer(0, 0);
 		TexCoordPointer1= Accessor.getTexCoordPointer(0, 1);
 		TexCoordPointer2= Accessor.getTexCoordPointer(0, 2);
+
+		// Same reason as CFarVertexBufferInfo::setupVertexBuffer: zero the VP-only offsets.
+		GeomInfoOff= 0;
+		DeltaPosOff= 0;
 
 		TexCoordOff0= vb.getTexCoordOff(0);
 		TexCoordOff1= vb.getTexCoordOff(1);
