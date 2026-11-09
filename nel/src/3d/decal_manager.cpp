@@ -280,7 +280,12 @@ void CDecalManager::flush(CScene *sc)
 				for (uint b = 0; b < batches.size(); ++b)
 				{
 					nlassert(batches[b].NumVerts != 0 && (batches[b].NumVerts % 3) == 0);
-					drv->renderRawTriangles(*batches[b].Mat, batches[b].FirstVertex, batches[b].NumVerts / 3);
+					nlassert((batches[b].FirstVertex % 3) == 0);
+					// renderRawTriangles() takes a TRIANGLE index and multiplies it by 3
+					// (glDrawArrays(GL_TRIANGLES, startIndex*3, ...)), so the vertex offset
+					// has to be divided here. Passing it raw draws at 3x the offset, past the
+					// filled region: that was the "only the first decal renders" bug.
+					drv->renderRawTriangles(*batches[b].Mat, batches[b].FirstVertex / 3, batches[b].NumVerts / 3);
 				}
 				batches.clear();
 				continue;
@@ -324,6 +329,8 @@ void CDecalManager::flush(CScene *sc)
 	for (uint b = 0; b < batches.size(); ++b)
 	{
 		nlassert(batches[b].NumVerts != 0 && (batches[b].NumVerts % 3) == 0);
-		drv->renderRawTriangles(*batches[b].Mat, batches[b].FirstVertex, batches[b].NumVerts / 3);
+		nlassert((batches[b].FirstVertex % 3) == 0);
+		// Triangle index, not a vertex index: see the comment at the chunk-flush above.
+		drv->renderRawTriangles(*batches[b].Mat, batches[b].FirstVertex / 3, batches[b].NumVerts / 3);
 	}
 }
