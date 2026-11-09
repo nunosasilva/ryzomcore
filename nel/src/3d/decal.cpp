@@ -391,8 +391,16 @@ return;
 
 const CVector camPos = getOwnerScene()->getCam()->getMatrix().getPos();
 
-float bottomBlendScale = 1.f / NLMISC::favoid0(_BottomBlendZMax - _BottomBlendZMin);
-float topBlendScale = 1.f / NLMISC::favoid0(_TopBlendZMin - _TopBlendZMax);
+// A degenerate range is how "this fade is not configured" is expressed: the defaults are
+// _BottomBlendZMin = _BottomBlendZMax = -1e10 and _TopBlendZMin = _TopBlendZMax = 1e10.
+// The scale below divides by (max - min), so a degenerate range used to produce an infinite
+// scale and then a factor of 0 - every decal was fully transparent until setBottomBlend()/
+// setTopBlend() was called, which is why none of them could be seen. Treat a degenerate
+// range as "no fade" (factor 1) and only divide when the range is real.
+const bool useBottomBlend = (_BottomBlendZMax > _BottomBlendZMin);
+const bool useTopBlend = (_TopBlendZMin > _TopBlendZMax);
+float bottomBlendScale = useBottomBlend ? 1.f / (_BottomBlendZMax - _BottomBlendZMin) : 0.f;
+float topBlendScale = useTopBlend ? 1.f / (_TopBlendZMin - _TopBlendZMax) : 0.f;
 
 for (uint i = 0; i < _Vertices.size(); ++i)
 {
@@ -403,15 +411,21 @@ float dist = (camPos - v).norm();
 float intensity = dist * distScale + distBias;
 clamp(intensity, 0.f, 1.f);
 
-// Bottom blend
+// Bottom blend (0 at ZMin, 1 at ZMax). Skipped when the range is degenerate: "no fade".
+if (useBottomBlend)
+{
 float bottomBlend = (v.z - _BottomBlendZMin) * bottomBlendScale;
 clamp(bottomBlend, 0.f, 1.f);
 intensity *= bottomBlend;
+}
 
-// Top blend
+// Top blend (1 at ZMin, 0 at ZMax). Skipped when the range is degenerate.
+if (useTopBlend)
+{
 float topBlend = (v.z - _TopBlendZMax) * topBlendScale;
 clamp(topBlend, 0.f, 1.f);
 intensity *= topBlend;
+}
 
 // Apply to diffuse color
 _Colors[i].R = _Diffuse.R;
