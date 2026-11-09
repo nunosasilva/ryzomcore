@@ -1319,12 +1319,8 @@ void CDriverGL3::copyFrameBufferToTexture(ITexture *tex,
 	//	gltext->activeFrameBufferObject(NULL);
 	_DriverGLStates.activeTexture(0);
 	// setup texture mode, after activeTexture()
-	// FIXME GL3 TEXTUREMODE CDriverGLStates3::TTextureMode textureMode= CDriverGLStates3::Texture2D;
 
-	// FIXME GL3 TEXTUREMODE if (gltext->TextureMode == GL_TEXTURE_RECTANGLE)
-	// FIXME GL3 TEXTUREMODE 	textureMode = CDriverGLStates3::TextureRect;
 
-	// FIXME GL3 TEXTUREMODE _DriverGLStates.setTextureMode(textureMode);
 	if (tex->isTextureCube())
 	{
 		_DriverGLStates.forceBindTexture(GL_TEXTURE_CUBE_MAP, gltext->ID);
@@ -1336,7 +1332,6 @@ void CDriverGL3::copyFrameBufferToTexture(ITexture *tex,
 		glCopyTexSubImage2D(gltext->TextureMode, level, offsetx, offsety, x, y, width, height);
 	}
 	// disable texturing.
-	// FIXME GL3 TEXTUREMODE _DriverGLStates.setTextureMode(CDriverGLStates3::TextureDisabled);
 	_CurrentTexture[0] = nullptr;
 	_CurrentTextureInfoGL[0] = nullptr;
 	//if (_RenderTargetFBO)

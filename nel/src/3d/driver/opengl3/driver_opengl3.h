@@ -1246,8 +1246,19 @@ private:
 	CMaterial*				_CurrentMaterial;
 	CMaterial::TShader		_CurrentMaterialSupportedShader;
 
-	/* NB : this pointers handles the caching of glBindTexture() and setTextureMode() calls.
-	*/
+	// These pointers cache the currently bound texture per sampler stage, so that
+	// glBindTexture() is only issued when it actually changes.
+	//
+	// There is no "current texture mode" (2D / Rectangle / CubeMap / Disabled) here, on
+	// purpose: the fixed-function concept of a global texture target per stage does not
+	// exist in GL3. Each draw binds the target its shader samples, through
+	// CDriverGLStates3::forceBindTexture()/bindTexture() with the texture's own
+	// TextureMode, and "no texture" is expressed by the sampler state the program sets
+	// (texture-stage mask in the mega programs), not by a GL enable/disable. Rectangles
+	// are not supported at all (CDriverGL3::supportTextureRectangle() returns false), and
+	// cube maps are bound explicitly where they are sampled. The 24 commented-out
+	// setTextureMode() calls that used to follow these pointers were removed for that
+	// reason - do not reintroduce a global texture mode.
 	ITexture*				_CurrentTexture[IDRV_PROGRAM_MAXSAMPLERS];
 	CTextureDrvInfosGL3*		_CurrentTextureInfoGL[IDRV_PROGRAM_MAXSAMPLERS];
 	// Anisotropic filtering value
