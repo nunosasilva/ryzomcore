@@ -324,6 +324,28 @@ bool CDriverGL3::renderRawTriangles(CMaterial& mat, uint32 startIndex, uint32 nu
 		// draw the primitives.
 		if (numTris)
 		{
+			{
+				static uint s_r=0;
+				if (s_r++ < 4)
+				{
+					// Where does the first vertex of this batch land in clip space?
+					// Same expression the object UBO uploads (driver_opengl3_render_state.cpp:463),
+					// column-vector convention as the shaders use it: clip = M * v.
+					const CMatrix mvp = _GLProjMat * _ChangeBasis * _ModelViewMatrix;
+					const float *c = mvp.get();
+					const float vx = -6.f, vy = -6.f, vz = 0.f;
+					const float cx = c[0]*vx + c[4]*vy + c[8]*vz + c[12];
+					const float cy = c[1]*vx + c[5]*vy + c[9]*vz + c[13];
+					const float cz = c[2]*vx + c[6]*vy + c[10]*vz + c[14];
+					const float cw = c[3]*vx + c[7]*vy + c[11]*vz + c[15];
+					const float *pm = _GLProjMat.get();
+					const float *mm = _ModelViewMatrix.get();
+					nlinfo("DECALPROBE glDrawArrays start=%u ntris=%u projRow0=(%.2f %.2f %.2f %.2f) mvRow0=(%.2f %.2f %.2f %.2f) clip(-6,-6,0)=(%.2f %.2f %.2f %.2f) glErr=0x%x",
+						(uint)(startIndex*3), (uint)(numTris*3),
+						pm[0], pm[1], pm[2], pm[3], mm[0], mm[1], mm[2], mm[3],
+						cx, cy, cz, cw, (uint)glGetError());
+				}
+			}
 			glDrawArrays(GL_TRIANGLES, startIndex*3, numTris*3);
 		}
 	}

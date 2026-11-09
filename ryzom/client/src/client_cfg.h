@@ -305,6 +305,9 @@ struct CClientConfig
 	/// Dev: force realtime planar reflection on all water surfaces
 	bool			ForceWaterReflections;
 
+	/// Use the new engine-level decal system instead of the legacy client-side one
+	bool			NewDecalSystem;
+
 	/// Movie Shooter
 	uint			MovieShooterMemory;
 	string			MovieShooterPath;

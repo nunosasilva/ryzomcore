@@ -51,6 +51,7 @@ class UAnimationSet;
 class UPlayListManager;
 class UPointLight;
 class UWaterEnvMap;
+class UDecal;
 
 
 // ****************************************************************************
@@ -295,7 +296,12 @@ public:
 	/// Delete a dynamic PointLight.
 	virtual	void			deletePointLight(UPointLight &light)=0;
 
+	/// Create a dynamic Decal.
+	virtual UDecal			createDecal()=0;
+	/// Delete a dynamic decal.
+	virtual void			deleteDecal(UDecal &decal)=0;
 
+	
 	//@}
 
 	/// \name Animation Mgt.
