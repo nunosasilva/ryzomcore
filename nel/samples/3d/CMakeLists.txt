@@ -53,7 +53,10 @@ IF(WITH_DRIVER_OPENGL3 AND (WITH_NEL_TESTS OR WITH_TESTING))
         # ~RUNSECS(14)+4 s, so 40 s can only be reached by a hang.
         SET_TESTS_PROPERTIES(nel_gl3_smoke_${NL_GL3_SMOKE_SAMPLE}
                              PROPERTIES
-                             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${NL_GL3_SMOKE_SAMPLE}"
+                             # The sample writes a generated decal texture next to its
+                             # working directory, so this must NOT be the source tree
+                             # (nl_sample_decal committed one that way).
+                             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
                              ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1"
                              TIMEOUT 40)
       ENDIF()
