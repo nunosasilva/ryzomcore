@@ -581,9 +581,15 @@ void			CLandscape::setDriver(IDriver *drv)
 
 		// Does the driver support VertexShader???
 		// only if VP supported by GPU.
+		// Left on nelvp on purpose, unlike the CLandscapeVBAllocator gate (which now also
+		// accepts a UBO-capable driver, since all four landscape programs are hand-written
+		// GLSL). This flag also feeds _DriverOkForVegetable just below, and the vegetable
+		// program is still nelvp-only: vegetablevb_allocator.cpp:112 hard-asserts
+		// supportVertexProgram(nelvp). Widening this gate before that is ported would let a
+		// driver claim support for a program it cannot compile. Wind tree already has a UBO
+		// variant (meshvp_wind_tree.cpp:446), vegetable does not.
 		_VertexShaderOk = (!_Driver->isVertexProgramEmulated() && (
 			_Driver->supportVertexProgram(CVertexProgram::nelvp)
-			// || _Driver->supportVertexProgram(CVertexProgram::glsl330v) // TODO_VP_GLSL
 			));
 
 

@@ -130,11 +130,11 @@ public:
 	void			activateVP(uint vpId);
 	inline CVertexProgramLandscape *getVP(uint vpId) const { return _VertexProgram[vpId]; }
 
-	/// \name UBO based GLSL landscape vertex program (GL3 driver only, Tile type only).
+	/// \name UBO based GLSL landscape vertex program (GL3 driver only).
 	// @{
 	// True if the hand-written GLSL/UBO program is active for that vpId (instead of
 	// the nelvp one). Callers must then feed the NlLandscape UBO, not individual
-	// uniforms.
+	// uniforms. vpId 1 exists only for the Tile type (the lightmap pass).
 	bool			isUBOVertexProgram(uint vpId) const { return _VertexProgramUBO[vpId] != 0; }
 	CVertexProgramLandscapeUBO *getUBOVP(uint vpId) const { return _VertexProgramUBO[vpId]; }
 	// The shared UBO holding refineCenter/tileDist/pzbModelPosition, NULL if not active.
@@ -216,21 +216,31 @@ private:
 	NLMISC::CRefPtr<CUniformBuffer> _LandscapeUB;
 	void				deleteVertexProgram();
 	void				setupVBFormatAndVertexProgram(bool withVertexProgram);
+		// Builds the hand-written GLSL programs + the shared NlLandscape UBO for this
+		// allocator. Called from all three type branches of setupVBFormatAndVertexProgram
+		// when the driver supports UBOs; 'withLightMapVariant' is true only for Tile.
+		void				setupUBOPrograms(bool withLightMapVariant);
 	// @}
 
 };
 
 // ***************************************************************************
 /**
- * Hand-written GLSL landscape vertex program, Tile type only.
+ * Hand-written GLSL landscape vertex program: Far0, Far1 and Tile (plus the Tile
+ * lightmap variant), replacing the auto-converted nelvp for each of them.
  *
- * Same job as the nelvp Tile program (geomorph blend + projection + uv copy), but
- * reads its data from a user UBO (binding UBBindingVertexProgram, 'NlLandscape')
- * instead of individual named uniforms, following the CVertexProgramWindTreeUBO
- * precedent. modelViewProjection and the fog basis come from the builtin NlModel/
- * NlCamera UBOs, so only landscape specific data is in our own block. The nelvp
- * 'o[FOGC]' output is dropped: the GL3 mega pixel program computes fog per
- * fragment from ecPos.
+ * Same job as the nelvp program of the same type (geomorph blend + projection + uv
+ * copy, plus the far-tile alpha fade for Far1), but it reads its data from a user
+ * UBO (binding UBBindingVertexProgram, 'NlLandscape') instead of individual named
+ * uniforms, following the CVertexProgramWindTreeUBO precedent. modelViewProjection
+ * and the fog basis come from the builtin NlModel/NlCamera UBOs, so only landscape
+ * specific data is in our own block. The nelvp 'o[FOGC]' output is dropped: the GL3
+ * mega pixel program computes fog per fragment from ecPos.
+ *
+ * The type only changes the END block of the nelvp source, so one GLSL body plus
+ * two compile-time switches (NL_LANDSCAPE_LIGHTMAP, NL_LANDSCAPE_FAR1) covers all
+ * four variants. Far0 and Tile share the body verbatim - NL3D_LandscapeFar0EndProgram
+ * and NL3D_LandscapeTileEndProgram are instruction-for-instruction identical.
  */
 class CVertexProgramLandscapeUBO : public CVertexProgram
 {
@@ -242,7 +252,7 @@ public:
 		uint TileDist;
 		uint PZBModelPosition;
 	};
-	CVertexProgramLandscapeUBO(bool lightMap);
+	CVertexProgramLandscapeUBO(CLandscapeVBAllocator::TType type, bool lightMap = false);
 	virtual ~CVertexProgramLandscapeUBO() NL_OVERRIDE { }
 	virtual void buildInfo() NL_OVERRIDE;
 public:

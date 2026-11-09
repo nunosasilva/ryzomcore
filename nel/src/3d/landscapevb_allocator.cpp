@@ -92,9 +92,13 @@ void			CLandscapeVBAllocator::updateDriver(IDriver *driver)
 		// Then rebuild VB format, and VertexProgram, if needed.
 		// Do it only if VP supported by GPU.
 		setupVBFormatAndVertexProgram(!_Driver->isVertexProgramEmulated() && (
-			_Driver->supportVertexProgram(CVertexProgram::nelvp)
-			// || _Driver->supportVertexProgram(CVertexProgram::glsl330v) // TODO_VP_GLSL
-			));
+			_Driver->supportVertexProgram(CVertexProgram::nelvp) ||
+			// the four landscape programs are hand-written GLSL on a user UBO, so a driver
+			// that can take UBOs can run them without nelvp support. This is the same predicate
+			// setupVBFormatAndVertexProgram() branches on below, so the gate and the code
+			// path cannot disagree. Only CDriverGL3 returns true (driver_opengl3.h:1497);
+			// no driver today takes this half without also taking the nelvp half.
+			_Driver->supportBuiltinUBO()));
 
 		// must reallocate the VertexBuffer.
 		if( _NumVerticesAllocated>0 )
@@ -519,21 +523,37 @@ static const char* LandscapeVPCodeGLSL_VaryingsLinked =
 
 // SSO mode: only the varyings actually written, at the locations the mega PP
 // reads them (ecPos=0, texCoord0=8, texCoord1=9).
+// Far1 only: the far-tile alpha fade writes o[COL0].w, which is 'diffuseColor'
+// (driver_opengl3_nelvp.cpp maps OPrimaryColor -> diffuseColor) and the mega PP
+// reads it unconditionally as its starting fragColor (driver_opengl3_pixel_mega_program.cpp:148,
+// used at :446). Location 3 = VaryingLocationDiffuseColor = PrimaryColor
+// (driver_opengl3_program.h:131). Tile/Far0 leave o[COL0] alone, so they must not
+// declare it.
+static const char* LandscapeVPCodeGLSL_VaryingsSSO_Far1 =
+	"layout(location = 3) smooth out vec4 diffuseColor;\n";
+
 static const char* LandscapeVPCodeGLSL_VaryingsSSO =
 	"layout(location = 0) smooth out vec4 ecPos;\n"
 	"layout(location = 8) smooth out vec4 texCoord0;\n"
 	"layout(location = 9) smooth out vec4 texCoord1;\n";
 
-// Shared body. NL_LANDSCAPE_LIGHTMAP switches the Tex0 source from v[8] to
-// v[12] (uv2), like NL3D_LandscapeTileLightMapEndProgram does for the nelvp.
+// Shared body. Two compile-time switches, mirroring the four nelvp end programs:
+//   NL_LANDSCAPE_LIGHTMAP - Tex0 comes from v[12] (uv2), as in
+//     NL3D_LandscapeTileLightMapEndProgram.
+//   NL_LANDSCAPE_FAR1     - adds the far-tile alpha fade of
+//     NL3D_LandscapeFar1EndProgram (o[COL0].w), which reads v[12] as AlphaInfo.
+// v[12] is the SAME vertex-buffer channel in both cases: NL3D_LANDSCAPE_VPPOS_TEX2
+// and NL3D_LANDSCAPE_VPPOS_ALPHAINFO are both CVertexBuffer::TexCoord4
+// (landscapevb_allocator.h:47 and :50). What differs is only what the shader
+// interprets it as, so the two macros must never be defined together.
 static const char* LandscapeVPCodeGLSL_Body =
 	"layout(location = 0) in vec4 v0;\n"		// StartPos
 	"layout(location = 8) in vec4 v8;\n"		// Tex0
 	"layout(location = 9) in vec4 v9;\n"		// Tex1
 	"layout(location = 10) in vec4 v10;\n"	// GeomInfo (GeomFactor, MaxNearLimit)
 	"layout(location = 11) in vec4 v11;\n"	// DeltaPos (EndPos - StartPos)
-	"#ifdef NL_LANDSCAPE_LIGHTMAP\n"
-	"layout(location = 12) in vec4 v12;\n"	// Tex2 (lightmap uv)
+	"#if defined(NL_LANDSCAPE_LIGHTMAP) || defined(NL_LANDSCAPE_FAR1)\n"
+	"layout(location = 12) in vec4 v12;\n"	// Tex2 (lightmap uv) or AlphaInfo (Far1)
 	"#endif\n"
 	"\n"
 	"void main()\n"
@@ -556,6 +576,16 @@ static const char* LandscapeVPCodeGLSL_Body =
 	"\ttexCoord0 = v8;\n"
 	"#endif\n"
 	"\ttexCoord1 = v9;\n"
+	"#ifdef NL_LANDSCAPE_FAR1\n"
+	"\t// --- far-tile alpha fade, the extra term of NL3D_LandscapeFar1EndProgram ---\n"
+	"\t// nelvp: ADD R0.x, R2.x, -v[12].x / MUL R0.x, R0.x, v[12].y / MAX c[4].x / MIN o[COL0].w c[4].y\n"
+	"\t// = clamp((sqrDist - TransitionSqrMin) * OOTransitionSqrDelta, 0, 1), c[4] = {0,1,..}, R2.x = sqrDist.\n"
+	"\t// Only .w is written and then the whole colour is clamped: that is exactly what the converter\n"
+	"\t// emits for this program, and o[COL0].rgb stays undefined in the nelvp too, so mirroring it is\n"
+	"\t// what keeps the A/B pixel-exact.\n"
+	"\tdiffuseColor.w = clamp((sqrDist - v12.x) * v12.y, 0.0, 1.0);\n"
+	"\tdiffuseColor = clamp(diffuseColor, 0.0, 1.0);\n"
+	"#endif\n"
 	"\t// NeL-space eye position for the builtin PP fog (same epilogue as the\n"
 	"\t// nelvp converter: inv(Projection * ChangeBasis) * clip position).\n"
 	"\tecPos = inverseProjectionBasis * gl_Position;\n"
@@ -695,6 +725,34 @@ const char* NL3D_LandscapeTileLightMapEndProgram=
 
 
 // ***************************************************************************
+// Build the hand-written GLSL/UBO landscape programs for this allocator, instead of
+// the nelvp ones. Used by all three types (Far0, Far1, Tile) once the driver can
+// take a user UBO; 'withLightMapVariant' is true only for Tile, the only type with a
+// second pass (uv2 lightmap). The nelvp programs are deliberately NOT built here:
+// building both would leave the two families ambiguous for activateVP.
+void			CLandscapeVBAllocator::setupUBOPrograms(bool withLightMapVariant)
+{
+	_VertexProgramUBO[0] = new CVertexProgramLandscapeUBO(_Type, false);
+	nlverify(_Driver->compileVertexProgram(_VertexProgramUBO[0]));
+
+	if (withLightMapVariant)
+	{
+		_VertexProgramUBO[1] = new CVertexProgramLandscapeUBO(_Type, true);
+		nlverify(_Driver->compileVertexProgram(_VertexProgramUBO[1]));
+	}
+
+	// One UBO per allocator, shared by that allocator's variants: the values it carries
+	// (refineCenter, tileDist, pzbModelPosition) are identical for all three types
+	// (landscape.cpp computes them once per frame), but each allocator binds its own
+	// before its own draw, so no pass can read another pass's buffer.
+	if (!_LandscapeUB)
+	{
+		_LandscapeUB = new CUniformBuffer();
+		_LandscapeUB->Format = *_UBFormat;
+	}
+}
+
+// ***************************************************************************
 void			CLandscapeVBAllocator::deleteVertexProgram()
 {
 	for (uint i = 0; i < MaxVertexProgram; ++i)
@@ -745,8 +803,13 @@ void			CLandscapeVBAllocator::setupVBFormatAndVertexProgram(bool withVertexProgr
 			_VB.initEx();
 
 			// Init the Vertex Program.
-			_VertexProgram[0] = new CVertexProgramLandscape(Far0);
-			nlverify(_Driver->compileVertexProgram(_VertexProgram[0]));
+			if (_Driver->supportBuiltinUBO())
+				setupUBOPrograms(false);
+			else
+			{
+				_VertexProgram[0] = new CVertexProgramLandscape(Far0);
+				nlverify(_Driver->compileVertexProgram(_VertexProgram[0]));
+			}
 		}
 		else if(_Type==Far1)
 		{
@@ -761,8 +824,13 @@ void			CLandscapeVBAllocator::setupVBFormatAndVertexProgram(bool withVertexProgr
 			_VB.initEx();
 
 			// Init the Vertex Program.
-			_VertexProgram[0] = new CVertexProgramLandscape(Far1);
-			nlverify(_Driver->compileVertexProgram(_VertexProgram[0]));
+			if (_Driver->supportBuiltinUBO())
+				setupUBOPrograms(false);
+			else
+			{
+				_VertexProgram[0] = new CVertexProgramLandscape(Far1);
+				nlverify(_Driver->compileVertexProgram(_VertexProgram[0]));
+			}
 		}
 		else
 		{
@@ -778,22 +846,7 @@ void			CLandscapeVBAllocator::setupVBFormatAndVertexProgram(bool withVertexProgr
 
 			// Init the Vertex Program.
 			if (_Driver->supportBuiltinUBO())
-			{
-				// GL3 (and any UBO capable driver): hand-written GLSL, data
-				// through the NlLandscape UBO. The nelvp programs are not built.
-				_VertexProgramUBO[0] = new CVertexProgramLandscapeUBO(false);
-				nlverify(_Driver->compileVertexProgram(_VertexProgramUBO[0]));
-
-				_VertexProgramUBO[1] = new CVertexProgramLandscapeUBO(true);
-				nlverify(_Driver->compileVertexProgram(_VertexProgramUBO[1]));
-
-				// One shared UBO for both variants (set-and-discard per draw call).
-				if (!_LandscapeUB)
-				{
-					_LandscapeUB = new CUniformBuffer();
-					_LandscapeUB->Format = *_UBFormat;
-				}
-			}
+				setupUBOPrograms(true);
 			else
 			{
 				_VertexProgram[0] = new CVertexProgramLandscape(Tile, false);
@@ -850,10 +903,9 @@ CVertexProgramLandscape::CVertexProgramLandscape(CLandscapeVBAllocator::TType ty
 		source->ParamIndices["pzbModelPosition"] = 12;
 		addSource(source);
 	}
-	// TODO_VP_GLSL
-	{
-		// ....
-	}
+	// (nothing here: the hand-written GLSL twin of this program is
+	// CVertexProgramLandscapeUBO, built by CLandscapeVBAllocator::setupUBOPrograms for
+	// all three types. This class stays the nelvp path for drivers without UBO support.)
 }
 
 // ***************************************************************************
@@ -863,9 +915,18 @@ const CLandscapeVBAllocator::CLandscapeUBOOffsets &CLandscapeVBAllocator::uboOff
 	return _UBOOffsets;
 }
 
-CVertexProgramLandscapeUBO::CVertexProgramLandscapeUBO(bool lightMap)
+CVertexProgramLandscapeUBO::CVertexProgramLandscapeUBO(CLandscapeVBAllocator::TType type, bool lightMap)
 {
-	// Build the UBO format once, shared by both Tile variants.
+	// The three landscape programs differ only in their END block, so one body +
+	// compile-time switches covers all of them (see LandscapeVPCodeGLSL_Body above).
+	// lightMap is only ever true for Tile, which is the only type with a lightmap pass.
+	const bool far1 = (type == CLandscapeVBAllocator::Far1);
+
+	// Build the UBO format once, shared by every variant of every type. All three
+	// programs read the same three values: landscape.cpp:1265-1275 passes identical
+	// refineCenter / TileDistFarSqr / _PZBModelPosition to Far0, Far1 and Tile, and
+	// Far1's extra data (AlphaInfo) is a vertex attribute, not a uniform - so no
+	// extra UBO member is needed.
 	if (!CLandscapeVBAllocator::_UBFormat)
 	{
 		CUniformBufferFormat *fmt = new CUniformBufferFormat();
@@ -876,20 +937,36 @@ CVertexProgramLandscapeUBO::CVertexProgramLandscapeUBO(bool lightMap)
 		CLandscapeVBAllocator::_UBFormat = fmt;
 	}
 
-	std::string defines = lightMap ? "#define NL_LANDSCAPE_LIGHTMAP\n" : "";
+	std::string defines;
+	if (lightMap)
+		defines += "#define NL_LANDSCAPE_LIGHTMAP\n";
+	if (far1)
+		defines += "#define NL_LANDSCAPE_FAR1\n";
+
+	const std::string typeName =
+		(type == CLandscapeVBAllocator::Far0) ? "far0" :
+		(type == CLandscapeVBAllocator::Far1) ? "far1" : "tile";
+
+	// v[12] (VB channel TexCoord4) is only read by the Tile-lightmap and Far1
+	// variants, and g_VertexFlags maps attribute 12 -> TexCoord4Flag
+	// (driver_opengl3_program.cpp:83-100), so VPVertexFormat must match exactly what
+	// the converter would have computed from the program's used inputs.
+	uint16 vpVertexFormat =
+		CVertexBuffer::PositionFlag | CVertexBuffer::TexCoord0Flag | CVertexBuffer::TexCoord1Flag |
+		CVertexBuffer::TexCoord2Flag | CVertexBuffer::TexCoord3Flag;
+	if (lightMap || far1)
+		vpVertexFormat |= CVertexBuffer::TexCoord4Flag;
 
 	// Linked variant (GLES3 / WebGL2): no layout() on outputs, full varying set.
 	{
 		CSource *source = new CSource();
-		source->DisplayName = lightMap ? "glsl300esv/Landscape/tile/ubo/lightmap" : "glsl300esv/Landscape/tile/ubo";
+		source->DisplayName = std::string("glsl300esv/Landscape/") + typeName +
+			(lightMap ? "/ubo/lightmap" : "/ubo");
 		source->Profile = CVertexProgram::glsl300esv;
 		source->Features.OnlyUBOs = true;
 		source->Features.UsesCameraUBO = true; // ecPos epilogue reads inverseProjectionBasis
 		source->Features.UsesObjectUBO = true; // modelViewProjection
-		source->Features.VPVertexFormat =
-			CVertexBuffer::PositionFlag | CVertexBuffer::TexCoord0Flag | CVertexBuffer::TexCoord1Flag |
-			CVertexBuffer::TexCoord2Flag | CVertexBuffer::TexCoord3Flag |
-			(lightMap ? CVertexBuffer::TexCoord4Flag : 0);
+		source->Features.VPVertexFormat = vpVertexFormat;
 		source->UniformBufferFormats[UBBindingVertexProgram] = CLandscapeVBAllocator::_UBFormat;
 		source->setSource(
 			std::string(LandscapeVPCodeGLSL_ES_Header) + defines +
@@ -901,19 +978,18 @@ CVertexProgramLandscapeUBO::CVertexProgramLandscapeUBO(bool lightMap)
 	// SSO variant (desktop GL3): layout() on outputs, only the written varyings.
 	{
 		CSource *source = new CSource();
-		source->DisplayName = lightMap ? "glsl330v/Landscape/tile/ubo/lightmap" : "glsl330v/Landscape/tile/ubo";
+		source->DisplayName = std::string("glsl330v/Landscape/") + typeName +
+			(lightMap ? "/ubo/lightmap" : "/ubo");
 		source->Profile = CVertexProgram::glsl330v;
 		source->Features.OnlyUBOs = true;
 		source->Features.UsesCameraUBO = true;
 		source->Features.UsesObjectUBO = true;
-		source->Features.VPVertexFormat =
-			CVertexBuffer::PositionFlag | CVertexBuffer::TexCoord0Flag | CVertexBuffer::TexCoord1Flag |
-			CVertexBuffer::TexCoord2Flag | CVertexBuffer::TexCoord3Flag |
-			(lightMap ? CVertexBuffer::TexCoord4Flag : 0);
+		source->Features.VPVertexFormat = vpVertexFormat;
 		source->UniformBufferFormats[UBBindingVertexProgram] = CLandscapeVBAllocator::_UBFormat;
 		source->setSource(
 			std::string(LandscapeVPCodeGLSL_Header) + defines +
 			std::string(LandscapeVPCodeGLSL_VaryingsSSO) +
+			(far1 ? std::string(LandscapeVPCodeGLSL_VaryingsSSO_Far1) : std::string()) +
 			std::string(LandscapeVPCodeGLSL_Body));
 		addSource(source);
 	}

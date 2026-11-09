@@ -86,6 +86,52 @@ static void checkNot(const std::string &glsl, const std::string &needle, const s
 // expected conversion output by hand.
 static bool gDump = false;
 
+// Return the body of "#ifdef <macro> ... #endif" in a generated source, or "" if
+// there is no such block. The hand-written landscape program shares one body across
+// all four variants and switches it with compile-time defines, so checking for plain
+// text presence proves nothing: the text is in every variant's source.
+static std::string ifdefBlock(const std::string &glsl, const std::string &macro)
+{
+	std::string start = "#ifdef " + macro;
+	size_t from = glsl.find(start);
+	if (from == std::string::npos)
+		return "";
+	from = glsl.find('\n', from);
+	if (from == std::string::npos)
+		return "";
+	size_t to = glsl.find("#endif", from);
+	if (to == std::string::npos)
+		return "";
+	return glsl.substr(from, to - from);
+}
+
+// The source with every "#ifdef <macro> ... #endif" block removed, so a check on
+// the remainder means "outside that guard".
+static std::string stripIfdefBlocks(const std::string &glsl, const std::string &macro)
+{
+	std::string out;
+	std::string remaining = glsl;
+	for (;;)
+	{
+		std::string start = "#ifdef " + macro;
+		size_t from = remaining.find(start);
+		if (from == std::string::npos)
+		{
+			out += remaining;
+			break;
+		}
+		out += remaining.substr(0, from);
+		size_t to = remaining.find("#endif", from);
+		if (to == std::string::npos)
+		{
+			out += remaining.substr(from);
+			break;
+		}
+		remaining = remaining.substr(to + 6);
+	}
+	return out;
+}
+
 static void dumpIfAsked(const std::string &name, const std::string &glsl)
 {
 	if (!gDump)
@@ -198,6 +244,112 @@ static void testLandscapeProgram(CLandscapeVBAllocator::TType type, bool lightMa
 		checkHas(glsl, "clamp(diffuseColor, 0.0, 1.0);", tag + ": ARB VP1.0 clamps a written colour output");
 	else
 		checkNot(glsl, "clamp(diffuseColor", tag + ": no colour clamp when COL0 is unwritten");
+}
+
+// ----------------------------------------------------------------------------
+// The hand-written GLSL/UBO landscape programs (CVertexProgramLandscapeUBO), the ones
+// the GL3 driver actually uses for Far0/Far1/Tile since D.1b. They are NOT produced
+// by the converter, so nothing else in this file covers them.
+//
+// Why a CPU test and not a frame: in the zviewer scene on real zone art (zone 8_FJ),
+// the far passes contribute no pixels - forcing the Far1 alpha to a constant, offsetting
+// Far1 geometry by 40 clip units and collapsing all Far1 vertices onto one point each
+// give AE 0 against the unmodified frame. The programs compile and link (id=63
+// VP=glsl300esv/Landscape/far1/ubo) but the tile pass already covers that geometry, so
+// no shader change in the Far body can show up. The Far half of D.1b is therefore
+// asserted at source level here, and stays unverified on pixels until a scene with
+// visible far landscape is used.
+static void testUBOLandscapeProgram(CLandscapeVBAllocator::TType type, bool lightMap,
+											bool linked, const std::string &tag)
+{
+	CVertexProgramLandscapeUBO vp(type, lightMap);
+
+	check(vp.getSourceNb() == 2, tag + ": must ship both link modes (linked + SSO)");
+
+	// pick by profile rather than by index, so the test does not depend on ctor order
+	IProgram::CSource *src = nullptr;
+	for (size_t i = 0; i < vp.getSourceNb(); ++i)
+	{
+		IProgram::CSource *cand = vp.getSource(i);
+		if (cand != nullptr && cand->Profile == (linked ? IProgram::glsl300esv : IProgram::glsl330v))
+			src = cand;
+	}
+	if (src == nullptr)
+	{
+		std::cout << "  (no " << (linked ? "glsl300esv" : "glsl330v") << " source for " << tag << ")" << std::endl;
+		return;
+	}
+
+	const std::string glsl(src->SourcePtr, src->SourceLen);
+	dumpIfAsked(tag, glsl);
+
+	const bool far1 = (type == CLandscapeVBAllocator::Far1);
+	const std::string typeName = (type == CLandscapeVBAllocator::Far0) ? "far0" :
+		(far1 ? "far1" : "tile");
+
+	// --- metadata the driver keys off -------------------------------------------
+	check(std::string(src->DisplayName) ==
+		std::string(linked ? "glsl300esv/Landscape/" : "glsl330v/Landscape/") + typeName +
+		(lightMap ? "/ubo/lightmap" : "/ubo"),
+		tag + ": DisplayName is what linkPrograms logs (the nelvp path logs 'nelvp-converted' for everything)");
+
+	std::map<sint, NLMISC::CSmartPtr<CUniformBufferFormat> >::iterator ubIt
+		= src->UniformBufferFormats.find(UBBindingVertexProgram);
+	check(ubIt != src->UniformBufferFormats.end() && ubIt->second != nullptr &&
+		ubIt->second->Name == "NlLandscape",
+		tag + ": data must arrive through the user UBO at the VP binding");
+	check(src->Features.OnlyUBOs,
+		tag + ": OnlyUBOs must be set - this program has no setUniform4f fallback");
+	check(src->Features.UsesObjectUBO,
+		tag + ": modelViewProjection comes from the builtin NlModel UBO");
+	check(src->Features.UsesCameraUBO,
+		tag + ": the ecPos epilogue reads inverseProjectionBasis from the NlCamera UBO");
+
+	// no converter leftovers
+	checkNot(glsl, "NlNelvpConstants", tag + ": must not carry the converter constant block");
+	checkNot(glsl, "nelvp-converted", tag + ": must not be labelled as converted");
+
+	// --- the compile-time switches ---------------------------------------------
+	check(has(glsl, "#define NL_LANDSCAPE_FAR1") == far1,
+		tag + ": only Far1 may define NL_LANDSCAPE_FAR1");
+	check(has(glsl, "#define NL_LANDSCAPE_LIGHTMAP") == lightMap,
+		tag + ": only the Tile lightmap variant may define NL_LANDSCAPE_LIGHTMAP");
+	check(!has(glsl, "#define NL_LANDSCAPE_FAR1") || !has(glsl, "#define NL_LANDSCAPE_LIGHTMAP"),
+		tag + ": the two macros read v[12] differently and must never co-occur");
+
+	// --- shared body -----------------------------------------------------------
+	checkHas(glsl, "gl_Position = modelViewProjection * R1;", tag + ": projection");
+	checkHas(glsl, "ecPos = inverseProjectionBasis * gl_Position;", tag + ": fog epilogue (mega PP needs ecPos)");
+	checkHas(glsl, "float geomBlend = clamp(max(errorMetric, modifiedMetric) - 1.0, 0.0, 1.0);",
+		tag + ": geomorph blend");
+
+	// --- the Far1-only alpha fade ---------------------------------------------
+	// this is the whole of what Far1 adds over Tile/Far0, and the pixel that the
+	// nelvp writes as o[COL0].w. Mirrors the converter's own emission for
+	// NL3D_LandscapeFar1EndProgram (see the landscape/Far1/linked dump).
+	// The body is SHARED: every variant's source text contains the fade, inside
+	// "#ifdef NL_LANDSCAPE_FAR1". Plain text presence therefore proves nothing -
+	// what decides whether it compiles is the define (asserted above), and what
+	// has to be checked here is that the fade sits INSIDE that guard.
+	const std::string guarded = ifdefBlock(glsl, "NL_LANDSCAPE_FAR1");
+	check(!guarded.empty(),
+		tag + ": the NL_LANDSCAPE_FAR1 block must exist in the shared body");
+	check(has(guarded, "diffuseColor.w = clamp((sqrDist - v12.x) * v12.y, 0.0, 1.0);"),
+		tag + ": the far-tile alpha fade of NL3D_LandscapeFar1EndProgram must be inside that guard");
+	check(has(guarded, "diffuseColor = clamp(diffuseColor, 0.0, 1.0);"),
+		tag + ": o[COL0] clamp, as the converter emits it once a program writes COL0");
+	checkNot(stripIfdefBlocks(glsl, "NL_LANDSCAPE_FAR1"), "diffuseColor.w =",
+		tag + ": no variant may write the far alpha outside the Far1 guard");
+	if (!linked)
+		check(has(glsl, "layout(location = 3) smooth out vec4 diffuseColor;") == far1,
+			tag + ": SSO must declare diffuseColor (VaryingLocationDiffuseColor) for Far1 only");
+
+	// --- the input attribute set must match what the body reads -----------------
+	// g_VertexFlags maps attribute 12 -> TexCoord4Flag (driver_opengl3_program.cpp:83-100),
+	// so a mismatch means the driver binds a VB layout the shader does not declare.
+	const bool needsV12 = (lightMap || far1);
+	check(((src->Features.VPVertexFormat & CVertexBuffer::TexCoord4Flag) != 0) == needsV12,
+		tag + ": TexCoord4Flag must be advertised exactly when the body reads v[12]");
 }
 
 static void testClipVariant()
@@ -365,9 +517,16 @@ sint main(sint argc, char *argv[])
 		// only Far1 writes o[COL0].w
 		testLandscapeProgram(types[t], false, true, name + "/linked", t == 1);
 		testLandscapeProgram(types[t], false, false, name + "/sso", t == 1);
+
+		// and the hand-written UBO twin the GL3 driver uses instead of all of the above
+		std::string uname("ubo/landscape/");
+		uname += (t == 0) ? "Far0" : ((t == 1) ? "Far1" : "Tile");
+		testUBOLandscapeProgram(types[t], false, true, uname + "/linked");
+		testUBOLandscapeProgram(types[t], false, false, uname + "/sso");
 	}
 	// the lightmap twin of Tile is the 4th program the allocator creates
 	testLandscapeProgram(CLandscapeVBAllocator::Tile, true, true, "landscape/Tile/lightmap", false);
+	testUBOLandscapeProgram(CLandscapeVBAllocator::Tile, true, true, "ubo/landscape/Tile/lightmap");
 
 	testClipVariant();
 	testColourClamp();
