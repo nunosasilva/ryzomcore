@@ -352,6 +352,56 @@ static void testUBOLandscapeProgram(CLandscapeVBAllocator::TType type, bool ligh
 		tag + ": TexCoord4Flag must be advertised exactly when the body reads v[12]");
 }
 
+// The shipped source of one UBO landscape variant in a given link mode, or "" if the
+// program does not ship that mode.
+static std::string uboLandscapeSource(CVertexProgramLandscapeUBO &vp, bool linked)
+{
+	for (size_t i = 0; i < vp.getSourceNb(); ++i)
+	{
+		IProgram::CSource *cand = vp.getSource(i);
+		if (cand != nullptr && cand->Profile == (linked ? IProgram::glsl300esv : IProgram::glsl330v))
+			return std::string(cand->SourcePtr, cand->SourceLen);
+	}
+	return "";
+}
+
+// Far0 and Tile must stay THE SAME PROGRAM: NL3D_LandscapeFar0EndProgram and
+// NL3D_LandscapeTileEndProgram are instruction-for-instruction identical, and the plain
+// Tile variant reads no more inputs than Far0 (the extra v[12] channel its vertex buffer
+// carries is only read by the lightmap pass, which sets TexCoord4Flag). That equivalence
+// is the whole reason D.1b ships one body instead of four, so pin it against the source
+// constants in landscapevb_allocator.cpp rather than trusting the prose comment there.
+static void testFar0EqualsTile()
+{
+	for (int linked = 0; linked < 2; ++linked)
+	{
+		const bool l = (linked != 0);
+		const std::string tag = l ? "ubo/landscape/Far0==Tile/linked" : "ubo/landscape/Far0==Tile/sso";
+
+		CVertexProgramLandscapeUBO far0(CLandscapeVBAllocator::Far0, false);
+		CVertexProgramLandscapeUBO tile(CLandscapeVBAllocator::Tile, false);
+
+		const std::string a = uboLandscapeSource(far0, l);
+		const std::string b = uboLandscapeSource(tile, l);
+		check(!a.empty() && !b.empty(), tag + ": both programs must ship this link mode");
+		check(a == b, tag + ": the two programs must be the same source text (one body, no type-specific code)");
+
+		// the same must hold for the attribute contract, or the driver would bind a
+		// different vertex layout for the same shader
+		IProgram::CSource *fa = nullptr, *ft = nullptr;
+		for (size_t i = 0; i < far0.getSourceNb(); ++i)
+			if (far0.getSource(i) != nullptr && far0.getSource(i)->Profile == (l ? IProgram::glsl300esv : IProgram::glsl330v))
+				fa = far0.getSource(i);
+		for (size_t i = 0; i < tile.getSourceNb(); ++i)
+			if (tile.getSource(i) != nullptr && tile.getSource(i)->Profile == (l ? IProgram::glsl300esv : IProgram::glsl330v))
+				ft = tile.getSource(i);
+		check(fa != nullptr && ft != nullptr && fa->Features.VPVertexFormat == ft->Features.VPVertexFormat,
+			tag + ": identical VPVertexFormat");
+		check(fa != nullptr && ft != nullptr && fa->Features.OnlyUBOs == ft->Features.OnlyUBOs,
+			tag + ": identical OnlyUBOs flag");
+	}
+}
+
 static void testClipVariant()
 {
 	CVertexProgramLandscape vp(CLandscapeVBAllocator::Tile, false);
@@ -529,6 +579,7 @@ sint main(sint argc, char *argv[])
 	testUBOLandscapeProgram(CLandscapeVBAllocator::Tile, true, true, "ubo/landscape/Tile/lightmap");
 
 	testClipVariant();
+	testFar0EqualsTile();
 	testColourClamp();
 	testIndexedConstants();
 	testUnsupportedOutput();
