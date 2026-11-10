@@ -90,10 +90,10 @@ bool		CVisualCollisionEntity::snapToGround(CVector &pos)
 CTrianglePatch		*CVisualCollisionEntity::getPatchTriangleUnderUs(const CVector &pos, CVector &res)
 {
 	// verify if landscape (refptr) is here.
-	if(_Owner->_Landscape==NULL)
+	if(_Owner->_Landscape == nullptr)
 	{
 		_LastGPTValid= false;
-		return NULL;
+		return nullptr;
 	}
 
 
@@ -195,7 +195,7 @@ CTrianglePatch		*CVisualCollisionEntity::getPatchTriangleUnderUs(const CVector &
 	else
 	{
 		_LastGPTValid= false;
-		return NULL;
+		return nullptr;
 	}
 
 }
@@ -606,7 +606,7 @@ bool		CVisualCollisionEntity::getSurfaceInfo(const CVector &pos, CSurfaceInfo &s
 void		CVisualCollisionEntity::displayDebugGrid(IDriver &drv) const
 {
 	// static to not reallocate each frame
-	static	CMaterial	mat;
+	static	CMaterial	mat; // STATIC GPU RESOURCE: Blocks multiple driver instances
 	static	bool		inited= false;
 	if(!inited)
 	{

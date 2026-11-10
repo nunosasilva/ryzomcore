@@ -62,8 +62,11 @@ CVegetableVBAllocator::CVegetableVBAllocator()
 
 	// Init vbhard
 	_VBHardOk= false;
-	_AGPBufferPtr= NULL;
-	_RAMBufferPtr= NULL;
+	_AGPBufferPtr = nullptr;
+	_RAMBufferPtr = nullptr;
+
+	// Init unsync mode
+	_UnsynchronizedMode= false;
 }
 
 
@@ -90,7 +93,7 @@ void			CVegetableVBAllocator::updateDriver(IDriver *driver)
 	// test change of driver.
 	nlassert(driver && !_VBHard.isLocked());
 	// If change of driver
-	if( _Driver==NULL || driver!=_Driver || (!_VBHard.isResident() && (_VBHard.capacity()!=0)))
+	if( _Driver == nullptr || driver!=_Driver || (!_VBHard.isResident() && (_VBHard.capacity()!=0)))
 	{
 		// delete old VBHard.
 		deleteVertexBufferHard();
@@ -138,8 +141,12 @@ void			CVegetableVBAllocator::clear()
 	// really delete the VB soft too
 	_VBSoft.deleteAllVertices();
 
+	// clear deferred frees and unsync mode.
+	_DeferredFreeVertices.clear();
+	_UnsynchronizedMode= false;
+
 	// clear other states.
-	_Driver= NULL;
+	_Driver = nullptr;
 	_VBHardOk= false;
 }
 
@@ -168,11 +175,11 @@ void			CVegetableVBAllocator::unlockBuffer()
 {
 	// unlock the VBHard
 	_VBAHard.unlock();
-	_AGPBufferPtr= NULL;
+	_AGPBufferPtr = nullptr;
 
 	// unlock the VBSoft
 	_VBASoft.unlock();
-	_RAMBufferPtr= NULL;
+	_RAMBufferPtr = nullptr;
 }
 
 
@@ -242,14 +249,48 @@ uint			CVegetableVBAllocator::allocateVertex()
 // ***************************************************************************
 void			CVegetableVBAllocator::deleteVertex(uint vid)
 {
-	// check and Mark as free the vertex. (Debug).
+	// check vertex validity. (Debug).
 	nlassert(vid<_NumVerticesAllocated);
 	nlassert(!_VertexInfos[vid].Free);
-	_VertexInfos[vid].Free= true;
 
-	// Add this vertex to the free list.
-	// create a new entry which points to this vertex.
-	_VertexFreeMemory.push_back( vid );
+	if (_UnsynchronizedMode && _Driver)
+	{
+		// Defer the free until the GPU is done with this vertex.
+		uint64 counter = _Driver->getSwapBufferCounter();
+		uint64 stamp = (counter > 0) ? counter - 1 : 0;
+		SDeferredFree df;
+		df.VertexId = vid;
+		df.FrameCounter = stamp;
+		_DeferredFreeVertices.push_back(df);
+	}
+	else
+	{
+		// Immediate free.
+		_VertexInfos[vid].Free= true;
+		_VertexFreeMemory.push_back( vid );
+	}
+}
+
+// ***************************************************************************
+void			CVegetableVBAllocator::processDeferredFrees(uint64 swapBufferInFlight)
+{
+	if (_DeferredFreeVertices.empty()) return;
+
+	size_t writeIdx = 0;
+	for (size_t i = 0; i < _DeferredFreeVertices.size(); ++i)
+	{
+		if (_DeferredFreeVertices[i].FrameCounter < swapBufferInFlight)
+		{
+			// GPU is done — return to free list.
+			_VertexInfos[_DeferredFreeVertices[i].VertexId].Free = true;
+			_VertexFreeMemory.push_back(_DeferredFreeVertices[i].VertexId);
+		}
+		else
+		{
+			_DeferredFreeVertices[writeIdx++] = _DeferredFreeVertices[i];
+		}
+	}
+	_DeferredFreeVertices.resize(writeIdx);
 }
 
 // ***************************************************************************
@@ -266,6 +307,7 @@ void			CVegetableVBAllocator::flushVertex(uint i)
 		CHECK_VBA_RANGE(_VBAHard, (uint8 *) dst, size);
 		CHECK_VBA_RANGE(_VBASoft, (uint8 *) src, size);
 		memcpy(dst, src, size);
+		_VBHard.invalidateRange(i, i + 1);
 	}
 }
 
@@ -346,7 +388,10 @@ void				CVegetableVBAllocator::allocateVertexBufferAndFillVBHard(uint32 numVerti
 			if(numVertices <= _MaxVertexInBufferHard)
 			{
 				_VBHard = _VBSoft;
-				_VBHard.setPreferredMemory(CVertexBuffer::AGPPreferred, false);
+				if (_UnsynchronizedMode)
+					_VBHard.setBufferUsage(CVertexBuffer::UnsynchronizedWrite, false);
+				else
+					_VBHard.setBufferUsage(CVertexBuffer::PartialWrite, false);
 				_VBHard.setNumVertices (_MaxVertexInBufferHard);
 
 				// Force this VB to be hard
@@ -379,6 +424,7 @@ void				CVegetableVBAllocator::allocateVertexBufferAndFillVBHard(uint32 numVerti
 
 		// copy all the vertices to AGP.
 		memcpy(_AGPBufferPtr, _RAMBufferPtr, _VBSoft.getVertexSize() * numVertices);
+		_VBHard.invalidateRange(0, numVertices);
 
 		// If was not locked before, unlock this VB
 		if(!wasLocked)

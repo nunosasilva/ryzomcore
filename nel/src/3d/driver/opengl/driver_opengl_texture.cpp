@@ -2,7 +2,7 @@
 // Copyright (C) 2010  Winch Gate Property Limited
 //
 // This source file has been modified by the following contributors:
-// Copyright (C) 2013-2014  Jan BOON (Kaetemi) <jan.boon@kaetemi.be>
+// Copyright (C) 2013-2023  Jan BOON (Kaetemi) <jan.boon@kaetemi.be>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
@@ -21,7 +21,7 @@
 
 #include "driver_opengl.h"
 #include "nel/3d/texture_cube.h"
-#include "nel/3d/texture_bloom.h"
+#include "nel/3d/texture_offscreen.h"
 #include "nel/misc/rect.h"
 #include "nel/misc/file.h" // temp
 
@@ -97,7 +97,7 @@ CTextureDrvInfosGL::~CTextureDrvInfosGL()
 	// release in TextureUsed.
 	if (TextureUsedIdx < _Driver->_TextureUsed.size() && _Driver->_TextureUsed[TextureUsedIdx] == this)
 	{
-		_Driver->_TextureUsed[TextureUsedIdx] = NULL;
+		_Driver->_TextureUsed[TextureUsedIdx] = nullptr;
 	}
 }
 
@@ -163,9 +163,9 @@ bool CTextureDrvInfosGL::initFrameBufferObject(ITexture * tex)
 {
 	if (!InitFBO)
 	{
-		if (tex->isBloomTexture())
+		if (tex->isOffscreenTexture())
 		{
-			AttachDepthStencil = !((CTextureBloom*)tex)->isMode2D();
+			AttachDepthStencil = static_cast<CTextureOffscreen *>(tex)->needsDepthStencil();
 		}
 
 		// generate IDs
@@ -306,7 +306,7 @@ bool CTextureDrvInfosGL::initFrameBufferObject(ITexture * tex)
 
 			if (AttachDepthStencil)
 			{
-				DepthStencilFBO = NULL;
+				DepthStencilFBO = nullptr;
 			}
 		}
 
@@ -780,7 +780,7 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 	{
 		//nldebug("3D:   creating CTextureDrvShare()");
 		// insert into driver list. (so it is deleted when driver is deleted).
-		ItTexDrvSharePtrList	it= _TexDrvShares.insert(_TexDrvShares.end(), (NL3D::CTextureDrvShare*)NULL);
+		ItTexDrvSharePtrList	it= _TexDrvShares.insert(_TexDrvShares.end(), (NL3D::CTextureDrvShare*)nullptr);
 		// create and set iterator, for future deletion.
 		*it= tex.TextureDrvShare= new CTextureDrvShare(this, it, &tex);
 
@@ -794,14 +794,14 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 		// if wrap mode or filter mode is touched, update it here
 		if (tex.filterOrWrapModeTouched())
 		{
-			activateTexture(0, NULL); // unbind any previous texture
+			activateTexture(0, nullptr); // unbind any previous texture
 			bindTextureWithMode(tex);
 			//
 			setupTextureBasicParameters(tex); // setup what has changed (will reset the touch flag)
 
 			// Disable texture 0
-			_CurrentTexture[0]= NULL;
-			_CurrentTextureInfoGL[0]= NULL;
+			_CurrentTexture[0] = nullptr;
+			_CurrentTextureInfoGL[0] = nullptr;
 			_DriverGLStates.setTextureMode(CDriverGLStates::TextureDisabled);
 			//
 		}
@@ -822,7 +822,7 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 	*/
 	for(uint stage = 0; stage < inlGetNumTextStages(); stage++)
 	{
-		activateTexture(stage, NULL);
+		activateTexture(stage, nullptr);
 	}
 
 	// A. Share mgt.
@@ -834,6 +834,9 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 		// Create the shared Name.
 		std::string	name;
 		getTextureShareName (tex, name);
+
+		// Destructor of texture infos locks _SyncTexDrvInfos, so any existing pointers must be deleted outside the lock
+		NLMISC::CSmartPtr<ITextureDrvInfos> maybeDeleted;
 
 		// insert or get the texture.
 		{
@@ -847,7 +850,9 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 			if( itTex==rTexDrvInfos.end() )
 			{
 				// insert into driver map. (so it is deleted when driver is deleted).
-				itTex= (rTexDrvInfos.insert(make_pair(name, (ITextureDrvInfos*)NULL))).first;
+				itTex= (rTexDrvInfos.insert(make_pair(name, (ITextureDrvInfos*)nullptr))).first;
+				// keep old value, so it only gets deleted after we release the lock on _SyncTexDrvInfos
+				maybeDeleted = tex.TextureDrvShare->DrvTexture;
 				// create and set iterator, for future deletion.
 				itTex->second= tex.TextureDrvShare->DrvTexture = new CTextureDrvInfosGL(this, itTex, this, isTextureRectangle(&tex));
 
@@ -856,6 +861,9 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 			}
 			else
 			{
+				// keep old value, so it only gets deleted after we release the lock on _SyncTexDrvInfos
+				maybeDeleted = tex.TextureDrvShare->DrvTexture;
+				// set new value
 				tex.TextureDrvShare->DrvTexture= itTex->second;
 
 				if(bMustRecreateSharedTexture)
@@ -878,7 +886,7 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 			// Must create it. Create auto a GL id (in constructor).
 			// Do not insert into the map. This un-shared texture will be deleted at deletion of the texture.
 			// Inform ITextureDrvInfos by passing NULL _Driver.
-			tex.TextureDrvShare->DrvTexture = new CTextureDrvInfosGL(NULL, ItTexDrvInfoPtrMap(), this, isTextureRectangle(&tex));
+			tex.TextureDrvShare->DrvTexture = new CTextureDrvInfosGL(nullptr, ItTexDrvInfoPtrMap(), this, isTextureRectangle(&tex));
 
 			// need to load ALL this texture.
 			mustLoadAll= true;
@@ -918,7 +926,7 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 				tex.generate();
 
 				for(uint nText = 0; nText < 6; ++nText)
-				if(pTC->getTexture((CTextureCube::TFace)nText) != NULL)
+				if(pTC->getTexture((CTextureCube::TFace)nText) != nullptr)
 				{
 					ITexture *pTInTC = pTC->getTexture((CTextureCube::TFace)nText);
 
@@ -971,7 +979,7 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 						else
 						{
 							NEL_MEASURE_UPLOAD_TIME_START
-							glTexImage2D (NLCubeFaceToGLCubeFace[nText], i, glfmt, w, h, 0, glSrcFmt, glSrcType, NULL);
+							glTexImage2D (NLCubeFaceToGLCubeFace[nText], i, glfmt, w, h, 0, glSrcFmt, glSrcType, nullptr);
 							NEL_MEASURE_UPLOAD_TIME_END
 						}
 						// profiling: count TextureMemory usage.
@@ -1034,7 +1042,7 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 								NEL_MEASURE_UPLOAD_TIME_START
 
 								glTexImage2D (gltext->TextureMode, i-decalMipMapResize, glfmt, tex.getWidth(i), tex.getHeight(i),
-												0, glSrcFmt, glSrcType, NULL);
+												0, glSrcFmt, glSrcType, nullptr);
 								NEL_MEASURE_UPLOAD_TIME_END
 							}
 
@@ -1089,7 +1097,7 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 							else
 							{
 								NEL_MEASURE_UPLOAD_TIME_START
-								glTexImage2D (gltext->TextureMode, i, glfmt, w, h, 0,glSrcFmt, glSrcType, NULL);
+								glTexImage2D (gltext->TextureMode, i, glfmt, w, h, 0,glSrcFmt, glSrcType, nullptr);
 								NEL_MEASURE_UPLOAD_TIME_END
 							}
 							// profiling: count TextureMemory usage.
@@ -1182,7 +1190,7 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 						if (bUpload)
 							glTexSubImage2D (GL_TEXTURE_2D, i, x0, y0, x1-x0, y1-y0, glSrcFmt,glSrcType, ptr);
 						else
-							glTexSubImage2D (GL_TEXTURE_2D, i, x0, y0, x1-x0, y1-y0, glSrcFmt,glSrcType, NULL);
+							glTexSubImage2D (GL_TEXTURE_2D, i, x0, y0, x1-x0, y1-y0, glSrcFmt,glSrcType, nullptr);
 #endif
 
 						// Next mipmap!!
@@ -1215,8 +1223,8 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 		setupTextureBasicParameters(tex);
 
 		// Disable texture 0
-		_CurrentTexture[0]= NULL;
-		_CurrentTextureInfoGL[0]= NULL;
+		_CurrentTexture[0] = nullptr;
+		_CurrentTextureInfoGL[0] = nullptr;
 		_DriverGLStates.setTextureMode(CDriverGLStates::TextureDisabled);
 	}
 
@@ -1229,9 +1237,9 @@ bool CDriverGL::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded,
 bool CDriverGL::uploadTexture (ITexture& tex, CRect& rect, uint8 nNumMipMap)
 {
 	H_AUTO_OGL(uploadTexture)
-	if (tex.TextureDrvShare == NULL)
+	if (tex.TextureDrvShare == nullptr)
 		return false; // Texture not created
-	if (tex.TextureDrvShare->DrvTexture == NULL)
+	if (tex.TextureDrvShare->DrvTexture == nullptr)
 		return false; // Texture not created
 	if (tex.isTextureCube())
 		return false;
@@ -1309,8 +1317,8 @@ bool CDriverGL::uploadTexture (ITexture& tex, CRect& rect, uint8 nNumMipMap)
 
 		if (decalMipMapResize > nNumMipMap)
 		{
-			_CurrentTexture[0]= NULL;
-			_CurrentTextureInfoGL[0]= NULL;
+			_CurrentTexture[0] = nullptr;
+			_CurrentTextureInfoGL[0] = nullptr;
 			_DriverGLStates.setTextureMode (CDriverGLStates::TextureDisabled);
 			return false;
 		}
@@ -1376,8 +1384,8 @@ bool CDriverGL::uploadTexture (ITexture& tex, CRect& rect, uint8 nNumMipMap)
 	}
 
 	// Disable texture 0
-	_CurrentTexture[0]= NULL;
-	_CurrentTextureInfoGL[0]= NULL;
+	_CurrentTexture[0] = nullptr;
+	_CurrentTextureInfoGL[0] = nullptr;
 	_DriverGLStates.setTextureMode (CDriverGLStates::TextureDisabled);
 
 	return true;
@@ -1387,7 +1395,7 @@ bool CDriverGL::uploadTexture (ITexture& tex, CRect& rect, uint8 nNumMipMap)
 bool CDriverGL::uploadTextureCube (ITexture& tex, CRect& /* rect */, uint8 /* nNumMipMap */, uint8 /* nNumFace */)
 {
 	H_AUTO_OGL(uploadTextureCube)
-	if (tex.TextureDrvShare == NULL)
+	if (tex.TextureDrvShare == nullptr)
 		return false; // Texture not created
 	if (!tex.isTextureCube())
 		return false;
@@ -1505,7 +1513,7 @@ bool CDriverGL::activateTexture(uint stage, ITexture *tex)
 		else
 		{
 			// Force no texturing for this stage.
-			_CurrentTextureInfoGL[stage]= NULL;
+			_CurrentTextureInfoGL[stage] = nullptr;
 			// setup texture mode, after activeTextureARB()
 			_DriverGLStates.setTextureMode(CDriverGLStates::TextureDisabled);
 
@@ -1923,11 +1931,11 @@ void		CDriverGL::forceActivateTexEnvMode(uint stage, const CMaterial::CTexEnv  &
 			glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_MODULATE);
 			//
 			// Arg0.
-			glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_ALPHA, SourceLUT[env.Env.SrcArg0RGB] );
-			glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA, OperandLUT[env.Env.OpArg0RGB]);
+			glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_ALPHA, SourceLUT[env.Env.SrcArg0Alpha] );
+			glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA, OperandLUT[env.Env.OpArg0Alpha]);
 			// Arg1.
-			glTexEnvi(GL_TEXTURE_ENV, GL_SRC1_ALPHA, SourceLUT[env.Env.SrcArg1RGB] );
-			glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_ALPHA, OperandLUT[env.Env.OpArg1RGB]);
+			glTexEnvi(GL_TEXTURE_ENV, GL_SRC1_ALPHA, SourceLUT[env.Env.SrcArg1Alpha] );
+			glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_ALPHA, OperandLUT[env.Env.OpArg1Alpha]);
 		}
 	}
 	else
@@ -1970,7 +1978,7 @@ void		CDriverGL::forceActivateTexEnvMode(uint stage, const CMaterial::CTexEnv  &
 				//
 				if (_Extensions.ATITextureEnvCombine3)
 				{
-					glTexEnvf(GL_TEXTURE_ENV, GL_COMBINE_RGB_EXT, GL_MODULATE_ADD_ATI);
+					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB_EXT, GL_MODULATE_ADD_ATI);
 					// Arg0.
 					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB_EXT, SourceLUT[env.Env.SrcArg0RGB] );
 					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB_EXT, OperandLUT[env.Env.OpArg0RGB]);
@@ -1984,7 +1992,7 @@ void		CDriverGL::forceActivateTexEnvMode(uint stage, const CMaterial::CTexEnv  &
 				else
 				{
 					// fallback to modulate ..
-					glTexEnvf(GL_TEXTURE_ENV, GL_COMBINE_RGB_EXT, GL_MODULATE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB_EXT, GL_MODULATE);
 					//
 					// Arg0.
 					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB_EXT, SourceLUT[env.Env.SrcArg0RGB] );
@@ -2018,9 +2026,19 @@ void		CDriverGL::forceActivateTexEnvMode(uint stage, const CMaterial::CTexEnv  &
 			//=====
 			if (env.Env.OpAlpha == CMaterial::Mad)
 			{
-				if (_Extensions.ATITextureEnvCombine3)
+				if (((SourceLUT[env.Env.SrcArg1Alpha] == GL_ZERO && OperandLUT[env.Env.OpArg1Alpha] == GL_ONE_MINUS_SRC_ALPHA)
+					|| (SourceLUT[env.Env.SrcArg1Alpha] == GL_ONE && OperandLUT[env.Env.OpArg1Alpha] == GL_SRC_ALPHA)) // 1
+					&& ((SourceLUT[env.Env.SrcArg2Alpha] == GL_ONE && OperandLUT[env.Env.OpArg2Alpha] == GL_ONE_MINUS_SRC_ALPHA)
+						|| (SourceLUT[env.Env.SrcArg2Alpha] == GL_ZERO && OperandLUT[env.Env.OpArg2Alpha] == GL_SRC_ALPHA))) // 0
 				{
-					glTexEnvf(GL_TEXTURE_ENV, GL_COMBINE_RGB_EXT, GL_MODULATE_ADD_ATI);
+					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA_EXT, GL_REPLACE);
+					// Arg0.
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA_EXT, SourceLUT[env.Env.SrcArg0Alpha] );
+					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA_EXT, OperandLUT[env.Env.OpArg0Alpha]);
+				}
+				else if (_Extensions.ATITextureEnvCombine3)
+				{
+					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA_EXT, GL_MODULATE_ADD_ATI);
 					// Arg0.
 					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA_EXT, SourceLUT[env.Env.SrcArg0Alpha] );
 					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA_EXT, OperandLUT[env.Env.OpArg0Alpha]);
@@ -2034,14 +2052,14 @@ void		CDriverGL::forceActivateTexEnvMode(uint stage, const CMaterial::CTexEnv  &
 				else
 				{
 					// fallback to modulate ..
-					glTexEnvf(GL_TEXTURE_ENV, GL_COMBINE_ALPHA_EXT, GL_MODULATE);
+					glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA_EXT, GL_MODULATE);
 					//
 					// Arg0.
-					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA_EXT, SourceLUT[env.Env.SrcArg0RGB] );
-					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA_EXT, OperandLUT[env.Env.OpArg0RGB]);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA_EXT, SourceLUT[env.Env.SrcArg0Alpha] );
+					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA_EXT, OperandLUT[env.Env.OpArg0Alpha]);
 					// Arg1.
-					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_ALPHA_EXT, SourceLUT[env.Env.SrcArg1RGB] );
-					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_ALPHA_EXT, OperandLUT[env.Env.OpArg1RGB]);
+					glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_ALPHA_EXT, SourceLUT[env.Env.SrcArg1Alpha] );
+					glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_ALPHA_EXT, OperandLUT[env.Env.OpArg1Alpha]);
 				}
 			}
 			else
@@ -2172,7 +2190,7 @@ void		CDriverGL::swapTextureHandle(ITexture &tex0, ITexture &tex1)
 	// avoid any problem, disable all textures
 	for(uint stage = 0; stage < inlGetNumTextStages(); stage++)
 	{
-		activateTexture(stage, NULL);
+		activateTexture(stage, nullptr);
 	}
 
 	// get the handle.
@@ -2241,7 +2259,7 @@ bool CDriverGL::setRenderTarget (ITexture *tex, uint32 x, uint32 y, uint32 width
 		// Check the texture is a render target
 		nlassertex (tex->getRenderTarget(), ("The texture must be a render target. Call ITexture::setRenderTarget(true)."));
 
-		if(tex->isBloomTexture() && supportBloomEffect())
+		if(tex->isOffscreenTexture() && supportBloomEffect())
 		{
 			// NOTE: No support for mip map level here!
 
@@ -2273,11 +2291,11 @@ bool CDriverGL::setRenderTarget (ITexture *tex, uint32 x, uint32 y, uint32 width
 	}
 	else if (_RenderTargetFBO)
 	{
-		activeFrameBufferObject(NULL);
+		activeFrameBufferObject(nullptr);
 		setupViewport(_OldViewport);
 		_OldViewport = _CurrViewport;
 
-		_RenderTargetFBO = NULL;
+		_RenderTargetFBO = nullptr;
 		return false;
 	}
 
@@ -2290,7 +2308,7 @@ bool CDriverGL::setRenderTarget (ITexture *tex, uint32 x, uint32 y, uint32 width
 	// Update the scissor
 	setupScissor (_CurrScissor);
 
-	_RenderTargetFBO = NULL;
+	_RenderTargetFBO = nullptr;
 	_OldViewport = _CurrViewport;
 
 	return true;
@@ -2335,7 +2353,7 @@ bool CDriverGL::copyTargetToTexture (ITexture *tex,
 bool CDriverGL::getRenderTargetSize (uint32 &width, uint32 &height)
 {
 	H_AUTO_OGL(CDriverGL_getRenderTargetSize)
-	NLMISC::CSmartPtr<ITexture> tex = _RenderTargetFBO ? _RenderTargetFBO : (_TextureTarget ? _TextureTarget : NULL);
+	NLMISC::CSmartPtr<ITexture> tex = _RenderTargetFBO ? _RenderTargetFBO : (_TextureTarget ? _TextureTarget : nullptr);
 	if (tex)
 	{
 		width = tex->getWidth();

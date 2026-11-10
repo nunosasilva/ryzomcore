@@ -1,7 +1,7 @@
 /** \file driver_opengl_pixel_program.cpp
  * OpenGL driver implementation for pixel program manipulation.
  *
- * $Id: driver_opengl_pixel_program.cpp,v 1.1.2.4 2007/07/09 15:29:00 legallo Exp $
+ * $Id$
  *
  * \todo manage better the init/release system (if a throw occurs in the init, we must release correctly the driver)
  */
@@ -108,25 +108,29 @@ bool CDriverGL::compilePixelProgram(NL3D::CPixelProgram *program)
 {
 #ifndef USE_OPENGLES
 	// Program setuped ?
-	if (program->m_DrvInfo == NULL)
+	if (program->m_DrvInfo == nullptr)
 	{
+		if (program->m_CompileFailed)
+			return false;
+
 		glDisable(GL_FRAGMENT_PROGRAM_ARB);
 		_PixelProgramEnabled = false;
-		
+
 		// Insert into driver list. (so it is deleted when driver is deleted).
-		ItGPUPrgDrvInfoPtrList it = _GPUPrgDrvInfos.insert(_GPUPrgDrvInfos.end(), (NL3D::IProgramDrvInfos*)NULL);
+		ItGPUPrgDrvInfoPtrList it = _GPUPrgDrvInfos.insert(_GPUPrgDrvInfos.end(), (NL3D::IProgramDrvInfos*)nullptr);
 
 		// Create a driver info
 		CPixelProgamDrvInfosGL *drvInfo;
 		*it = drvInfo = new CPixelProgamDrvInfosGL(this, it);
 		// Set the pointer
 		program->m_DrvInfo = drvInfo;
-	
+
 		if (!setupPixelProgram(program, drvInfo->ID))
 		{
 			delete drvInfo;
-			program->m_DrvInfo = NULL;
+			program->m_DrvInfo = nullptr;
 			//_GPUPrgDrvInfos.erase(it); // not needed as ~IProgramDrvInfos() already does it
+			program->m_CompileFailed = true;
 			return false;
 		}
 	}
@@ -181,12 +185,13 @@ bool CDriverGL::setupPixelProgram(CPixelProgram *program, GLuint id/*, bool &spe
 	CPixelProgamDrvInfosGL *drvInfo = static_cast<CPixelProgamDrvInfosGL *>((IProgramDrvInfos *)program->m_DrvInfo);
 
 	// Find a supported pixel program profile
-	IProgram::CSource *source = NULL;
+	IProgram::CSource *source = nullptr;
 	for (uint i = 0; i < program->getSourceNb(); ++i)
 	{
 		if (supportPixelProgram(program->getSource(i)->Profile))
 		{
 			source = program->getSource(i);
+			break;
 		}
 	}
 	if (!source)
@@ -229,11 +234,11 @@ bool CDriverGL::setupPixelProgram(CPixelProgram *program, GLuint id/*, bool &spe
 					break;
 				}
 			}
-			nlwarning(std::string(lineStart, lineEnd).c_str());
+			nlwarning("%s", std::string(lineStart, lineEnd).c_str());
 			// display the gl error msg
 			const GLubyte *errorMsg = glGetString(GL_PROGRAM_ERROR_STRING_ARB);
 			nlassert((const char *) errorMsg);
-			nlwarning((const char *) errorMsg);
+			nlwarning("%s", (const char *) errorMsg);
 		}
 		nlassert(0);
 		return false;

@@ -110,7 +110,7 @@ public:
 	 * \author Stephane Coutelas
 	 * \date 2000
 	 */
-	virtual void doGenerate(bool /* async */)
+	virtual void doGenerate(bool /* async */) NL_OVERRIDE
 	{
 		// Resize
 		resize (16, 16);
@@ -142,7 +142,7 @@ public:
 	}
 
 	// Dummy serial...
-	virtual void	serial(NLMISC::IStream &/* f */) { nlstop; }
+	virtual void	serial(NLMISC::IStream &/* f */) NL_OVERRIDE { nlstop; }
 	NLMISC_DECLARE_CLASS(CTextureCross);
 };
 
@@ -183,10 +183,10 @@ CLandscape::CLandscape() :
 	_Far1VB(CLandscapeVBAllocator::Far1, "LandscapeFar1VB"),
 	_TileVB(CLandscapeVBAllocator::Tile, "LandscapeTileVB")
 {
-	OwnerModel = NULL;
+	OwnerModel = nullptr;
 
 	// Init the Tile Infos with Max TileId
-	TileInfos.resize(NL3D::NbTilesMax, NULL);
+	TileInfos.resize(NL3D::NbTilesMax, nullptr);
 
 	// Far texture not initialized till initTileBanks is not called
 	_FarInitialized=false;
@@ -244,11 +244,11 @@ CLandscape::CLandscape() :
 	// Default: no textureFar created.
 	_ULTotalFarPixels= 0;
 	_ULFarPixelsToUpdate= 0;
-	_ULRootTextureFar= NULL;
+	_ULRootTextureFar = nullptr;
 	// Default: no patch created
 	_ULTotalNearPixels= 0;
 	_ULNearPixelsToUpdate= 0;
-	_ULRootNearPatch= NULL;
+	_ULRootNearPatch = nullptr;
 	_ULNearCurrentTessBlockId= 0;
 
 
@@ -264,7 +264,7 @@ CLandscape::CLandscape() :
 		CLandscapeGlobals::PassTriArray.setNumIndexes( 1000 );
 
 	// set volatile index buffer to avoid stalls
-	CLandscapeGlobals::PassTriArray.setPreferredMemory(CIndexBuffer::RAMVolatile, false);
+	CLandscapeGlobals::PassTriArray.setBufferUsage(CIndexBuffer::SmallStream, false);
 
 	_LockCount = 0;
 
@@ -280,13 +280,13 @@ CLandscape::~CLandscape()
 
 	// release the VegetableManager.
 	delete _VegetableManager;
-	_VegetableManager= NULL;
+	_VegetableManager = nullptr;
 
 	// Dynamic Lighting.
 	// smartPtr delete
-	_TextureDLM= NULL;
+	_TextureDLM = nullptr;
 	delete _PatchDLMContextList;
-	_PatchDLMContextList= NULL;
+	_PatchDLMContextList = nullptr;
 }
 
 
@@ -567,7 +567,8 @@ void			CLandscape::clear()
 
 
 	// reset driver.
-	_Driver= NULL;
+	_Driver = nullptr;
+	_WaterReflectionClip = nullptr;
 }
 
 // ***************************************************************************
@@ -580,15 +581,30 @@ void			CLandscape::setDriver(IDriver *drv)
 
 		// Does the driver support VertexShader???
 		// only if VP supported by GPU.
+		// Left on nelvp on purpose, unlike the CLandscapeVBAllocator gate (which now also
+		// accepts a UBO-capable driver, since all four landscape programs are hand-written
+		// GLSL). This flag also feeds _DriverOkForVegetable just below, and the vegetable
+		// program is still nelvp-only: vegetablevb_allocator.cpp:112 hard-asserts
+		// supportVertexProgram(nelvp). Widening this gate before that is ported would let a
+		// driver claim support for a program it cannot compile. Wind tree already has a UBO
+		// variant (meshvp_wind_tree.cpp:446), vegetable does not.
 		_VertexShaderOk = (!_Driver->isVertexProgramEmulated() && (
 			_Driver->supportVertexProgram(CVertexProgram::nelvp)
-			// || _Driver->supportVertexProgram(CVertexProgram::glsl330v) // TODO_VP_GLSL
 			));
 
 
 		// Does the driver has sufficient requirements for Vegetable???
 		// only if VP supported by GPU, and Only if max vertices allowed.
 		_DriverOkForVegetable = _VertexShaderOk && (_Driver->getMaxVerticesByVertexBufferHard()>=(uint)NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_MAX);
+
+		// Enable unsynchronized write mode if VP and triple-buffered frame pipeline are available.
+		bool unsyncMode = _VertexShaderOk && _Driver->isTripleBufferPipelined();
+		_Far0VB.setUnsynchronizedMode(unsyncMode);
+		_Far1VB.setUnsynchronizedMode(unsyncMode);
+		_TileVB.setUnsynchronizedMode(unsyncMode);
+
+		// Same for vegetation VB allocators.
+		_VegetableManager->setUnsynchronizedMode(unsyncMode);
 	}
 }
 
@@ -724,7 +740,7 @@ void			CLandscape::refine(const CVector &refineCenter)
 
 		// For each vegetableBlock, test IG creation
 		CLandscapeVegetableBlock	*vegetBlock= _VegetableBlockList.begin();
-		for(;vegetBlock!=NULL; vegetBlock= (CLandscapeVegetableBlock*)vegetBlock->Next)
+		for(;vegetBlock != nullptr; vegetBlock= (CLandscapeVegetableBlock*)vegetBlock->Next)
 		{
 			vegetBlock->update(refineCenter, _VegetableManager);
 		}
@@ -866,6 +882,19 @@ void			CLandscape::lockBuffers ()
 	// Already locked
 	if ((_LockCount++) == 0)
 	{
+		// Process deferred frees before any new allocations.
+		if(_Driver)
+		{
+			uint64 inFlight = _Driver->getSwapBufferInFlight();
+			_Far0VB.processDeferredFrees(inFlight);
+			_Far1VB.processDeferredFrees(inFlight);
+			_TileVB.processDeferredFrees(inFlight);
+
+			// Same for vegetation VB allocators.
+			if(_DriverOkForVegetable)
+				_VegetableManager->processDeferredFrees(inFlight);
+		}
+
 		// Must check driver, and create VB infos,locking buffers.
 		if(_Driver)
 		{
@@ -915,7 +944,7 @@ void			CLandscape::updateTessBlocksFaceVector()
 {
 	// while some tessBlock to update remains.
 	CTessBlock	*tb;
-	while( (tb=_TessBlockModificationRoot.getNextToModify()) !=NULL )
+	while( (tb=_TessBlockModificationRoot.getNextToModify()) != nullptr)
 	{
 		// Get the patch which owns this TessBlock.
 		CPatch	*patch= tb->getPatch();
@@ -1015,14 +1044,14 @@ static inline uint32 countNumWantedIndexFar1(CPatch	*patch)
 
 
 // ***************************************************************************
-void			CLandscape::render(const CVector &refineCenter, const CVector &frontVector, const CPlane	pyramid[NL3D_TESSBLOCK_NUM_CLIP_PLANE], bool doTileAddPass)
+void			CLandscape::render(const CVector &refineCenter, const CVector &frontVector, const CPlane	pyramid[NL3D_TESSBLOCK_NUM_CLIP_PLANE], bool	doTileAddPass, bool doVegetables)
 {
 	IDriver *driver= _Driver;
 	nlassert(driver);
 
 	// values in Stencil Buffer which match with landscape are replace by 128
 	// rest of Stencil is replace by 0.
-	CScene *scene = NULL;
+	CScene *scene = nullptr;
 	if (OwnerModel)
 	{
 		scene = OwnerModel->getOwnerScene();
@@ -1125,6 +1154,14 @@ void			CLandscape::render(const CVector &refineCenter, const CVector &frontVecto
 	if( _VertexShaderOk && _VPThresholdChange )
 	{
 		_VPThresholdChange= false;
+		// In unsynchronized mode, force reallocation so refill writes to a fresh buffer
+		// (not data that may still be in-flight on the GPU).
+		if( _Far0VB.getUnsynchronizedMode() )
+		{
+			_Far0VB.forceReallocation();
+			_Far1VB.forceReallocation();
+			_TileVB.forceReallocation();
+		}
 		_RenderMustRefillVB= true;
 	}
 
@@ -1205,27 +1242,63 @@ void			CLandscape::render(const CVector &refineCenter, const CVector &frontVecto
 	{
 		bool uprogstate = driver->isUniformProgramState();
 		uint nbvp = uprogstate ? CLandscapeVBAllocator::MaxVertexProgram : 1;
-		for (uint i = 0; i < nbvp; ++i)
-		{
-			CVertexProgramLandscape *program = _TileVB.getVP(i);
-			if (program)
-			{
-				// activate the program to set the uniforms in the program state for all programs
-				// note: when uniforms are driver state, the indices must be the same across programs
-				_TileVB.activateVP(i);
 
-				// c[0..3] take the ModelViewProjection Matrix.
-				driver->setUniformMatrix(IDriver::VertexProgram, program->getUniformIndex(CProgramIndex::ModelViewProjection), IDriver::ModelViewProjection, IDriver::Identity);
-				// c[4] take useful constants.
-				driver->setUniform4f(IDriver::VertexProgram, program->idx().ProgramConstants0, 0, 1, 0.5f, 0);
-				// c[5] take RefineCenter
-				driver->setUniform3f(IDriver::VertexProgram, program->idx().RefineCenter, refineCenter);
-				// c[6] take info for Geomorph trnasition to TileNear.
-				driver->setUniform2f(IDriver::VertexProgram, program->idx().TileDist, CLandscapeGlobals::TileDistFarSqr, CLandscapeGlobals::OOTileDistDeltaSqr);
-				// c[10] take the fog vector.
-				driver->setUniformFog(IDriver::VertexProgram, program->getUniformIndex(CProgramIndex::Fog));
-				// c[12] take the current landscape Center / delta Pos to apply
-				driver->setUniform3f(IDriver::VertexProgram, program->idx().PZBModelPosition, _PZBModelPosition);
+		// Helper lambda to set uniforms on all VPs of a given VB allocator
+		CLandscapeVBAllocator *vbAllocs[] = { &_TileVB, nullptr, nullptr };
+		// When uniforms are per-program state, Far0/Far1 VPs need their own uniforms
+		// (when driver-state, setting on TileVB is enough for all VPs)
+		if (uprogstate)
+		{
+			vbAllocs[1] = &_Far0VB;
+			vbAllocs[2] = &_Far1VB;
+		}
+
+		for (uint a = 0; a < 3 && vbAllocs[a]; ++a)
+		{
+			CLandscapeVBAllocator &vb = *vbAllocs[a];
+			for (uint i = 0; i < nbvp; ++i)
+			{
+				CVertexProgramLandscape *program = vb.getVP(i);
+				CVertexProgramLandscapeUBO *uboProgram = vb.getUBOVP(i);
+				if (program || uboProgram)
+				{
+					// activate the program to set the uniforms in the program state for all programs
+					// note: when uniforms are driver state, the indices must be the same across programs
+					vb.activateVP(i);
+
+					if (uboProgram)
+					{
+						// UBO path (GL3): the landscape data goes to the NlLandscape
+						// UBO. The modelViewProjection matrix and the projection
+						// basis are read by the shader from the builtin NlModel/NlCamera
+						// UBOs, and fog is computed per fragment by the mega pixel
+						// program, so only the landscape specific data is uploaded.
+						CUniformBuffer *ub = vb.getUBOBuffer();
+						nlassert(ub);
+						const CLandscapeVBAllocator::CLandscapeUBOOffsets &off =
+							CLandscapeVBAllocator::uboOffsets();
+						ub->lock();
+						ub->set(off.RefineCenter, refineCenter);
+						ub->set(off.TileDist, NLMISC::CVector2f(CLandscapeGlobals::TileDistFarSqr, CLandscapeGlobals::OOTileDistDeltaSqr));
+						ub->set(off.PZBModelPosition, _PZBModelPosition);
+						ub->unlock();
+						driver->bindUniformBuffer(UBBindingVertexProgram, ub);
+						continue;
+					}
+
+					// c[0..3] take the ModelViewProjection Matrix.
+					driver->setUniformMatrix(IDriver::VertexProgram, program->getUniformIndex(CProgramIndex::ModelViewProjection), IDriver::ModelViewProjection, IDriver::Identity);
+					// c[4] take useful constants.
+					driver->setUniform4f(IDriver::VertexProgram, program->idx().ProgramConstants0, 0, 1, 0.5f, 0);
+					// c[5] take RefineCenter
+					driver->setUniform3f(IDriver::VertexProgram, program->idx().RefineCenter, refineCenter);
+					// c[6] take info for Geomorph trnasition to TileNear.
+					driver->setUniform2f(IDriver::VertexProgram, program->idx().TileDist, CLandscapeGlobals::TileDistFarSqr, CLandscapeGlobals::OOTileDistDeltaSqr);
+					// c[10] take the fog vector.
+					driver->setUniformFog(IDriver::VertexProgram, program->getUniformIndex(CProgramIndex::Fog));
+					// c[12] take the current landscape Center / delta Pos to apply
+					driver->setUniform3f(IDriver::VertexProgram, program->idx().PZBModelPosition, _PZBModelPosition);
+				}
 			}
 		}
 	}
@@ -1241,7 +1314,7 @@ void			CLandscape::render(const CVector &refineCenter, const CVector &frontVecto
 	// First, update Dynamic Lighting for Near, ie multiply Dynamic Lightmap with UserColor, and upload to texture.
 	// ==================
 	CPatchDLMContext	*dlmCtxPtr= _PatchDLMContextList->begin();
-	while(dlmCtxPtr!=NULL)
+	while(dlmCtxPtr != nullptr)
 	{
 		// do it only if the patch has some Near stuff to render, and if it is visible
 		if(dlmCtxPtr->getPatch()->getFar0() == 0
@@ -1377,9 +1450,9 @@ void			CLandscape::render(const CVector &refineCenter, const CVector &frontVecto
 			};
 		}
 		// Reset the textures (so there is none in Addtive pass or in Lightmap).
-		TileMaterial.setTexture(0, NULL);
-		TileMaterial.setTexture(1, NULL);
-		TileMaterial.setTexture(2, NULL);
+		TileMaterial.setTexture(0, nullptr);
+		TileMaterial.setTexture(1, nullptr);
+		TileMaterial.setTexture(2, nullptr);
 
 
 		// Render All material RdrPass.
@@ -1536,6 +1609,13 @@ void			CLandscape::render(const CVector &refineCenter, const CVector &frontVecto
 	// 2. Far0Render pass.
 	//====================
 
+	// Water reflection renders: the far passes clip deeper below the water
+	// surface than the static bias — at the horizon the thin static band
+	// still leaves a void bleed where perturbed lookups cross the
+	// waterline, and distant underwater terrain fills it correctly
+	if (_WaterReflectionClip)
+		_WaterReflectionClip->selectClipBias(driver, CWaterReflectionManager::ClipBiasFar);
+
 	// Yoyo: profile
 	NL3D_PROFILE_LAND_SET(ProfNFar0SetupMaterial, driver->profileSetupedMaterials() );
 	H_BEFORE( NL3D_Landscape_Render_DLM );
@@ -1543,7 +1623,7 @@ void			CLandscape::render(const CVector &refineCenter, const CVector &frontVecto
 	// First, update Dynamic Lighting for Far, ie multiply Dynamic Lightmap with TextureFar, and upload to texture.
 	// ==================
 	dlmCtxPtr= _PatchDLMContextList->begin();
-	while(dlmCtxPtr!=NULL)
+	while(dlmCtxPtr != nullptr)
 	{
 		// do it only if the patch has some Far stuff to render, and if it is visible
 		if( (dlmCtxPtr->getPatch()->getFar0()>0 || dlmCtxPtr->getPatch()->getFar1()>0)
@@ -1681,23 +1761,27 @@ void			CLandscape::render(const CVector &refineCenter, const CVector &frontVecto
 	H_AFTER( NL3D_Landscape_Render_Far1 );
 
 
+	// Restore the static-geometry water clip bias after the far passes
+	if (_WaterReflectionClip)
+		_WaterReflectionClip->selectClipBias(driver, CWaterReflectionManager::ClipBiasStatic);
+
 	// 4. "Release" texture materials.
 	//================================
-	FarMaterial.setTexture(0, NULL);
-	FarMaterial.setTexture(1, NULL);
-	FarMaterial.setTexture(2, NULL);
-	FarMaterial.setTexture(3, NULL);
-	TileMaterial.setTexture(0, NULL);
-	TileMaterial.setTexture(1, NULL);
-	TileMaterial.setTexture(2, NULL);
-	TileMaterial.setTexture(3, NULL);
+	FarMaterial.setTexture(0, nullptr);
+	FarMaterial.setTexture(1, nullptr);
+	FarMaterial.setTexture(2, nullptr);
+	FarMaterial.setTexture(3, nullptr);
+	TileMaterial.setTexture(0, nullptr);
+	TileMaterial.setTexture(1, nullptr);
+	TileMaterial.setTexture(2, nullptr);
+	TileMaterial.setTexture(3, nullptr);
 
 	// To ensure no use but in render()..
-	CLandscapeGlobals::PatchCurrentDriver= NULL;
+	CLandscapeGlobals::PatchCurrentDriver = nullptr;
 
 	// Desactive the vertex program (if anyone)
 	if(_VertexShaderOk)
-		driver->activeVertexProgram (NULL);
+		driver->activeVertexProgram (nullptr);
 
 
 	// 5. Vegetable Management.
@@ -1709,7 +1793,7 @@ void			CLandscape::render(const CVector &refineCenter, const CVector &frontVecto
 
 	// First, update Dynamic Lighting for Vegetable, ie just copy.
 	// ==================
-	if(isVegetableActive())
+	if(doVegetables && isVegetableActive())
 	{
 		/* Actually we modulate the DLM with an arbitrary constant for this reason:
 			Color of vegetable (ie their material) are NOT modulated with DLM.
@@ -1738,7 +1822,7 @@ void			CLandscape::render(const CVector &refineCenter, const CVector &frontVecto
 
 		// Parse all patch which have some vegetables
 		dlmCtxPtr= _PatchDLMContextList->begin();
-		while(dlmCtxPtr!=NULL)
+		while(dlmCtxPtr != nullptr)
 		{
 			// do it only if the patch has some vegetable stuff to render, and if it is visible
 			// NB: we may have some vegetable stuff to render if the patch has some TileMaterial created.
@@ -1760,7 +1844,7 @@ void			CLandscape::render(const CVector &refineCenter, const CVector &frontVecto
 
 	// render all vegetables, only if driver support VertexProgram.
 	// ==================
-	if(isVegetableActive())
+	if(doVegetables && isVegetableActive())
 	{
 		// Use same plane as TessBlock for faster clipping.
 		vector<CPlane>		vegetablePyramid;
@@ -1827,7 +1911,7 @@ void			CLandscape::loadTile(uint16 tileId)
 	if(tileId<TileBank.getTileCount())
 		tile= TileBank.getTile(tileId);
 	else
-		tile= NULL;
+		tile = nullptr;
 	// TileInfo must not exist.
 	nlassert(TileInfos[tileId]==NULL);
 	TileInfos[tileId]= tileInfo= new CTileInfo;
@@ -1840,7 +1924,7 @@ void			CLandscape::loadTile(uint16 tileId)
 		textName.clear();
 	// If no additive for this tile, rdrpass is NULL.
 	if(textName.empty())
-		tileInfo->AdditiveRdrPass= NULL;
+		tileInfo->AdditiveRdrPass = nullptr;
 	else
 	{
 		// Fill rdrpass.
@@ -1933,7 +2017,7 @@ void			CLandscape::releaseTile(uint16 tileId)
 		tileInfo->DiffuseRdrPass->RefCount--;
 
 	delete tileInfo;
-	TileInfos[tileId]= NULL;
+	TileInfos[tileId] = nullptr;
 }
 
 
@@ -1944,7 +2028,7 @@ CPatchRdrPass	*CLandscape::getTileRenderPass(uint16 tileId, bool additiveRdrPass
 
 	// If not here, create it.
 	//========================
-	if(tile==NULL)
+	if(tile == nullptr)
 	{
 		// Force loading of tile.
 		loadTile(tileId);
@@ -2000,7 +2084,7 @@ NLMISC::CSmartPtr<ITexture>		CLandscape::getTileTexture(uint16 tileId, CTile::TB
 	else
 		pass= getTileRenderPass(tileId, false);
 	if(!pass)
-		return NULL;
+		return nullptr;
 	uint8	dummy;
 	getTileUvScaleBiasRot(tileId, bitmapType, uvScaleBias, dummy);
 
@@ -2027,7 +2111,7 @@ CTileElement *CLandscape::getTileElement(const CPatchIdent &patchId, const CUV &
 	}
 	else
 		// Return not found
-		return NULL;
+		return nullptr;
 }
 
 
@@ -2041,7 +2125,7 @@ void			CLandscape::flushTiles(IDriver *drv, uint32 tileStart, uint32 nbTiles)
 	for(sint tileId= tileStart; tileId<(sint)(tileStart+nbTiles); tileId++)
 	{
 		CTileInfo	*tile= TileInfos[tileId];
-		if(tile==NULL)
+		if(tile == nullptr)
 		{
 			loadTile(uint16(tileId));
 			CTileInfo	*tile= TileInfos[tileId];
@@ -2081,7 +2165,7 @@ void			CLandscape::releaseTiles(uint32 tileStart, uint32 nbTiles)
 	for(sint tileId= tileStart; tileId<(sint)(tileStart+nbTiles); tileId++)
 	{
 		CTileInfo	*tile= TileInfos[tileId];
-		if(tile!=NULL)
+		if(tile != nullptr)
 		{
 			releaseTile(uint16(tileId));
 		}
@@ -2136,8 +2220,8 @@ uint		CLandscape::getTileLightMap(CRGBA  map[NL_TILE_LIGHTMAP_SIZE*NL_TILE_LIGHT
 
 	// 1. Search the first texture which has a free tile.
 	//==================================================
-	CTextureNear	*nearText= NULL;
-	CPatchRdrPass	*nearRdrPass= NULL;
+	CTextureNear	*nearText = nullptr;
+	CPatchRdrPass	*nearRdrPass = nullptr;
 	for(textNum=0;textNum<(sint)_TextureNears.size();textNum++)
 	{
 		nearRdrPass= _TextureNears[textNum];
@@ -2291,7 +2375,7 @@ CPatchRdrPass*	CLandscape::getFarRenderPass(CPatch* pPatch, uint farIndex, float
 		pTextureFar->setTextureCategory(_TextureFarCategory);
 
 		// Append this textureFar to the list of TextureFar to updateLighting.
-		if(_ULRootTextureFar==NULL)
+		if(_ULRootTextureFar == nullptr)
 			_ULRootTextureFar= pTextureFar;
 		else
 			pTextureFar->linkBeforeUL(_ULRootTextureFar);
@@ -2355,7 +2439,7 @@ void		CLandscape::clearFarRenderPass (CPatchRdrPass* pass)
 		_ULRootTextureFar= pTextureFar->getNextUL();
 		// if still the same, it means that the circular list is now empty
 		if(_ULRootTextureFar==pTextureFar)
-			_ULRootTextureFar= NULL;
+			_ULRootTextureFar = nullptr;
 	}
 
 	// unlink the texture from list
@@ -2378,7 +2462,7 @@ CZone*			CLandscape::getZone (sint zoneId)
 	if (it!=Zones.end())
 		return (*it).second;
 	else
-		return NULL;
+		return nullptr;
 }
 
 
@@ -2391,7 +2475,7 @@ const CZone*	CLandscape::getZone (sint zoneId) const
 	if (it!=Zones.end())
 		return (*it).second;
 	else
-		return NULL;
+		return nullptr;
 }
 
 
@@ -2732,6 +2816,10 @@ bool			CLandscape::eraseTileFarIfNotGood (uint tileNumber, uint sizeOrder0, uint
 			(TileFarBank.getTile (tileNumber)->getSize (CTileFarBank::diffuse, CTileFarBank::order2) != sizeOrder2)
 			)
 		{
+			const CTileFarBank::CTileFar *tile = TileFarBank.getTile(tileNumber);
+			nlwarning("ASSET ERROR: far bank tile %u has %u/%u/%u diffuse pixels, the tile bank needs %u/%u/%u, it is not drawn far away", tileNumber,
+			    tile->getSize(CTileFarBank::diffuse, CTileFarBank::order0), tile->getSize(CTileFarBank::diffuse, CTileFarBank::order1),
+			    tile->getSize(CTileFarBank::diffuse, CTileFarBank::order2), sizeOrder0, sizeOrder1, sizeOrder2);
 			TileFarBank.getTile (tileNumber)->erasePixels (CTileFarBank::diffuse);
 			bSame=false;
 		}
@@ -2747,6 +2835,10 @@ bool			CLandscape::eraseTileFarIfNotGood (uint tileNumber, uint sizeOrder0, uint
 			(TileFarBank.getTile (tileNumber)->getSize (CTileFarBank::additive, CTileFarBank::order2) != sizeOrder2)
 			)
 		{
+			const CTileFarBank::CTileFar *tile = TileFarBank.getTile(tileNumber);
+			nlwarning("ASSET ERROR: far bank tile %u has %u/%u/%u additive pixels, the tile bank needs %u/%u/%u, it is not drawn far away", tileNumber,
+			    tile->getSize(CTileFarBank::additive, CTileFarBank::order0), tile->getSize(CTileFarBank::additive, CTileFarBank::order1),
+			    tile->getSize(CTileFarBank::additive, CTileFarBank::order2), sizeOrder0, sizeOrder1, sizeOrder2);
 			TileFarBank.getTile (tileNumber)->erasePixels (CTileFarBank::additive);
 			bSame=false;
 		}
@@ -2805,6 +2897,19 @@ bool			CLandscape::initTileBanks ()
 
 		// Far actived!
 		_FarInitialized=true;
+	}
+	else if (TileFarBank.getNumTile() == 0)
+	{
+		// No far bank was loaded: the zone lighters and the world editor's land export only load the tile bank.
+		// CTileFarBank::serial reports a far bank file without tiles.
+		nldebug("No far bank, the far tiles are not checked against the tile bank");
+	}
+	else
+	{
+		// The far bank was not built from this tile bank. Its tiles are not checked against it, CTextureFar and
+		// CPatchDLMContext check each far tile they read.
+		nlwarning("ASSET ERROR: the far bank has %d tiles and the tile bank %d, the far bank must be rebuilt from this tile bank", TileFarBank.getNumTile(), TileBank.getTileCount());
+		bCompatibility = false;
 	}
 
 	// Register / Load the vegetables.
@@ -3595,7 +3700,7 @@ void			CLandscape::setUpdateLightingFrequency(float freq)
 void			CLandscape::linkPatchToNearUL(CPatch *patch)
 {
 	// Append this patch to the list of patch to updateLighting.
-	if(_ULRootNearPatch==NULL)
+	if(_ULRootNearPatch == nullptr)
 		_ULRootNearPatch= patch;
 	else
 		patch->linkBeforeNearUL(_ULRootNearPatch);
@@ -3611,7 +3716,7 @@ void			CLandscape::unlinkPatchFromNearUL(CPatch *patch)
 		_ULRootNearPatch= patch->getNextNearUL();
 		// if still the same, it means that the circular list is now empty
 		if(_ULRootNearPatch==patch)
-			_ULRootNearPatch= NULL;
+			_ULRootNearPatch = nullptr;
 		// reset tessBlock counter.
 		_ULNearCurrentTessBlockId= 0;
 	}
@@ -3700,7 +3805,7 @@ void			CLandscape::computeDynamicLighting(const std::vector<CPointLight*>	&pls)
 	// Run all DLM Context create, to init Lighting process.
 	//===============
 	CPatchDLMContext	*ctxPtr= _PatchDLMContextList->begin();
-	while(ctxPtr!=NULL)
+	while(ctxPtr != nullptr)
 	{
 		// init lighting process, do differential from last computeDynamicLighting()
 		ctxPtr->getPatch()->beginDLMLighting();
@@ -3752,7 +3857,7 @@ void			CLandscape::computeDynamicLighting(const std::vector<CPointLight*>	&pls)
 	// Run all DLM Context create, to end Lighting process.
 	//===============
 	ctxPtr= _PatchDLMContextList->begin();
-	while(ctxPtr!=NULL)
+	while(ctxPtr != nullptr)
 	{
 		// get enxt now, because the DLM itself may be deleted in endDLMLighting()
 		CPatchDLMContext	*next= (CPatchDLMContext*)ctxPtr->Next;
@@ -3789,7 +3894,7 @@ uint			CLandscape::getDynamicLightingMemoryLoad() const
 
 	// Then, for each patchContext created
 	CPatchDLMContext	*ctxPtr= _PatchDLMContextList->begin();
-	while(ctxPtr!=NULL)
+	while(ctxPtr != nullptr)
 	{
 		// add its memory load.
 		mem+= ctxPtr->getMemorySize();

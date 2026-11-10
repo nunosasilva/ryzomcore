@@ -1,5 +1,5 @@
 // NeL - MMORPG Framework <http://dev.ryzom.com/projects/nel/>
-// Copyright (C) 2010-2020  Winch Gate Property Limited
+// Copyright (C) 2010-2022  Winch Gate Property Limited
 //
 // This source file has been modified by the following contributors:
 // Copyright (C) 2010  Robert TIMM (rti) <mail@rtti.de>
@@ -207,6 +207,25 @@ bool GlWndProc(CDriverGL *driver, const void* e)
 	return driver->_EventEmitter.processMessage(event);
 }
 
+// ***************************************************************************
+void CDriverGL::updateWindowFocus()
+{
+	// The focus is the key state of the window holding the view. In fullscreen that is a window of AppKit's,
+	// and the window the driver made resigns as the key window when the view moves there.
+	if (_win == EmptyWindow)
+		return;
+
+	bool focus = [[containerView() window] isKeyWindow] == YES;
+	if (focus == _WindowFocus)
+		return;
+
+	_WindowFocus = focus;
+	_EventEmitter.postFocusEvent(focus);
+
+	// a relative mouse would keep the cursor still for the other applications
+	updateMouseRelative();
+}
+
 #elif defined (NL_OS_UNIX)
 
 static Atom XA_WM_STATE = 0;
@@ -273,7 +292,7 @@ bool GlWndProc(CDriverGL *driver, XEvent &e)
 				int format_return = 0;
 				unsigned long nitems_return = 0;
 				unsigned long bytes_after_return = 0;
-				long *data = NULL;
+				long *data = nullptr;
 
 				int status = XGetWindowProperty(driver->_dpy, driver->_win, XA_FRAME_EXTENTS, 0, 4, False, XA_CARDINAL, &type_return, &format_return, &nitems_return, &bytes_after_return, (unsigned char**)&data);
 
@@ -395,9 +414,9 @@ bool CDriverGL::init (uintptr_t windowIcon, emptyProc exitFunc)
 
 	nlunreferenced(windowIcon);
 
-	_dpy = XOpenDisplay(NULL);
+	_dpy = XOpenDisplay(nullptr);
 
-	if (_dpy == NULL)
+	if (_dpy == nullptr)
 	{
 		nlerror ("XOpenDisplay failed on '%s'", getenv("DISPLAY"));
 	}
@@ -454,7 +473,7 @@ bool CDriverGL::init (uintptr_t windowIcon, emptyProc exitFunc)
 		for(sint i = 0; i < nextensions; ++i)
 		{
 			if(i%5==0) DebugLog->displayRaw("3D:     ");
-			DebugLog->displayRaw(NLMISC::toString("%s ", extensions[i]).c_str());
+			DebugLog->displayRaw("%s ", extensions[i]);
 			if(i%5==4) DebugLog->displayRaw("\n");
 		}
 
@@ -535,12 +554,12 @@ bool CDriverGL::unInit()
 #elif defined (NL_OS_UNIX)
 
 	// restore default X errors handler
-	XSetErrorHandler(NULL);
+	XSetErrorHandler(nullptr);
 
 	if (_dpy)
 	{
 		XCloseDisplay(_dpy);
-		_dpy = NULL;
+		_dpy = nullptr;
 	}
 
 #endif // NL_OS_UNIX
@@ -679,8 +698,9 @@ bool CDriverGL::setDisplay(nlWindow wnd, const GfxMode &mode, bool show, bool re
 	// Retrieve the WGL extensions before init the driver.
 
 	// Offscreen mode ?
-	if (_CurrentMode.OffScreen)
+	if (mode.OffScreen)
 	{
+		_CurrentMode.OffScreen = true;
 		if (!createWindow(mode)) return false;
 
 		HWND tmpHWND = _win;
@@ -1122,9 +1142,9 @@ bool CDriverGL::setDisplay(nlWindow wnd, const GfxMode &mode, bool show, bool re
 
 	// first try 24bpp and if that fails 16bpp
 	XVisualInfo *visual_info = glXChooseVisual (_dpy, DefaultScreen(_dpy), sAttribList24bpp);
-	if (visual_info == NULL)
+	if (visual_info == nullptr)
 		visual_info = glXChooseVisual(_dpy, DefaultScreen(_dpy), sAttribList16bpp);
-	if(visual_info == NULL)
+	if(visual_info == nullptr)
 	{
 		nlerror("glXChooseVisual() failed");
 	}
@@ -1132,7 +1152,7 @@ bool CDriverGL::setDisplay(nlWindow wnd, const GfxMode &mode, bool show, bool re
 	_visual_info = visual_info;
 
 	_ctx = glXCreateContext (_dpy, visual_info, None, GL_TRUE);
-	if (_ctx == NULL)
+	if (_ctx == nullptr)
 	{
 		nlerror("glXCreateContext() failed");
 	}
@@ -1563,8 +1583,11 @@ bool CDriverGL::createWindow(const GfxMode &mode)
 	[closeButton setAction:@selector(applicationShouldTerminate:)];
 	[closeButton setTarget:appDelegate];
 
-	// set the delegate which will handle window move events
-	[cocoa_window setDelegate:[[CocoaWindowDelegate alloc] initWithDriver:this]];
+	// set the delegate which will handle window move and focus events (the delegate of a window made
+	// before is detached, as it watches every window)
+	[m_WindowDelegate detachDriver];
+	m_WindowDelegate = [[CocoaWindowDelegate alloc] initWithDriver:this];
+	[cocoa_window setDelegate:m_WindowDelegate];
 
 	// set the window to non transparent
 	[cocoa_window setOpaque:YES];
@@ -1596,7 +1619,7 @@ bool CDriverGL::createWindow(const GfxMode &mode)
 
 #elif defined (NL_OS_UNIX)
 
-	if (_visual_info == NULL)
+	if (_visual_info == nullptr)
 		return false;
 
 	nlWindow root = RootWindow(_dpy, DefaultScreen(_dpy));
@@ -1653,6 +1676,12 @@ bool CDriverGL::createWindow(const GfxMode &mode)
 #endif // NL_OS_UNIX
 
 	_win = window;
+
+#ifdef NL_OS_MAC
+	// the window became the key window before it was the driver's, and need not be (the application may
+	// not be active)
+	updateWindowFocus();
+#endif
 
 	_CurrentMode.Width = mode.Width;
 	_CurrentMode.Height = mode.Height;
@@ -1718,7 +1747,7 @@ bool CDriverGL::destroyWindow()
 	if (_DestroyWindow && _ctx) // FIXME: _DestroyWindow may need to be removed here as well
 		glXDestroyContext(_dpy, _ctx);
 
-	_ctx = NULL;
+	_ctx = nullptr;
 
 #endif
 
@@ -1732,6 +1761,11 @@ bool CDriverGL::destroyWindow()
 
 	if (_DestroyWindow)
 	{
+		// the delegate watches every window, it must not reach the driver any more (it is not released,
+		// as a window does not retain its delegate)
+		[m_WindowDelegate detachDriver];
+		m_WindowDelegate = nil;
+
 		[[containerView() window] release];
 		[containerView() release];
 		[_glView release];
@@ -1881,6 +1915,9 @@ bool CDriverGL::setWindowStyle(EWindowStyle windowStyle)
 		[[containerView() window] makeFirstResponder:_glView];
 	}
 
+	// the view may have changed windows
+	updateWindowFocus();
+
 #elif defined(NL_OS_UNIX)
 
 	XWindowAttributes attr;
@@ -2023,6 +2060,13 @@ bool CDriverGL::setMode(const GfxMode& amode)
 	if (!_DestroyWindow)
 		return true;
 
+	// a window has a size (the size of a minimized window is empty, and the cursor position is relative to it)
+	if (amode.Windowed && (amode.Width == 0 || amode.Height == 0))
+	{
+		nlwarning("3D: Refusing an empty window size %ux%u", (uint)amode.Width, (uint)amode.Height);
+		return false;
+	}
+
 #if !(HAVE_XRANDR)
 	const GfxMode &mode = amode;
 #endif
@@ -2132,7 +2176,7 @@ bool CDriverGL::setMode(const GfxMode& amode)
 
 #if defined(NL_OS_WINDOWS)
 	// restore relative cursor
-	if (cursorPosOk && mode.Width > 0 && mode.Height > 0)
+	if (cursorPosOk)
 	{
 		cursorPos.x = curX / (sint)mode.Width;
 		cursorPos.y = curY / (sint)mode.Height;
@@ -2723,7 +2767,7 @@ void CDriverGL::setWindowTitle(const ucstring &title)
 
 #ifdef X_HAVE_UTF8_STRING
 	// UTF8 properties
-	Xutf8SetWMProperties (_dpy, _win, (char*)title.toUtf8().c_str(), (char*)title.toUtf8().c_str(), NULL, 0, NULL, NULL, NULL);
+	Xutf8SetWMProperties (_dpy, _win, (char*)title.toUtf8().c_str(), (char*)title.toUtf8().c_str(), nullptr, 0, nullptr, nullptr, nullptr);
 #else
 	// standard properties
 	XTextProperty text_property;
@@ -3023,7 +3067,7 @@ bool CDriverGL::activate()
 
 	GLXContext nctx = glXGetCurrentContext();
 
-	if (nctx != NULL && nctx != _ctx)
+	if (nctx != nullptr && nctx != _ctx)
 		glXMakeCurrent(_dpy, _win, _ctx);
 
 #endif // USE_OPENGLES
@@ -3265,6 +3309,16 @@ bool CDriverGL::isActive()
 #endif // NL_OS_UNIX
 
 	return res;
+}
+
+// ***************************************************************************
+bool CDriverGL::supportMonitorColorProperties () const
+{
+#ifdef NL_OS_WINDOWS
+	return _NeedToRestoreGammaRamp;
+#else
+	return false;
+#endif
 }
 
 // ***************************************************************************

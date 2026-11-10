@@ -22,6 +22,7 @@
 #include "nel/3d/camera_col.h"
 #include "nel/3d/shadow_map.h"
 #include "nel/3d/light.h"
+#include "nel/3d/decal.h"
 #include "nel/misc/common.h"
 
 
@@ -50,7 +51,7 @@ CVisualCollisionManager::CVisualCollisionManager() :
 	_TileDescNodeAllocator(TileDescNodeAllocatorBlockSize),
 	_PatchQuadBlockAllocator(PatchQuadBlockAllocatorBlockSize)
 {
-	_Landscape= NULL;
+	_Landscape = nullptr;
 
 	// Default.
 	setSunContributionPower(0.5f, 0.5f);
@@ -67,7 +68,7 @@ CVisualCollisionManager::CVisualCollisionManager() :
 // ***************************************************************************
 CVisualCollisionManager::~CVisualCollisionManager()
 {
-	_Landscape= NULL;
+	_Landscape = nullptr;
 }
 
 
@@ -355,6 +356,33 @@ void		CVisualCollisionManager::CMeshInstanceCol::receiveShadowMap(const CVisualC
 
 		// get the collision with the mesh
 		Mesh->receiveShadowMap(WorldMatrix, shadowContext);
+	}
+}
+
+
+// ***************************************************************************
+void CVisualCollisionManager::receiveDecal(CDecalContext &cdc)
+{
+	_MeshQuadGrid.select(cdc.WorldBBox.getMin(), cdc.WorldBBox.getMax());
+
+	CQuadGrid<CMeshInstanceCol*>::CIterator it    =  _MeshQuadGrid.begin();
+	CQuadGrid<CMeshInstanceCol*>::CIterator itEnd =  _MeshQuadGrid.end();
+
+	for(;it!=itEnd;++it)
+	{
+		(*it)->receiveDecal(cdc);
+	}
+
+}
+
+// ***************************************************************************
+void		CVisualCollisionManager::CMeshInstanceCol::receiveDecal(CDecalContext &cdc)
+{
+	// if mesh still present (else it s may be an error....)
+	if(Mesh)
+	{
+		// get the collision with the mesh
+		Mesh->receiveDecal(WorldMatrix, cdc);
 	}
 }
 

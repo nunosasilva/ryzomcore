@@ -45,7 +45,10 @@ static Atom XA_WM_DELETE_WINDOW = 0;
 
 namespace NLMISC {
 
-CUnixEventEmitter::CUnixEventEmitter ():_dpy(NULL), _win(0), _im(NULL), _ic(NULL), _driver(NULL)
+CUnixEventEmitter::CUnixEventEmitter ():_dpy(nullptr)
+    , _win(0), _im(nullptr)
+    , _ic(nullptr)
+    , _driver(nullptr)
 {
 	_SelectionOwned = false;
 }
@@ -88,21 +91,21 @@ void CUnixEventEmitter::createIM()
 {
 #ifdef X_HAVE_UTF8_STRING
 
-	_im = XOpenIM(_dpy, NULL, NULL, NULL);
+	_im = XOpenIM(_dpy, nullptr, nullptr, nullptr);
 
-	if (_im == NULL)
+	if (_im == nullptr)
 	{
 		XSetLocaleModifiers("@im=local");
  
-		_im = XOpenIM(_dpy, NULL, NULL, NULL);
+		_im = XOpenIM(_dpy, nullptr, nullptr, nullptr);
 
-		if (_im == NULL)
+		if (_im == nullptr)
 		{
 			XSetLocaleModifiers("@im=");
 
-			_im = XOpenIM(_dpy, NULL, NULL, NULL);
+			_im = XOpenIM(_dpy, nullptr, nullptr, nullptr);
 
-			if (_im == NULL)
+			if (_im == nullptr)
 			{
 				nlwarning("XOpenIM failed");
 			}
@@ -127,13 +130,13 @@ void CUnixEventEmitter::closeIM()
 	if (_ic)
 	{
 		XDestroyIC(_ic);
-		_ic = 0;
+		_ic = nullptr;
 	}
 
 	if (_im)
 	{
 		XCloseIM(_im);
-		_im = 0;
+		_im = nullptr;
 	}
 #endif
 }
@@ -223,6 +226,9 @@ TKey getKeyFromKeycode (uint keycode)
 	case 0x31: return KeyAPOSTROPHE;
 	case 0x33: return KeyBACKSLASH;
 	case 0x5e: return KeyOEM_102;
+	case 0x5b: return KeyDECIMAL; // KPDL, on the layouts where it gives a period or a comma
+	case 0x61: return KeyOEM_102; // AB11, the ro key of Japanese keyboards, as on Windows (it shares the name with LSGT on Brazilian ones)
+	case 0x84: return KeyDASH; // AE13, the yen key of Japanese keyboards: no other key gives KeyDASH on X11
 //	case 0x3a: return KeyCOMMA;
 	case 0x3b: return KeyPERIOD;
 	case 0x3c: return KeySLASH;
@@ -238,7 +244,7 @@ TKey getKeyFromKeycode (uint keycode)
 	case 0x1f: return KeyI;
 	case 0x20: return KeyO;
 	case 0x21: return KeyP;
-	case 0x26: return KeyQ;
+	case 0x26: return KeyA;
 	case 0x27: return KeyS;
 	case 0x28: return KeyD;
 	case 0x29: return KeyF;
@@ -269,6 +275,7 @@ TKey getKeyFromKeySym (KeySym keysym)
 	{
 	case XK_BackSpace: return KeyBACK;
 	case XK_Tab: return KeyTAB;
+	case XK_ISO_Left_Tab: return KeyTAB; // Shift+Tab
 	case XK_Return: return KeyRETURN;
 	case XK_Sys_Req: return KeySNAPSHOT;
 	case XK_Scroll_Lock: return KeySCROLL;
@@ -312,6 +319,7 @@ TKey getKeyFromKeySym (KeySym keysym)
 	case XK_KP_Add: return KeyADD;
 	case XK_KP_Subtract: return KeySUBTRACT;
 	case XK_KP_Decimal: return KeyDECIMAL;
+	case XK_KP_Separator: return KeyDECIMAL; // the decimal comma of the keypad, as on Windows
 //	case XK_period: return KeyDECIMAL;
 	case XK_KP_Divide: return KeyDIVIDE;
 	case XK_F1: return KeyF1;
@@ -336,6 +344,12 @@ TKey getKeyFromKeySym (KeySym keysym)
 	case XK_Mode_switch: return KeyMENU;
 	case XK_ISO_Level3_Shift: return KeyMENU;
 	case XK_Menu: return KeyAPPS;
+	// Japanese keyboards; without these, Zenkaku_Hankaku falls back to its keycode, the apostrophe's
+	case XK_Zenkaku_Hankaku: return KeyKANJI;
+	case XK_Kanji: return KeyKANJI;
+	case XK_Henkan_Mode: return KeyCONVERT;
+	case XK_Muhenkan: return KeyNONCONVERT;
+	case XK_Hiragana_Katakana: return KeyKANA;
 	case XK_Alt_L: return KeyMENU;
 	case XK_Alt_R: return KeyMENU;
 	case XK_space: return KeySPACE;
@@ -396,6 +410,18 @@ TKey getKeyFromKeySym (KeySym keysym)
 	break;
 	}
 	return KeyNOKEY;
+}
+
+// the key of a key event: by its keysym, then by its keycode for the keys whose keysym depends on the layout,
+// then by the keysym of its first level for the keys that give an unknown keysym with modifiers (Ctrl+Pause gives Break)
+static TKey getKeyFromKeyEvent(Display *dpy, uint keycode, KeySym keysym)
+{
+	TKey key = getKeyFromKeySym(keysym);
+	if (key == KeyNOKEY)
+		key = getKeyFromKeycode(keycode);
+	if (key == KeyNOKEY)
+		key = getKeyFromKeySym(XkbKeycodeToKeysym(dpy, keycode, 0, 0));
+	return key;
 }
 
 // check if the next pressed key is the same
@@ -506,7 +532,7 @@ bool CUnixEventEmitter::processMessage (XEvent &event, CEventServer *server)
 #endif
 
 			if (status == XLookupNone)
-				c = XLookupString(&event.xkey, Text, sizeof(Text), &k, NULL);
+				c = XLookupString(&event.xkey, Text, sizeof(Text), &k, nullptr);
 		}
 		else
 		{
@@ -516,9 +542,7 @@ bool CUnixEventEmitter::processMessage (XEvent &event, CEventServer *server)
 		// send CEventKeyDown event only if keyCode is defined
 		if (keyCode)
 		{
-			TKey key = getKeyFromKeySym(k);
-			if (key == KeyNOKEY)
-				key = getKeyFromKeycode(keyCode);
+			TKey key = getKeyFromKeyEvent(_dpy, keyCode, k);
 
 			// search for key in map
 			std::map<TKey, bool>::const_iterator it = _PressedKeys.find(key);
@@ -528,6 +552,9 @@ bool CUnixEventEmitter::processMessage (XEvent &event, CEventServer *server)
 
 			server->postEvent (new CEventKeyDown (key, getKeyButton(event.xbutton.state), firstTime, this));
 			_PressedKeys[key] = true;
+
+			// its release reports the same key, whatever the modifiers are by then
+			m_PressedKeycodes[keyCode] = key;
 
 			// don't send a control character when deleting
 			if (key == KeyDELETE) c = 0;
@@ -565,13 +592,20 @@ bool CUnixEventEmitter::processMessage (XEvent &event, CEventServer *server)
 	{
 		if (!keyRepeat(_dpy, &event))
 		{
-			KeySym k;
-			// only need to get correct KeySym
-			int c = XLookupString(&event.xkey, NULL, 0, &k, NULL);
-
-			TKey key = getKeyFromKeySym(k);
-			if(key == KeyNOKEY)
-				key = getKeyFromKeycode(event.xkey.keycode);
+			// the key its press reported: looked up again, the keysym follows the modifiers held now,
+			// and a Shift key that gives Caps_Lock at its second level would be released as Caps Lock
+			TKey key;
+			std::map<uint, TKey>::iterator it = m_PressedKeycodes.find(event.xkey.keycode);
+			if (it != m_PressedKeycodes.end())
+			{
+				key = it->second;
+				m_PressedKeycodes.erase(it);
+			}
+			else
+			{
+				// pressed before the window had the focus: the key without modifiers
+				key = getKeyFromKeyEvent(_dpy, event.xkey.keycode, XkbKeycodeToKeysym(_dpy, event.xkey.keycode, 0, 0));
+			}
 
 			server->postEvent (new CEventKeyUp (key, getKeyButton(event.xbutton.state), this));
 			_PressedKeys[key] = false;
@@ -644,7 +678,7 @@ bool CUnixEventEmitter::processMessage (XEvent &event, CEventServer *server)
 		// some applications are sending ATOM and other TARGETS
 		if (target == XA_TARGETS || target == XA_ATOM)
 		{
-			Atom *supportedTargets = NULL;
+			Atom *supportedTargets = nullptr;
 
 			// list NeL selection properties
 			if (XGetWindowProperty(_dpy, _win, XA_NEL_SEL, 0, XMaxRequestSize(_dpy), False, AnyPropertyType, &actualType, &actualFormat, &nitems, &bytesLeft, (unsigned char**)&supportedTargets) != Success)
@@ -693,7 +727,7 @@ bool CUnixEventEmitter::processMessage (XEvent &event, CEventServer *server)
 		}
 		else if (target == XA_UTF8_STRING || target == XA_STRING)
 		{
-			uint8 *data = NULL;
+			uint8 *data = nullptr;
 
 			// get selection
 			if (XGetWindowProperty(_dpy, _win, XA_NEL_SEL, 0, XMaxRequestSize(_dpy), False, AnyPropertyType, &actualType, &actualFormat, &nitems, &bytesLeft, (unsigned char**)&data) != Success)

@@ -1,5 +1,5 @@
 // NeL - MMORPG Framework <http://dev.ryzom.com/projects/nel/>
-// Copyright (C) 2010-2020  Winch Gate Property Limited
+// Copyright (C) 2010  Winch Gate Property Limited
 //
 // This source file has been modified by the following contributors:
 // Copyright (C) 2013  Jan BOON (Kaetemi) <jan.boon@kaetemi.be>
@@ -30,6 +30,7 @@
 #include "nel/3d/scene.h"
 #include "nel/3d/vegetable_blend_layer_model.h"
 #include "nel/3d/vegetable_light_ex.h"
+#include "nel/3d/uniform_buffer.h"
 #include "nel/misc/hierarchical_timer.h"
 
 #include <algorithm>
@@ -59,7 +60,7 @@ CVegetableManager::CVegetableManager(uint maxVertexVbHardUnlit, uint maxVertexVb
 	_InstanceGroupMemory(NL3D_VEGETABLE_INSTANCE_GROUP_BLOCKSIZE),
 	_GlobalDensity(1.f),
 	_NumZSortBlendLayers(nbBlendLayers), _ZSortLayerDistMax(blendLayerDistMax),
-	_ZSortScene(NULL)
+	_ZSortScene(nullptr)
 {
 	uint	i;
 
@@ -100,15 +101,15 @@ CVegetableManager::CVegetableManager(uint maxVertexVbHardUnlit, uint maxVertexVb
 
 	// init to NULL _ZSortModelLayers.
 	_NumZSortBlendLayers= max(1U, _NumZSortBlendLayers);
-	_ZSortModelLayers.resize(_NumZSortBlendLayers, NULL);
-	_ZSortModelLayersUW.resize(_NumZSortBlendLayers, NULL);
+	_ZSortModelLayers.resize(_NumZSortBlendLayers, nullptr);
+	_ZSortModelLayersUW.resize(_NumZSortBlendLayers, nullptr);
 
 
 	// UL
 	_ULFrequency= 0;
 	_ULNVerticesToUpdate=0;
 	_ULNTotalVertices= 0;
-	_ULRootIg= NULL;
+	_ULRootIg = nullptr;
 	_ULCurrentIgRdrPass= 0;
 	_ULCurrentIgInstance= 0;
 	_ULPrecTime= 0;
@@ -120,8 +121,8 @@ CVegetableManager::CVegetableManager(uint maxVertexVbHardUnlit, uint maxVertexVb
 
 	for (uint k = 0; k < NL3D_VEGETABLE_NRDRPASS; ++k)
 	{
-		_VertexProgram[k][0] = NULL;
-		_VertexProgram[k][1] = NULL;
+		_VertexProgram[k][0] = nullptr;
+		_VertexProgram[k][1] = nullptr;
 	}
 }
 
@@ -132,8 +133,8 @@ CVegetableManager::~CVegetableManager()
 	// delete All VP
 	for(sint i=0; i <NL3D_VEGETABLE_NRDRPASS; i++)
 	{
-		_VertexProgram[i][0] = NULL; // smart ptr
-		_VertexProgram[i][1] = NULL;
+		_VertexProgram[i][0] = nullptr; // smart ptr
+		_VertexProgram[i][1] = nullptr;
 	}
 
 	// delete ZSort models.
@@ -143,12 +144,12 @@ CVegetableManager::~CVegetableManager()
 		for(uint i= 0; i<_NumZSortBlendLayers; i++)
 		{
 			_ZSortScene->deleteModel(_ZSortModelLayers[i]);
-			_ZSortModelLayers[i]= NULL;
+			_ZSortModelLayers[i] = nullptr;
 			_ZSortScene->deleteModel(_ZSortModelLayersUW[i]);
-			_ZSortModelLayersUW[i]= NULL;
+			_ZSortModelLayersUW[i] = nullptr;
 		}
 
-		_ZSortScene= NULL;
+		_ZSortScene = nullptr;
 	}
 }
 
@@ -173,8 +174,9 @@ void		CVegetableManager::createVegetableBlendLayersModels(CScene *scene)
 		_ZSortModelLayers[i]->VegetableManager= this;
 		_ZSortModelLayersUW[i]->VegetableManager= this;
 
-		// Set UnderWater layer for _ZSortModelLayersUW
-		_ZSortModelLayersUW[i]->setOrderingLayer(2);
+		// Set UnderWater layer 0 so that with reversed layer ordering (underwater camera),
+		// vegetation renders after water (layer 1) and appears on top.
+		_ZSortModelLayersUW[i]->setOrderingLayer(0);
 	}
 }
 
@@ -564,6 +566,166 @@ const char* NL3D_SimpleStartVegetableProgram=
 	MOV o[COL0].xyz, v[3];			# col.RGBA= vertex color							\n\
 ";
 
+// ***************************************************************************
+// Hand-written GLSL/UBO twin of the vegetation vertex programs, for the *unlit* render
+// passes (NL3D_VEGETABLE_RDRPASS_UNLIT, _UNLIT_2SIDED, _UNLIT_2SIDED_ZSORT) - the three that
+// this scene actually links. The lit passes stay on nelvp: they add the quaternion bend and the
+// diffuse/ambient lighting, and no scene here exercises them, so porting them would ship untested
+// shader code. Same rule as the landscape port: the body is the nelvp program translated op for
+// op, including the approximations (the LUT lerp, the RSQ-based normalisation), so the A/B against
+// the nelvp path can be pixel-exact.
+//
+// Constants live in one user UBO instead of the nelvp register file. Only the ones the unlit path
+// reads are in it; c[8] (program constants) is a compile-time constant here: the manager always
+// sets it to (0, 1, 0.5, 2), and this path only uses .y == 1 (the unlit alpha).
+struct CVegetableUBOOffsets
+{
+	sint	ViewCenter;		// c[10].xyz, camera position
+	sint	Wind;			// c[17].x = animation time
+	sint	Consts;			// x = LUT size (c[23].x), y = -1/blendTransitionDist (c[11].x)
+	sint	Lut;			// c[32..32+63]: xy = direction, zw = lerp delta
+};
+static NLMISC::CSmartPtr<CUniformBufferFormat>	s_VegetUBFormat;
+static CVegetableUBOOffsets						s_VegetUBOffsets;
+
+static void	initVegetableUBFormat()
+{
+	if (s_VegetUBFormat)
+		return;
+	CUniformBufferFormat *fmt = new CUniformBufferFormat();
+	fmt->Name = "NlVegetable";
+	s_VegetUBOffsets.ViewCenter = fmt->push("viewCenter", CUniformBufferFormat::FloatVec4);
+	s_VegetUBOffsets.Wind       = fmt->push("wind",       CUniformBufferFormat::FloatVec4);
+	s_VegetUBOffsets.Consts     = fmt->push("consts",     CUniformBufferFormat::FloatVec4);
+	s_VegetUBOffsets.Lut        = fmt->push("lut",        CUniformBufferFormat::FloatVec4, NL3D_VEGETABLE_VP_LUT_SIZE);
+	s_VegetUBFormat = fmt;
+}
+
+// The mega pixel program declares every varying it can ask for, and a linked program fails to
+// build when a fragment input has no matching vertex output - so declare the full set and write
+// only what this program produces (same list and reasoning as the landscape port).
+static const char* VegetableVPCodeGLSL_VaryingsLinked =
+	"smooth out vec4 ecPos;\n"
+	"smooth out vec4 vertexColor;\n"
+	"smooth out vec4 worldPos;\n"
+	"smooth out vec4 weight;\n"
+	"smooth out vec4 normal;\n"
+	"smooth out vec4 fog;\n"
+	"smooth out vec4 paletteSkin;\n"
+	"smooth out vec4 tangent;\n"
+	"smooth out vec4 texCoord0;\n"
+	"smooth out vec4 texCoord1;\n"
+	"smooth out vec4 texCoord2;\n"
+	"smooth out vec4 texCoord3;\n"
+	"smooth out vec4 texCoord4;\n"
+	"smooth out vec4 texCoord5;\n"
+	"smooth out vec4 texCoord6;\n"
+	"smooth out vec4 texCoord7;\n"
+	"smooth out vec4 diffuseColor;\n"
+	"smooth out vec4 specularColor;\n";
+
+static const char* VegetableVPCodeGLSL_VaryingsSSO =
+	"layout(location = 0) smooth out vec4 ecPos;\n"
+	"layout(location = 3) smooth out vec4 diffuseColor;\n"
+	"layout(location = 8) smooth out vec4 texCoord0;\n"
+	"layout(location = 9) smooth out vec4 texCoord1;\n";
+
+static const char* VegetableVPCodeGLSL_Header =
+	"#version 330\n"
+	"#extension GL_ARB_separate_shader_objects : enable\n"
+	"out gl_PerVertex { vec4 gl_Position; };\n";
+
+static const char* VegetableVPCodeGLSL_ES_Header =
+	"#version 300 es\n"
+	"precision highp float;\n"
+	"precision highp int;\n";
+
+static const char* VegetableVPCodeGLSL_Body =
+	"layout(location = 0) in vec4 v0;\n"	// pos.xyz, w = bend weight
+	"layout(location = 3) in vec4 v3;\n"	// colour (rgb), w = DLM u
+	"layout(location = 4) in vec4 v4;\n"	// colour (rgb), w = DLM v
+	"layout(location = 8) in vec2 v8;\n"	// diffuse uv
+	"layout(location = 9) in vec4 v9;\n"	// x = 1/norm factor, y = phase, z = freq factor, w = z-sort bias
+	"layout(location = 10) in vec3 v10;\n"	// tile centre
+	"\n"
+	"void main()\n"
+	"{\n"
+	"\t// --- wind bend (NL3D_FastBendProgram) ---\n"
+	"\tfloat t = wind.x * v9.z + v9.y;\n"		// MAD R0.x, c[17].x, v[9].z, v[9].y
+	"\tfloat fp = fract(t);\n"					// EXP trick: fractional part
+	"\tfloat fi = fp * consts.x;\n"				// MUL R0, R0.y, c[23].xyyy  (consts.x = 64)
+	"\tint i0 = int(floor(fi));\n"					// ARL A0.x, R0.x
+	"\tfloat fr = fi - float(i0);\n"				// EXP trick: the fractional part again
+	"\tvec4 l = lut[i0];\n"
+	"\tvec2 dir = l.xy + fr * l.zw;\n"				// MAD R0.xy, R0.y, c[A0.x+32].zwww, c[A0.x+32].xyww
+	"\n"
+	"\tvec4 R5 = vec4(dir, 0.0, 0.0) * v0.w + v0;\n"	// MAD R5, R0, v[0].w, v[0].xyzw
+	"\tfloat s = v9.x * inversesqrt(abs(dot(R5.xyz, R5.xyz)));\n"	// DP3/RSQ/MUL
+	"\tR5 = vec4(s, s, s, 0.0) * R5 + vec4(v10, 1.0);\n"	// MAD R5, R0.xxxw, R5, v[10]
+	"\tR5 -= viewCenter;\n"						// ADD R5, R5, -c[10]
+	"\n"
+	"\tgl_Position = modelViewProjection * R5;\n"
+	"#ifdef NL_VEG_ZSORT\n"
+	"\t// UnlitAlphaBlend: alpha fades with distance to the viewer\n"
+	"\tdiffuseColor = vec4(v3.rgb, length(R5.xyz) * consts.y + v9.w);\n"
+	"#else\n"
+	"\t// Unlit: vertex colour, alpha = c[8].y == 1\n"
+	"\tdiffuseColor = vec4(v3.rgb, 1.0);\n"
+	"#endif\n"
+	"\t// VP1.0 defines the colour outputs as clamped; the converter emits this clamp and the\n"
+	"\t// z-sort fade alpha (length * consts.y + v9.w) exceeds 1 without it, which lets extra\n"
+	"\t// alpha-tested grass through. Measured: dropping it alone turned a pixel-exact port\n"
+	"\t// into |delta| > 12 = 11385 px against the nelvp frame.\n"
+	"\tdiffuseColor = clamp(diffuseColor, 0.0, 1.0);\n"
+	"\t// TEX0 = (v[3].w, v[4].w, 0, 1): the dynamic lightmap uv, built from two colour channels\n"
+	"\ttexCoord0 = vec4(v3.w, v4.w, 0.0, 1.0);\n"
+	"\ttexCoord1 = vec4(v8, 0.0, 1.0);\n"
+	"\t// fog is computed per fragment by the mega pixel program from ecPos (the nelvp o[FOGC]\n"
+	"\t// output is dropped by the converter, so this matches the nelvp path)\n"
+	"\tecPos = inverseProjectionBasis * gl_Position;\n"
+	"}\n";
+
+// ***************************************************************************
+/** The nelvp source of a vegetation vertex program, for one render pass.
+
+	Split out of CVertexProgramVeget's constructor so nelvp_glsl_test converts the *same*
+	strings the manager ships: these programs are the fallback path for drivers without
+	builtin-UBO support (and for the lit passes everywhere), and a converter regression in
+	them would silently remove that fallback.
+*/
+void	buildVegetableNelvpSource(uint vpType, bool fogEnabled, std::string &vpgram)
+{
+	// start always with Bend.
+	if( vpType==NL3D_VEGETABLE_RDRPASS_LIGHTED || vpType==NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED )
+		vpgram= NL3D_BendProgram;
+	else
+		vpgram= NL3D_FastBendProgram;
+
+	// combine the VP according to Type
+	switch(vpType)
+	{
+	case NL3D_VEGETABLE_RDRPASS_LIGHTED:
+	case NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED:
+		vpgram+= string(NL3D_LightedStartVegetableProgram);
+		break;
+	case NL3D_VEGETABLE_RDRPASS_UNLIT:
+	case NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED:
+		vpgram+= string(NL3D_UnlitVegetableProgram);
+		break;
+	case NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED_ZSORT:
+		vpgram+= string(NL3D_UnlitAlphaBlendVegetableProgram);
+		break;
+	}
+
+	// common end of VP
+	vpgram+= string(NL3D_CommonEndVegetableProgram);
+
+	if (fogEnabled)
+		vpgram+= string(NL3D_VegetableProgramFog);
+
+	vpgram+="\nEND\n";
+}
+
 class CVertexProgramVeget : public CVertexProgram
 {
 public:
@@ -592,8 +754,15 @@ public:
 		uint LUTSize; // 23 (value = 64)
 		uint LUT[NL3D_VEGETABLE_VP_LUT_SIZE]; // 32+
 	};
-	CVertexProgramVeget(uint vpType, bool fogEnabled)
+	CVertexProgramVeget(uint vpType, bool fogEnabled, bool useGLSL)
+		: _UseGLSL(useGLSL)
 	{
+		if (_UseGLSL)
+		{
+			buildGLSL(vpType);
+			return;
+		}
+
 		// nelvp
 		{
 			CSource *source = new CSource();
@@ -602,47 +771,19 @@ public:
 			
 			// Init the Vertex Program.
 			string	vpgram;
-			// start always with Bend.
-			if( vpType==NL3D_VEGETABLE_RDRPASS_LIGHTED || vpType==NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED )
-			{
-				source->DisplayName += "/Bend";
-				vpgram= NL3D_BendProgram;
-			}
-			else
-			{
-				source->DisplayName += "/FastBend";
-				vpgram= NL3D_FastBendProgram;
-			}
-
-			// combine the VP according to Type
+			buildVegetableNelvpSource(vpType, fogEnabled, vpgram);
+			source->DisplayName += (vpType==NL3D_VEGETABLE_RDRPASS_LIGHTED ||
+				vpType==NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED) ? "/Bend" : "/FastBend";
 			switch(vpType)
 			{
 			case NL3D_VEGETABLE_RDRPASS_LIGHTED:
-			case NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED:
-				source->DisplayName += "/Lighted";
-				vpgram+= string(NL3D_LightedStartVegetableProgram);
-				break;
+			case NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED:		source->DisplayName += "/Lighted"; break;
 			case NL3D_VEGETABLE_RDRPASS_UNLIT:
-			case NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED:
-				source->DisplayName += "/Unlit";
-				vpgram+= string(NL3D_UnlitVegetableProgram);
-				break;
-			case NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED_ZSORT:
-				source->DisplayName += "/UnlitAlphaBlend";
-				vpgram+= string(NL3D_UnlitAlphaBlendVegetableProgram);
-				break;
+			case NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED:		source->DisplayName += "/Unlit"; break;
+			case NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED_ZSORT:	source->DisplayName += "/UnlitAlphaBlend"; break;
 			}
-
-			// common end of VP
-			vpgram+= string(NL3D_CommonEndVegetableProgram);
-
 			if (fogEnabled)
-			{
 				source->DisplayName += "/Fog";
-				vpgram+= string(NL3D_VegetableProgramFog);
-			}
-
-			vpgram+="\nEND\n";
 
 			source->setSource(vpgram);
 
@@ -669,12 +810,14 @@ public:
 		}
 		// TODO_VP_GLSL
 	}
-	virtual ~CVertexProgramVeget()
+	virtual ~CVertexProgramVeget() NL_OVERRIDE
 	{
 
 	}
-	virtual void buildInfo()
+	virtual void buildInfo() NL_OVERRIDE
 	{
+		if (_UseGLSL)
+			return; // constants come from the UBO (see CVegetableManager::setupVertexProgramConstants)
 		m_Idx.ProgramConstants0 = getUniformIndex("programConstants0");
 		nlassert(m_Idx.ProgramConstants0 != std::numeric_limits<uint>::max());
 		m_Idx.DirectionalLight = getUniformIndex("directionalLight");
@@ -706,8 +849,65 @@ public:
 		}
 	}
 	const CIdx &idx() const { return m_Idx; }
+
+	/// True when this instance is the hand-written GLSL/UBO twin instead of the nelvp program.
+	bool				usesGLSL() const { return _UseGLSL; }
+	/// The constants buffer of the GLSL twin (null for the nelvp program).
+	CUniformBuffer		*getUB() const { return _UB; }
+
 private:
-	CIdx m_Idx;
+	// Build the two hand-written sources (linked 300 es and SSO 330) and the constants buffer.
+	void	buildGLSL(uint vpType)
+	{
+		initVegetableUBFormat();
+
+		// Attributes the body reads: Position, PrimaryColor, SecondaryColor, TexCoord0/1/2.
+		const uint16 vpVertexFormat =
+			CVertexBuffer::PositionFlag | CVertexBuffer::PrimaryColorFlag | CVertexBuffer::SecondaryColorFlag |
+			CVertexBuffer::TexCoord0Flag | CVertexBuffer::TexCoord1Flag | CVertexBuffer::TexCoord2Flag;
+
+		const std::string defines =
+			(vpType == NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED_ZSORT) ? "#define NL_VEG_ZSORT\n" : "";
+		const std::string name =
+			(vpType == NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED_ZSORT) ? "glsl/Veget/unlitzsort" : "glsl/Veget/unlit";
+
+		// Linked variant (GLES3 / WebGL2 and the desktop mega path): no layout() on outputs.
+		{
+			CSource *source = new CSource();
+			source->DisplayName = "glsl300esv/" + name;
+			source->Profile = IProgram::glsl300esv;
+			source->Features.OnlyUBOs = true;
+			source->Features.UsesObjectUBO = true;	// modelViewProjection
+			source->Features.UsesCameraUBO = true;	// inverseProjectionBasis, for ecPos
+			source->Features.VPVertexFormat = vpVertexFormat;
+			source->UniformBufferFormats[UBBindingVertexProgram] = s_VegetUBFormat;
+			source->setSource(std::string(VegetableVPCodeGLSL_ES_Header) + defines +
+				VegetableVPCodeGLSL_VaryingsLinked + VegetableVPCodeGLSL_Body);
+			addSource(source);
+		}
+		// SSO variant (desktop GL 3.3 core, used when a mega program fails to link). Parity with
+		// the landscape port; NOT exercised by the harness here, which always links the mega PP.
+		{
+			CSource *source = new CSource();
+			source->DisplayName = "glsl330v/" + name;
+			source->Profile = IProgram::glsl330v;
+			source->Features.OnlyUBOs = true;
+			source->Features.UsesObjectUBO = true;
+			source->Features.UsesCameraUBO = true;
+			source->Features.VPVertexFormat = vpVertexFormat;
+			source->UniformBufferFormats[UBBindingVertexProgram] = s_VegetUBFormat;
+			source->setSource(std::string(VegetableVPCodeGLSL_Header) + defines +
+				VegetableVPCodeGLSL_VaryingsSSO + VegetableVPCodeGLSL_Body);
+			addSource(source);
+		}
+
+		_UB = new CUniformBuffer();
+		_UB->Format = *s_VegetUBFormat;
+	}
+
+	CIdx							m_Idx;
+	bool							_UseGLSL;
+	NLMISC::CRefPtr<CUniformBuffer>	_UB;
 };
 
 // ***************************************************************************
@@ -715,8 +915,17 @@ void					CVegetableManager::initVertexProgram(uint vpType, bool fogEnabled)
 {
 	nlassert(_LastDriver); // update driver should have been called at least once !
 	
+	// The unlit passes (what the landscape actually draws here) get the hand-written
+	// GLSL/UBO twin when the driver can take a user UBO; everything else, and any driver that
+	// cannot, keeps the nelvp program. The lit passes are deliberately NOT ported: they add the
+	// quaternion bend and the diffuse/ambient lighting and nothing in this scene exercises them.
+	const bool useGLSL = _LastDriver->supportBuiltinUBO() &&
+		(vpType == NL3D_VEGETABLE_RDRPASS_UNLIT ||
+		 vpType == NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED ||
+		 vpType == NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED_ZSORT);
+
 	// create VP.
-	_VertexProgram[vpType][fogEnabled ? 1 : 0] = new CVertexProgramVeget(vpType, fogEnabled);
+	_VertexProgram[vpType][fogEnabled ? 1 : 0] = new CVertexProgramVeget(vpType, fogEnabled, useGLSL);
 }
 
 
@@ -841,7 +1050,7 @@ void						CVegetableManager::deleteIg(CVegetableInstanceGroup *ig)
 		_ULRootIg= ig->_ULNext;
 		// if still the same, it means that the circular list is now empty
 		if(_ULRootIg == ig)
-			_ULRootIg= NULL;
+			_ULRootIg = nullptr;
 		// Reset UL instance info.
 		_ULCurrentIgRdrPass= 0;
 		_ULCurrentIgInstance= 0;
@@ -927,7 +1136,7 @@ CVegetableShape				*CVegetableManager::getVegetableShape(const std::string &shap
 				_ShapeMap.erase (shape);
 
 				// Return NULL
-				ret = NULL;
+				ret = nullptr;
 			}
 		}
 		catch (const Exception &e)
@@ -939,7 +1148,7 @@ CVegetableShape				*CVegetableManager::getVegetableShape(const std::string &shap
 			_ShapeMap.erase (shape);
 
 			// Return NULL
-			ret = NULL;
+			ret = nullptr;
 		}
 
 		return ret;
@@ -1638,7 +1847,7 @@ void			CVegetableManager::addInstance(CVegetableInstanceGroup *ig,
 		// and update the vegetable manager.
 		_ULNTotalVertices+= numNewVertices;
 		// link at the end of the circular list: link before the current root.
-		if(_ULRootIg==NULL)
+		if(_ULRootIg == nullptr)
 			_ULRootIg= ig;
 		else
 			ig->linkBeforeUL(_ULRootIg);
@@ -1751,7 +1960,7 @@ void			CVegetableManager::swapIgRdrPassHardMode(CVegetableInstanceGroup *ig, uin
 // ***************************************************************************
 void		CVegetableManager::setGlobalDensity(float density)
 {
-	clamp(density, 0.f, 100.f);
+	clamp(density, 0.f, 1.f);
 	_GlobalDensity= density;
 }
 
@@ -1849,6 +2058,25 @@ void			CVegetableManager::unlockBuffers()
 	}
 }
 
+// ***************************************************************************
+void			CVegetableManager::setUnsynchronizedMode(bool enable)
+{
+	// Only hard allocators use UnsynchronizedWrite; soft allocators stay as-is.
+	for(uint i=0; i <CVegetableVBAllocator::VBTypeCount; i++)
+	{
+		_VBHardAllocator[i].setUnsynchronizedMode(enable);
+	}
+}
+
+// ***************************************************************************
+void			CVegetableManager::processDeferredFrees(uint64 swapBufferInFlight)
+{
+	for(uint i=0; i <CVegetableVBAllocator::VBTypeCount; i++)
+	{
+		_VBHardAllocator[i].processDeferredFrees(swapBufferInFlight);
+	}
+}
+
 
 // ***************************************************************************
 class	CSortVSB
@@ -1856,7 +2084,7 @@ class	CSortVSB
 public:
 	CVegetableSortBlock			*Sb;
 
-	CSortVSB() : Sb(NULL) {}
+	CSortVSB() : Sb(nullptr) {}
 	CSortVSB(CVegetableSortBlock *sb) : Sb(sb) {}
 
 
@@ -1874,6 +2102,29 @@ void			CVegetableManager::setupVertexProgramConstants(IDriver *driver, bool fogE
 {
 	nlassert(_ActiveVertexProgram);
 	
+
+	// Hand-written GLSL/UBO twin: one buffer holding the unlit subset of the constants, bound
+	// to the user VP binding point. The driver emits the block declaration from the format.
+	if (_ActiveVertexProgram->usesGLSL())
+	{
+		CUniformBuffer *ub = _ActiveVertexProgram->getUB();
+		nlassert(ub);
+		ub->lock();
+		ub->set(s_VegetUBOffsets.ViewCenter, _ViewCenter.x, _ViewCenter.y, _ViewCenter.z, 0.f);
+		ub->set(s_VegetUBOffsets.Wind, (float)_WindAnimTime, 0.f, 0.f, 0.f);
+		ub->set(s_VegetUBOffsets.Consts, (float)NL3D_VEGETABLE_VP_LUT_SIZE,
+			-1.f/NL3D_VEGETABLE_BLOCK_BLEND_TRANSITION_DIST, 0.f, 0.f);
+		for (uint i = 0; i < NL3D_VEGETABLE_VP_LUT_SIZE; ++i)
+		{
+			const CVector2f cur = _WindTable[i];
+			const CVector2f delta = _WindDeltaTable[i];
+			ub->set(s_VegetUBOffsets.Lut + (sint)i * 16, cur.x, cur.y, delta.x, delta.y);
+		}
+		ub->unlock();
+		driver->bindUniformBuffer(UBBindingVertexProgram, ub);
+		return;
+	}
+
 
 	// Standard
 	// setup VertexProgram constants.
@@ -1930,7 +2181,7 @@ void			CVegetableManager::render(const CVector &viewCenter, const CVector &front
 {
 	H_AUTO( NL3D_Vegetable_Render );
 
-	CVegetableClipBlock		*rootToRender= NULL;
+	CVegetableClipBlock		*rootToRender = nullptr;
 
 	// get normalized front vector.
 	CVector		frontVectorNormed= frontVector.normed();
@@ -1961,7 +2212,7 @@ void			CVegetableManager::render(const CVector &viewCenter, const CVector &front
 
 
 	// If no clip block visible, just skip!!
-	if(rootToRender==NULL)
+	if(rootToRender == nullptr)
 		return;
 
 
@@ -2063,7 +2314,7 @@ void			CVegetableManager::render(const CVector &viewCenter, const CVector &front
 	else
 	{
 		// reset stage0 (to skip it)
-		_VegetableMaterial.setTexture(0, NULL);
+		_VegetableMaterial.setTexture(0, nullptr);
 		// stage1 RGB is Diffuse * Texture
 		_VegetableMaterial.texEnvOpRGB(1, CMaterial::Modulate);
 		_VegetableMaterial.texEnvArg0RGB(1, CMaterial::Texture, CMaterial::SrcColor);
@@ -2349,8 +2600,8 @@ void			CVegetableManager::render(const CVector &viewCenter, const CVector &front
 	//--------------------
 
 	// disable VertexProgram.
-	driver->activeVertexProgram(NULL);
-	_ActiveVertexProgram = NULL;
+	driver->activeVertexProgram(nullptr);
+	_ActiveVertexProgram = nullptr;
 
 
 	// restore Fog.
@@ -2430,8 +2681,8 @@ uint		CVegetableManager::getNumVegetableFaceRendered() const
 void		CVegetableManager::exitRenderStateForBlendLayerModel(IDriver *driver)
 {
 	// disable VertexProgram.
-	driver->activeVertexProgram(NULL);
-	_ActiveVertexProgram = NULL;
+	driver->activeVertexProgram(nullptr);
+	_ActiveVertexProgram = nullptr;
 
 	// restore Fog.
 	driver->enableFog(_BkupFog);

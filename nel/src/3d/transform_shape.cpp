@@ -50,7 +50,7 @@ void		CTransformShape::registerBasic()
 CTransformShape::CTransformShape()
 {
 	_NumTrianglesAfterLoadBalancing= 100;
-	_CurrentLightContribution= NULL;
+	_CurrentLightContribution = nullptr;
 	_CurrentUseLocalAttenuation= false;
 	_DistMax = -1.f;
 	// By default all transformShape are LoadBalancable
@@ -112,14 +112,14 @@ uint		CTransformShape::getNumMaterial () const
 // ***************************************************************************
 const CMaterial *CTransformShape::getMaterial (uint /* materialId */) const
 {
-	return NULL;
+	return nullptr;
 }
 
 
 // ***************************************************************************
 CMaterial *CTransformShape::getMaterial (uint /* materialId */)
 {
-	return NULL;
+	return nullptr;
 }
 
 // ***************************************************************************
@@ -187,7 +187,7 @@ void	CTransformShape::traverseRender()
 			_CurrentUseLocalAttenuation= false;
 
 		// the std case is to take my model lightContribution
-		if(_AncestorSkeletonModel==NULL)
+		if(_AncestorSkeletonModel == nullptr)
 			_CurrentLightContribution= &getLightContribution();
 		// but if skinned/sticked (directly or not) to a skeleton, take its.
 		else
@@ -197,7 +197,7 @@ void	CTransformShape::traverseRender()
 	else
 	{
 		// setting NULL will disable all lights
-		_CurrentLightContribution= NULL;
+		_CurrentLightContribution = nullptr;
 		_CurrentUseLocalAttenuation= false;
 	}
 
@@ -211,7 +211,7 @@ void	CTransformShape::traverseRender()
 
 		// shape must be rendered in a CMeshBlockManager ??
 		float polygonCount = 0.f;
-		IMeshGeom	*meshGeom= NULL;
+		IMeshGeom	*meshGeom = nullptr;
 		// true only if in pass opaque
 		if( currentPassOpaque )
 			meshGeom= Shape->supportMeshBlockRendering(this, polygonCount);
@@ -286,8 +286,15 @@ void	CTransformShape::traverseLoadBalancingPass0()
 	}
 
 
-	// Then compute distance from camera.
-	float	modelDist= ( loadTrav.CamPos - *modelPos).norm();
+	// Blend of Euclidean distance and camera-plane distance.
+	// Euclidean alone penalizes characters at screen edges equally to those far ahead.
+	// Plane distance alone over-prioritizes off-screen-adjacent characters.
+	// 50/50 blend is a practical compromise.
+	CVector toModel = *modelPos - loadTrav.CamPos;
+	float euclidean = toModel.norm();
+	float plane = toModel * loadTrav.CamLook; // dot product = signed distance along view axis
+	if (plane < 0.01f) plane = 0.01f;
+	float modelDist = (euclidean + plane) * 0.5f;
 
 
 	// Get the number of triangles this model use now.

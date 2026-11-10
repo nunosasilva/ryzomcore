@@ -107,10 +107,13 @@ uint64 PSStatRender = 0;
 
 ///=====================================================================================
 /// ctor
-CParticleSystemModel::CParticleSystemModel() : _ParticleSystem(NULL),
-											   _Scene(NULL),
+CParticleSystemModel::CParticleSystemModel() : _ParticleSystem(nullptr)
+    ,
+											   _Scene(nullptr)
+    ,
 											   _EllapsedTime(0.01f),
 											   _EllapsedTimeRatio(1.f),
+											   _LastFrameId(0),
 											   _AnimType(CParticleSystem::AnimVisible),
 											   _AutoGetEllapsedTime(true),
 											   _ToolDisplayEnabled(false),
@@ -311,7 +314,7 @@ void CParticleSystemModel::releasePSPointer()
 		}
 	}
 	//
-	_ParticleSystem = NULL; // one less ref with the smart ptr
+	_ParticleSystem = nullptr; // one less ref with the smart ptr
 	#ifdef PS_FAST_ALLOC
 		CParticleSystemShape		*shape = NLMISC::safe_cast<CParticleSystemShape *>((IShape *) Shape);
 		if (shape->isShared())
@@ -664,7 +667,9 @@ void	CParticleSystemModel::doAnimate()
 		}
 		if (isAutoGetEllapsedTimeEnabled())
 		{
-			setEllapsedTime(ps->getScene()->getEllapsedTime() * getEllapsedTimeRatio());
+			// Always pass real elapsed time; CParticleSystem::step(Anim) deduplicates via frame ID
+			CScene *scene = ps->getScene();
+			setEllapsedTime(scene->getEllapsedTime() * getEllapsedTimeRatio());
 		}
 	}
 	{
@@ -676,7 +681,8 @@ void	CParticleSystemModel::doAnimate()
 		{
 			pss->_ProcessOrder.clear(); // force to eval each frame because ps could be modified
 		}
-		ps->step(CParticleSystem::Anim, delay, *pss, *this);
+		if (delay > 0.f)
+			ps->step(CParticleSystem::Anim, delay, *pss, *this);
 	}
 }
 
@@ -699,7 +705,7 @@ void	CParticleSystemModel::traverseRender()
 			NLMISC::CRGBA lighting(0, 0, 0, 255);
 			for(uint k = 0; k < NL3D_MAX_LIGHT_CONTRIBUTION; ++k)
 			{
-				if (lc.PointLight[k] == NULL) break;
+				if (lc.PointLight[k] == nullptr) break;
 				NLMISC::CRGBA currLightContrib;
 				currLightContrib.modulateFromui(lc.PointLight[k]->getDiffuse(), lc.AttFactor[k]);
 				lighting.add(lighting, currLightContrib);
@@ -791,7 +797,7 @@ void	CParticleSystemModel::traverseClip()
 		}
 
 		// special case : system sticked to a skeleton
-		if( _AncestorSkeletonModel!=NULL )
+		if( _AncestorSkeletonModel != nullptr)
 		{
 			bool visible = _AncestorSkeletonModel->isClipVisible();
 			// Special test: if we are sticked to a skeletonModel, and if we are still visible, maybe we don't have to

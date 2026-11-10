@@ -34,6 +34,7 @@
 #include "nel/3d/mesh_geom.h"
 #include "nel/3d/mrm_level_detail.h"
 #include "nel/3d/shadow_skin.h"
+#include "nel/3d/gpu_skin_vp.h"
 #include <set>
 #include <vector>
 
@@ -82,7 +83,7 @@ class	CMeshMRMSkinnedGeom : public IMeshGeom
 public:
 	/// Constructor
 	CMeshMRMSkinnedGeom();
-	~CMeshMRMSkinnedGeom();
+	~CMeshMRMSkinnedGeom() NL_OVERRIDE;
 
 	/** Build a mesh, replacing old.
 	 * this is much slower than CMeshGeom::build(), because it computes the MRM.
@@ -107,26 +108,26 @@ public:
 	// @{
 
 	/// Init instance info.
-	virtual	void	initInstance(CMeshBaseInstance *mbi);
+	virtual	void	initInstance(CMeshBaseInstance *mbi) NL_OVERRIDE;
 
 	/// clip this mesh in a driver. true if visible.
-	virtual bool	clip(const std::vector<CPlane>	&pyramid, const CMatrix &worldMatrix) ;
+	virtual bool	clip(const std::vector<CPlane>	&pyramid, const CMatrix &worldMatrix) NL_OVERRIDE ;
 
 	/// render() this mesh in a driver, given an instance and his materials.
-	virtual void	render(IDriver *drv, CTransformShape *trans, float polygonCount, uint32 rdrFlags, float globalAlpha);
+	virtual void	render(IDriver *drv, CTransformShape *trans, float polygonCount, uint32 rdrFlags, float globalAlpha) NL_OVERRIDE;
 
 	/// render() this mesh as a skin
-	virtual void	renderSkin(CTransformShape *trans, float alphaMRM);
+	virtual void	renderSkin(CTransformShape *trans, float alphaMRM) NL_OVERRIDE;
 
 	/// get an approximation of the number of triangles this instance will render for a fixed distance.
-	virtual float	getNumTriangles (float distance);
+	virtual float	getNumTriangles (float distance) NL_OVERRIDE;
 
 	/// serial this meshGeom.
-	virtual void	serial(NLMISC::IStream &f);
+	virtual void	serial(NLMISC::IStream &f) NL_OVERRIDE;
 	NLMISC_DECLARE_CLASS(CMeshMRMSkinnedGeom);
 
 	/// Scene profile
-	void	profileSceneRender(CRenderTrav *rdrTrav, CTransformShape *trans, float polygonCount, uint32 rdrFlags);
+	void	profileSceneRender(CRenderTrav *rdrTrav, CTransformShape *trans, float polygonCount, uint32 rdrFlags) NL_OVERRIDE;
 
 	// @}
 
@@ -135,7 +136,7 @@ public:
 	// @{
 
 	/// get the extended axis aligned bounding box of the mesh
-	const NLMISC::CAABBoxExt& getBoundingBox() const
+	const NLMISC::CAABBoxExt& getBoundingBox() const NL_OVERRIDE
 	{
 		return _BBox;
 	}
@@ -217,15 +218,15 @@ public:
 	/** true if this meshGeom support meshBlock rendering.
 	 *	return false if skinned/meshMorphed.
 	 */
-	virtual bool	supportMeshBlockRendering () const;
+	virtual bool	supportMeshBlockRendering () const NL_OVERRIDE;
 
-	virtual bool	sortPerMaterial() const { return false; }
-	virtual uint	getNumRdrPassesForMesh() const { return 0; }
-	virtual uint	getNumRdrPassesForInstance(CMeshBaseInstance * /* inst */) const { return 0; }
-	virtual	void	beginMesh(CMeshGeomRenderContext &/* rdrCtx */) {}
-	virtual	void	activeInstance(CMeshGeomRenderContext &/* rdrCtx */, CMeshBaseInstance * /* inst */, float /* polygonCount */, void * /* vbDst */) {}
-	virtual	void	renderPass(CMeshGeomRenderContext &/* rdrCtx */, CMeshBaseInstance * /* inst */, float /* polygonCount */, uint /* rdrPass */) {}
-	virtual	void	endMesh(CMeshGeomRenderContext &/* rdrCtx */) {}
+	virtual bool	sortPerMaterial() const NL_OVERRIDE { return false; }
+	virtual uint	getNumRdrPassesForMesh() const NL_OVERRIDE { return 0; }
+	virtual uint	getNumRdrPassesForInstance(CMeshBaseInstance * /* inst */) const NL_OVERRIDE { return 0; }
+	virtual	void	beginMesh(CMeshGeomRenderContext &/* rdrCtx */) NL_OVERRIDE {}
+	virtual	void	activeInstance(CMeshGeomRenderContext &/* rdrCtx */, CMeshBaseInstance * /* inst */, float /* polygonCount */, void * /* vbDst */) NL_OVERRIDE {}
+	virtual	void	renderPass(CMeshGeomRenderContext &/* rdrCtx */, CMeshBaseInstance * /* inst */, float /* polygonCount */, uint /* rdrPass */) NL_OVERRIDE {}
+	virtual	void	endMesh(CMeshGeomRenderContext &/* rdrCtx */) NL_OVERRIDE {}
 
 	// @}
 
@@ -242,8 +243,14 @@ public:
 	void			renderSkinGroupSpecularRdrPass(CMeshMRMSkinnedInstance	*mi, uint rdrPassId);
 	// @}
 
+	/// \name GPU Skinning Rendering
+	// @{
+	bool			supportGPUSkinning() const { return _GPUSkinBuilt; }
+	void			renderGPUSkin(CMeshMRMSkinnedInstance *mi, float alphaMRM, CSkeletonModel *skeleton);
+	// @}
+
 	// Is this mesh Geom has a VertexProgram bound?
-	virtual bool	hasMeshVertexProgram() const {return false;}
+	virtual bool	hasMeshVertexProgram() const NL_OVERRIDE {return false;}
 
 	/// \name ShadowMap Skin rendering
 	// @{
@@ -255,6 +262,14 @@ public:
 
 	/// Render the ShadowSkin (SkinGroup like)
 	bool			supportShadowSkinGrouping() const {return _SupportShadowSkinGrouping;}
+
+	/** True iff compileRunTime completed successfully after build (i.e. the mesh fits in the
+	 *  skin-manager fixed VB — post-MRM vertex count < NL3D_MESH_SKIN_MANAGER_MAXVERTICES).
+	 *  Callers of build() should check this and, if false, discard the CMeshMRMSkinned and
+	 *  re-build the mesh through CMeshMRM instead (or ask the artist to author LOD_MRM=0 /
+	 *  split the geometry). Not for engine render-time gating — this class assumes the check
+	 *  passes; the accessor exists for pipeline tools that need to react before shipping. */
+	bool			isRuntimeCompiled() const { return _RuntimeCompiled; }
 	sint			renderShadowSkinGeom(CMeshMRMSkinnedInstance	*mi, uint remainingVertices, uint8 *vbDest);
 	void			renderShadowSkinPrimitives(CMeshMRMSkinnedInstance	*mi, CMaterial &castMat, IDriver *drv, uint baseVertex);
 
@@ -459,7 +474,7 @@ public:
 		const CPackedVertex	*getPackedVertices() const
 		{
 			if (_PackedBuffer.empty())
-				return NULL;
+				return nullptr;
 			else
 				return &(_PackedBuffer[0]);
 		}
@@ -468,7 +483,7 @@ public:
 		CPackedVertex	*getPackedVertices()
 		{
 			if (_PackedBuffer.empty())
-				return NULL;
+				return nullptr;
 			else
 				return &(_PackedBuffer[0]);
 		}
@@ -542,6 +557,35 @@ private:
 	// @{
 	CShadowSkin						_ShadowSkin;
 	bool							_SupportShadowSkinGrouping;
+	// @}
+
+	/// Set by compileRunTime; false iff the post-MRM VB exceeds NL3D_MESH_SKIN_MANAGER_MAXVERTICES
+	/// (which would break skin-grouping at render time). See isRuntimeCompiled() on the outer
+	/// CMeshMRMSkinned for how the pipeline uses this. Defaults to false pre-build.
+	bool							_RuntimeCompiled;
+
+	/// \name GPU Skinning
+	// @{
+
+	/// GPU skinning vertex buffer (bind-pose data + morph targets). Immutable once built.
+	CVertexBuffer					_GPUSkinVB;
+	/// GPU skinning combined index buffer for all LODs. Immutable once built.
+	CIndexBuffer					_GPUSkinIB;
+	/// True once _GPUSkinVB and _GPUSkinIB are built.
+	bool							_GPUSkinBuilt;
+	/// Per-LOD per-pass info for the GPU IB.
+	struct GPULodPass
+	{
+		uint32 IBOffset;	///< First index in _GPUSkinIB
+		uint32 IBCount;		///< Number of indices
+	};
+	/// _GPULodPasses[lodId][passId]
+	std::vector<std::vector<GPULodPass>>	_GPULodPasses;
+
+	/// Build the GPU skinning VB and IB from the packed vertex data.
+	/// Called after computeBonesId() (bone indices already remapped).
+	void	buildGPUSkinVB();
+
 	// @}
 
 private:
@@ -654,6 +698,12 @@ public:
 	 */
 	void			optimizeMaterialUsage(std::vector<sint> &remap);
 
+	/** True iff build() completed the runtime compilation step (the post-MRM VB fits in the
+	 *  skin-manager fixed VB, NL3D_MESH_SKIN_MANAGER_MAXVERTICES). If false the mesh cannot
+	 *  ship as CMeshMRMSkinned — the caller should discard and re-build through CMeshMRM.
+	 *  isCompatible() is a pre-flight input-size check; MRM growth can violate the invariant
+	 *  after a passing pre-check, so callers must consult this flag AFTER build(). */
+	bool			isRuntimeCompiled() const { return _MeshMRMGeom.isRuntimeCompiled(); }
 
 	/// Compute skinning id
 	void			computeBonesId (CSkeletonModel *skeleton);
@@ -673,26 +723,26 @@ public:
 	// @{
 
 	/// Create a CMeshInstance, which contains materials.
-	virtual	CTransformShape		*createInstance(CScene &scene);
+	virtual	CTransformShape		*createInstance(CScene &scene) NL_OVERRIDE;
 
 	/// clip this mesh in a driver.
-	virtual bool	clip(const std::vector<CPlane>	&pyramid, const CMatrix &worldMatrix) ;
+	virtual bool	clip(const std::vector<CPlane>	&pyramid, const CMatrix &worldMatrix) NL_OVERRIDE ;
 
 	/// render() this mesh in a driver.
-	virtual void	render(IDriver *drv, CTransformShape *trans, bool passOpaque);
+	virtual void	render(IDriver *drv, CTransformShape *trans, bool passOpaque) NL_OVERRIDE;
 
 	/// get an approximation of the number of triangles this instance will render for a fixed distance.
-	virtual float	getNumTriangles (float distance);
+	virtual float	getNumTriangles (float distance) NL_OVERRIDE;
 
 	/// serial this mesh.
-	virtual void	serial(NLMISC::IStream &f);
+	virtual void	serial(NLMISC::IStream &f) NL_OVERRIDE;
 	NLMISC_DECLARE_CLASS(CMeshMRMSkinned);
 
 	/// Get bbox.
-	virtual void	getAABBox(NLMISC::CAABBox &bbox) const {bbox= getBoundingBox().getAABBox();}
+	virtual void	getAABBox(NLMISC::CAABBox &bbox) const NL_OVERRIDE {bbox= getBoundingBox().getAABBox();}
 
 	/// profiling
-	virtual void	profileSceneRender(CRenderTrav *rdrTrav, CTransformShape *trans, bool opaquePass);
+	virtual void	profileSceneRender(CRenderTrav *rdrTrav, CTransformShape *trans, bool opaquePass) NL_OVERRIDE;
 
 	// @}
 
@@ -748,7 +798,7 @@ public:
 
 	/// \name Mesh Block Render Interface
 	// @{
-	virtual IMeshGeom	*supportMeshBlockRendering (CTransformShape *trans, float &polygonCount ) const;
+	virtual IMeshGeom	*supportMeshBlockRendering (CTransformShape *trans, float &polygonCount ) const NL_OVERRIDE;
 	// @}
 
 

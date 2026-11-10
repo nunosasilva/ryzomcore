@@ -1,5 +1,5 @@
 // NeL - MMORPG Framework <http://dev.ryzom.com/projects/nel/>
-// Copyright (C) 2010  Winch Gate Property Limited
+// Copyright (C) 2010-2021  Winch Gate Property Limited
 //
 // This source file has been modified by the following contributors:
 // Copyright (C) 2010  Matt RAYKOWSKI (sfb) <matt.raykowski@gmail.com>
@@ -132,7 +132,7 @@ CDriverUser::CDriverUser (uintptr_t windowIcon, TDriver driver, emptyProc exitFu
 
 	NL3D::init3d();
 
-	_Driver = NULL;
+	_Driver = nullptr;
 
 	// Create/Init Driver.
 #if defined(NL_OS_WINDOWS)
@@ -145,6 +145,12 @@ CDriverUser::CDriverUser (uintptr_t windowIcon, TDriver driver, emptyProc exitFu
 
 	if (!_Driver && driver == OpenGlEs)
 		_Driver= CDRU::createGlEsDriver();
+
+	if( !_Driver && driver == OpenGl3 )
+		_Driver = CDRU::createGl3Driver();
+
+	if( !_Driver && driver == OpenGlEs3 )
+		_Driver = CDRU::createGlEs3Driver();
 
 	nlassert(_Driver);
 	_Driver->init (windowIcon, exitFunc);
@@ -165,13 +171,13 @@ CDriverUser::CDriverUser (uintptr_t windowIcon, TDriver driver, emptyProc exitFu
 	_VBUv.setNumVertices(4);
 	_VBColorUv.setNumVertices(4);
 	// memory management
-	_VBFlat.setPreferredMemory(CVertexBuffer::RAMVolatile, false);
-	_VBColor.setPreferredMemory(CVertexBuffer::RAMVolatile, false);
-	_VBUv.setPreferredMemory(CVertexBuffer::RAMVolatile, false);
-	_VBColorUv.setPreferredMemory(CVertexBuffer::RAMVolatile, false);
-	_VBQuadsColUv.setPreferredMemory (CVertexBuffer::RAMVolatile, false);
-	_VBTrisColUv.setPreferredMemory (CVertexBuffer::RAMVolatile, false);
-	_VBQuadsColUv2.setPreferredMemory (CVertexBuffer::RAMVolatile, false);
+	_VBFlat.setBufferUsage(CVertexBuffer::SmallStream, false);
+	_VBColor.setBufferUsage(CVertexBuffer::SmallStream, false);
+	_VBUv.setBufferUsage(CVertexBuffer::SmallStream, false);
+	_VBColorUv.setBufferUsage(CVertexBuffer::SmallStream, false);
+	_VBQuadsColUv.setBufferUsage (CVertexBuffer::SmallStream, false);
+	_VBTrisColUv.setBufferUsage (CVertexBuffer::SmallStream, false);
+	_VBQuadsColUv2.setBufferUsage (CVertexBuffer::SmallStream, false);
 	// names
 	_VBFlat.setName("_VBFlat");
 	_VBColor.setName("_VBColor");
@@ -194,7 +200,7 @@ CDriverUser::CDriverUser (uintptr_t windowIcon, TDriver driver, emptyProc exitFu
 	_RenderTargetManager.m_Driver = this;
 	_ShapeBank._DriverUser = this;
 
-	_EffectRenderTarget = NULL;
+	_EffectRenderTarget = nullptr;
 
 	NL_SET_IB_NAME(_PBLine, "CDriverUser::_PBLine");
 	NL_SET_IB_NAME(_PBTri, "CDriverUser::_PBTri");
@@ -205,7 +211,7 @@ CDriverUser::~CDriverUser()
 	release();
 
 	delete _Driver;
-	_Driver= NULL;
+	_Driver = nullptr;
 }
 
 // ***************************************************************************
@@ -1351,8 +1357,7 @@ void			CDriverUser::clearBuffers(CRGBA col)
 	NL3D_HAUTO_CLEAR_DRIVER;
 
 	_Driver->clear2D(col);
-	_Driver->clearZBuffer();
-	_Driver->clearStencilBuffer();
+	_Driver->clearDepthStencil();
 }
 // ***************************************************************************
 void			CDriverUser::swapBuffers()
@@ -1361,6 +1366,12 @@ void			CDriverUser::swapBuffers()
 
 	_Driver->swapBuffers();
 	_RenderTargetManager.cleanup();
+}
+
+// ***************************************************************************
+bool CDriverUser::isFrameReady()
+{
+	return _Driver->isFrameReady();
 }
 
 // ***************************************************************************
@@ -1399,6 +1410,13 @@ void			CDriverUser::setupFog(float start, float end, CRGBA color)
 	NL3D_HAUTO_UI_DRIVER;
 
 	_Driver->setupFog(start, end, color);
+}
+// ***************************************************************************
+void			CDriverUser::setupFogMode(uint mode, float density)
+{
+	NL3D_HAUTO_UI_DRIVER;
+
+	_Driver->setupFogMode((IDriver::TFogMode)mode, density);
 }
 
 
@@ -1513,6 +1531,12 @@ void			CDriverUser::forceTextureResize(uint divisor)
 	NL3D_HAUTO_UI_DRIVER;
 
 	_Driver->forceTextureResize(divisor);
+}
+bool			CDriverUser::supportMonitorColorProperties () const
+{
+	NL3D_HAUTO_UI_DRIVER;
+
+	return _Driver->supportMonitorColorProperties ();
 }
 bool			CDriverUser::setMonitorColorProperties (const CMonitorColorProperties &properties)
 {
@@ -1799,6 +1823,22 @@ bool CDriverUser::supportBloomEffect() const
 }
 
 // ***************************************************************************
+bool CDriverUser::supportGPUSkinning() const
+{
+	NL3D_HAUTO_UI_DRIVER
+
+	return _Driver->supportVertexProgram(CVertexProgram::glsl3vi) && _Driver->supportLargeUBOArrays();
+}
+
+// ***************************************************************************
+bool CDriverUser::supportLargeUBOArrays() const
+{
+	NL3D_HAUTO_UI_DRIVER
+
+	return _Driver->supportLargeUBOArrays();
+}
+
+// ***************************************************************************
 
 void CDriverUser::startBench (bool wantStandardDeviation, bool quick, bool reset)
 {
@@ -1905,6 +1945,20 @@ void CDriverUser::stencilMask(uint mask)
 }
 
 // ***************************************************************************
+void CDriverUser::enableClipPlane(uint index, bool enable)
+{
+	NL3D_HAUTO_UI_DRIVER
+	_Driver->enableClipPlane(index, enable);
+}
+
+// ***************************************************************************
+void CDriverUser::setClipPlane(uint index, const NLMISC::CPlane &plane)
+{
+	NL3D_HAUTO_UI_DRIVER
+	_Driver->setClipPlane(index, plane);
+}
+
+// ***************************************************************************
 uint64 CDriverUser::getSwapBufferCounter()
 {
 	NL3D_HAUTO_UI_DRIVER
@@ -1947,7 +2001,7 @@ bool CDriverUser::stretchRect(UScene * scene, class UTexture & srcUText, NLMISC:
 		drawQuad(quad, _MatStretchText);
 		setMatrixMode3D(pCam);
 
-		_MatTextStretchInternal.setTexture(0, NULL);
+		_MatTextStretchInternal.setTexture(0, nullptr);
 		CTextureUser cu;
 		setRenderTarget(cu, 0, 0, 0, 0);
 	}
@@ -1960,7 +2014,7 @@ bool CDriverUser::setRenderTarget(class UTexture & uTex, uint32 x, uint32 y, uin
 {
 	ITexture * tex = (dynamic_cast<CTextureUser *>(&uTex))->getITexture();
 
-	if(tex!=NULL)
+	if(tex != nullptr)
 	{
 		CTextureUser cu;
 		setRenderTarget(cu);

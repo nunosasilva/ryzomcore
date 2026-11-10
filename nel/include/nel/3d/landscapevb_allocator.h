@@ -25,6 +25,7 @@
 #include "nel/3d/tessellation.h"
 #include "nel/3d/vertex_buffer.h"
 #include "nel/3d/vertex_program.h"
+#include "nel/3d/uniform_buffer.h"
 
 
 namespace NL3D
@@ -33,6 +34,9 @@ namespace NL3D
 
 class	IDriver;
 class	CVertexProgram;
+class CVertexProgramLandscapeUBO;
+class CUniformBuffer;
+class CUniformBufferFormat;
 
 
 // ***************************************************************************
@@ -92,8 +96,18 @@ public:
 	// Allocate free vertices in VB. (AGP or RAM). work with locked or unlocked buffer.
 	// NB: if reallocationOccurs(), then ALL data are lost.
 	uint			allocateVertex();
-	// Delete free vertices in VB. (AGP or RAM).
+	// Delete free vertices in VB. (AGP or RAM). In unsynchronized mode, deferred until GPU is done.
 	void			deleteVertex(uint vid);
+
+	/// \name Unsynchronized write mode (deferred freeing).
+	// @{
+	void			setUnsynchronizedMode(bool enable) { _UnsynchronizedMode = enable; }
+	bool			getUnsynchronizedMode() const { return _UnsynchronizedMode; }
+	// Process deferred frees: release vertices whose GPU frames have completed.
+	void			processDeferredFrees(uint64 swapBufferInFlight);
+	// Force reallocation of the vertex buffer at current size (for VP threshold changes).
+	void			forceReallocation();
+	// @}
 	// @}
 
 
@@ -106,6 +120,7 @@ public:
 	void			lockBuffer(CNearVertexBufferInfo &tileVB);
 	void			unlockBuffer();
 	bool			bufferLocked() const {return _BufferLocked;}
+	CVertexBuffer	&getVertexBuffer() { return _VB; }
 
 	/** activate the VB or the VBHard in Driver setuped. nlassert if driver is NULL or if buffer is locked.
 	 * If vertexProgram possible, activate the vertexProgram too.
@@ -114,6 +129,29 @@ public:
 	void			activate(uint vpId);
 	void			activateVP(uint vpId);
 	inline CVertexProgramLandscape *getVP(uint vpId) const { return _VertexProgram[vpId]; }
+
+	/// \name UBO based GLSL landscape vertex program (GL3 driver only).
+	// @{
+	// True if the hand-written GLSL/UBO program is active for that vpId (instead of
+	// the nelvp one). Callers must then feed the NlLandscape UBO, not individual
+	// uniforms. vpId 1 exists only for the Tile type (the lightmap pass).
+	bool			isUBOVertexProgram(uint vpId) const { return _VertexProgramUBO[vpId] != 0; }
+	CVertexProgramLandscapeUBO *getUBOVP(uint vpId) const { return _VertexProgramUBO[vpId]; }
+	// The shared UBO holding refineCenter/tileDist/pzbModelPosition, NULL if not active.
+	CUniformBuffer *getUBOBuffer() const { return _LandscapeUB; }
+
+	// UBO member offsets (in bytes) in the NlLandscape UBO, filled by the program ctor.
+	struct CLandscapeUBOOffsets
+	{
+		sint RefineCenter;
+		sint TileDist;
+		sint PZBModelPosition;
+	};
+	static const CLandscapeUBOOffsets &uboOffsets();
+	// Shared UBO format (std140 layout of NlLandscape), built by the VP ctor.
+	static NLMISC::CSmartPtr<CUniformBufferFormat> _UBFormat;
+	static CLandscapeUBOOffsets _UBOOffsets;
+	// @}
 	// @}
 
 
@@ -135,6 +173,15 @@ private:
 	std::vector<uint>			_VertexFreeMemory;
 	std::vector<CVertexInfo>	_VertexInfos;
 	uint						_NumVerticesAllocated;
+
+	// Unsynchronized write mode: deferred freeing until GPU is done.
+	bool						_UnsynchronizedMode;
+	struct SDeferredFree
+	{
+		uint	VertexId;
+		uint64	FrameCounter;
+	};
+	std::vector<SDeferredFree>	_DeferredFreeVertices;
 
 	class CFarVertexBufferInfo	*_LastFarVB;
 	class CNearVertexBufferInfo	*_LastNearVB;
@@ -163,11 +210,56 @@ public:
 	// Vertex Program , NULL if not enabled.
 private:
 	NLMISC::CSmartPtr<CVertexProgramLandscape> _VertexProgram[MaxVertexProgram];
+	// Hand-written GLSL/UBO twin programs (Tile only). NULL on drivers without UBO support.
+	NLMISC::CSmartPtr<CVertexProgramLandscapeUBO> _VertexProgramUBO[MaxVertexProgram];
+	// Shared UBO for the landscape VP data (set-and-discard per draw call).
+	NLMISC::CRefPtr<CUniformBuffer> _LandscapeUB;
 	void				deleteVertexProgram();
 	void				setupVBFormatAndVertexProgram(bool withVertexProgram);
+		// Builds the hand-written GLSL programs + the shared NlLandscape UBO for this
+		// allocator. Called from all three type branches of setupVBFormatAndVertexProgram
+		// when the driver supports UBOs; 'withLightMapVariant' is true only for Tile.
+		void				setupUBOPrograms(bool withLightMapVariant);
 	// @}
 
 };
+
+// ***************************************************************************
+/**
+ * Hand-written GLSL landscape vertex program: Far0, Far1 and Tile (plus the Tile
+ * lightmap variant), replacing the auto-converted nelvp for each of them.
+ *
+ * Same job as the nelvp program of the same type (geomorph blend + projection + uv
+ * copy, plus the far-tile alpha fade for Far1), but it reads its data from a user
+ * UBO (binding UBBindingVertexProgram, 'NlLandscape') instead of individual named
+ * uniforms, following the CVertexProgramWindTreeUBO precedent. modelViewProjection
+ * and the fog basis come from the builtin NlModel/NlCamera UBOs, so only landscape
+ * specific data is in our own block. The nelvp 'o[FOGC]' output is dropped: the GL3
+ * mega pixel program computes fog per fragment from ecPos.
+ *
+ * The type only changes the END block of the nelvp source, so one GLSL body plus
+ * two compile-time switches (NL_LANDSCAPE_LIGHTMAP, NL_LANDSCAPE_FAR1) covers all
+ * four variants. Far0 and Tile share the body verbatim - NL3D_LandscapeFar0EndProgram
+ * and NL3D_LandscapeTileEndProgram are instruction-for-instruction identical.
+ */
+class CVertexProgramLandscapeUBO : public CVertexProgram
+{
+public:
+	struct CIdx
+	{
+		uint ProgramConstants0;
+		uint RefineCenter;
+		uint TileDist;
+		uint PZBModelPosition;
+	};
+	CVertexProgramLandscapeUBO(CLandscapeVBAllocator::TType type, bool lightMap = false);
+	virtual ~CVertexProgramLandscapeUBO() NL_OVERRIDE { }
+	virtual void buildInfo() NL_OVERRIDE;
+public:
+	const CIdx &idx() const { return m_Idx; }
+	CIdx m_Idx;
+};
+
 
 class CVertexProgramLandscape : public CVertexProgram
 {
@@ -180,8 +272,8 @@ public:
 		uint PZBModelPosition;
 	};
 	CVertexProgramLandscape(CLandscapeVBAllocator::TType type, bool lightMap = false);
-	virtual ~CVertexProgramLandscape() { }
-	virtual void buildInfo();
+	virtual ~CVertexProgramLandscape() NL_OVERRIDE { }
+	virtual void buildInfo() NL_OVERRIDE;
 public:
 	const CIdx &idx() const { return m_Idx; }
 	CIdx m_Idx;

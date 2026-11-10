@@ -1,6 +1,9 @@
 // NeL - MMORPG Framework <http://dev.ryzom.com/projects/nel/>
 // Copyright (C) 2010  Winch Gate Property Limited
 //
+// This source file has been modified by the following contributors:
+// Copyright (C) 2023  Jan BOON (Kaetemi) <jan.boon@kaetemi.be>
+//
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
 // published by the Free Software Foundation, either version 3 of the
@@ -549,8 +552,8 @@ void CTextureFar::rebuildPatch (const CVector2s texturePos, const CPatchIdent &p
 
 	// ** Fill the struct for the tile fill method for each layers
 	NL3D_CComputeTileFar TileFar;
-	TileFar.SrcDiffusePixels = NULL;
-	TileFar.SrcAdditivePixels = NULL;
+	TileFar.SrcDiffusePixels = nullptr;
+	TileFar.SrcAdditivePixels = nullptr;
 	TileFar.SrcDeltaX = 0;
 	TileFar.SrcDeltaY = 0;
 	TileFar.AsmMMX= false;
@@ -634,7 +637,7 @@ void CTextureFar::rebuildPatch (const CVector2s texturePos, const CPatchIdent &p
 					const CTileFarBank::CTileFar*	pTile=_Bank->getTile (tile);
 
 					// This pointer must not be null, else the farBank is not valid!
-					if (pTile==NULL)
+					if (pTile == nullptr)
 						nlwarning ("FarBank is not valid!");
 
 					// If the tile exist
@@ -643,12 +646,23 @@ void CTextureFar::rebuildPatch (const CVector2s texturePos, const CPatchIdent &p
 						// Tile exist ?
 						if (pTile->isFill (CTileFarBank::diffuse))
 						{
+							// The far bank is read from a file: the tile must hold every pixel read below for this order (a
+							// 256x256 tile holds four 128x128 ones)
+							uint nbSourcePixels = tileSize * tileSize * (is256x256 ? 4 : 1);
+							if (pTile->getSize(CTileFarBank::diffuse, orderX) < nbSourcePixels
+							    || (pTile->isFill(CTileFarBank::additive) && pTile->getSize(CTileFarBank::additive, orderX) < nbSourcePixels))
+							{
+								nlwarning("ASSET ERROR: far bank tile %d is too small for a %s tile at order %d (needs %u pixels)", tile, is256x256 ? "256x256" : "128x128", (sint)orderX, nbSourcePixels);
+								// Stop, do not read outside of the tile
+								break;
+							}
+
 							// Get rotation of the tile in this layer
 							sint nRot=tileElm.getTileOrient(l);
 
 							// Source pointer
 							const CRGBA*	pSrcDiffusePixels=pTile->getPixels (CTileFarBank::diffuse, orderX);
-							const CRGBA*	pSrcAdditivePixels=NULL;
+							const CRGBA*	pSrcAdditivePixels = nullptr;
 
 							// Additive ?
 							if (pTile->isFill (CTileFarBank::additive))
@@ -684,16 +698,6 @@ void CTextureFar::rebuildPatch (const CVector2s texturePos, const CPatchIdent &p
 							{
 								// No, 128
 								sourceSize=tileSize;
-							}
-
-							// The far bank is read from a file: the tile must hold every pixel read below for this order
-							uint nbSourcePixels=(uint)sourceSize*(uint)sourceSize;
-							if (pTile->getSize (CTileFarBank::diffuse, orderX)<nbSourcePixels
-								|| (bAdditive && pTile->getSize (CTileFarBank::additive, orderX)<nbSourcePixels))
-							{
-								nlwarning ("FarBank tile %d is too small for order %d (needs %u pixels)", tile, (sint)orderX, nbSourcePixels);
-								// Stop, do not read outside of the tile
-								break;
 							}
 
 							// Compute offset and deltas
@@ -1962,8 +1966,8 @@ void NL3D_drawFarTileInFarTextureAlpha (const NL3D_CComputeTileFar* pTileFar)
 			for (x=0; x<pTileFar->Size; x++)
 			{
 				// Read and write a pixel
-				register uint alpha=pSrcLine->A;
-				register uint oneLessAlpha=255-pSrcLine->A;
+				NL_REGISTER uint alpha=pSrcLine->A;
+				NL_REGISTER uint oneLessAlpha=255-pSrcLine->A;
 				pDstLine->R=(uint8)(((((uint)pSrcLine->R*(uint)pSrcLightingLine->R)>>8)*alpha+(uint)pDstLine->R*oneLessAlpha)>>8);
 				pDstLine->G=(uint8)(((((uint)pSrcLine->G*(uint)pSrcLightingLine->G)>>8)*alpha+(uint)pDstLine->G*oneLessAlpha)>>8);
 				pDstLine->B=(uint8)(((((uint)pSrcLine->B*(uint)pSrcLightingLine->B)>>8)*alpha+(uint)pDstLine->B*oneLessAlpha)>>8);
@@ -2091,8 +2095,8 @@ void NL3D_drawFarTileInFarTextureAdditiveAlpha (const NL3D_CComputeTileFar* pTil
 		for (x=0; x<pTileFar->Size; x++)
 		{
 			// Read and write a pixel
-			register uint alpha=pSrcLine->A;
-			register uint oneLessAlpha=255-pSrcLine->A;
+			NL_REGISTER uint alpha=pSrcLine->A;
+			NL_REGISTER uint oneLessAlpha=255-pSrcLine->A;
 
 			// Read and write a pixel
 			uint nTmp=(((uint)pSrcLine->R*(uint)pSrcLightingLine->R)>>8)+(uint)pSrcAddLine->R;

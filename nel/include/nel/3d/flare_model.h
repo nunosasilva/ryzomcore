@@ -36,21 +36,21 @@ class CMesh;
 class CFlareModel : public CTransformShape
 {
 public:
-	enum { MaxNumContext = 4 };
+	enum { MaxNumContext = 8 }; // see CScene flare context allocation
 	enum { OcclusionTestFrameDelay = 2 }; // number of frame to wait before occlusion result is collected
 	/// Constructor
 	CFlareModel();
 	// dtor
-	~CFlareModel();
+	~CFlareModel() NL_OVERRIDE;
 	// register this model
 	static void registerBasic();
 	static CTransform *creator() { return new CFlareModel; }
 	/// \name CTransform traverse specialisation
 	// @{
-	virtual void	traverseRender();
+	virtual void	traverseRender() NL_OVERRIDE;
 	// @}
 	// From CTransform
-	virtual	bool isFlare() const { return true; }
+	virtual	bool isFlare() const NL_OVERRIDE { return true; }
 	// Debugging aid : if an occlusion test mesh is used, display it using the current material
 	void renderOcclusionTestMesh(IDriver &drv);
 private:
@@ -63,10 +63,10 @@ private:
 	uint64					 _LastRenderIntervalBegin[MaxNumContext]; // Interval of frames during which this flare was traversed for render
 	uint64					 _LastRenderIntervalEnd[MaxNumContext];
 	uint64					 _NumFrameForOcclusionQuery[MaxNumContext]; // number of frames that were necessary to get the occlusion query result
-	static CMaterial		 _OcclusionQueryMaterial;
-	static CMaterial		 _DrawQueryMaterial;
+	static CMaterial		 _OcclusionQueryMaterial; // STATIC GPU RESOURCE: Blocks multiple driver instances
+	static CMaterial		 _DrawQueryMaterial; // STATIC GPU RESOURCE: Blocks multiple driver instances
 	static bool				 _OcclusionQuerySettuped;
-	static CVertexBuffer	 _OcclusionQueryVB;
+	static CVertexBuffer	 _OcclusionQueryVB; // STATIC GPU RESOURCE: Blocks multiple driver instances
 private:
 	void resetOcclusionQuerries();
 	// Issue an occlusion query with the given mesh to get the visibility ratio

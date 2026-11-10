@@ -74,16 +74,19 @@ public:
 public:
 	/// Constructor
 	CTargetAnimCtrl();
-	virtual ~CTargetAnimCtrl();
+	virtual ~CTargetAnimCtrl() NL_OVERRIDE;
 
 	/// Called at compute() time.
-	virtual	void		execute(CSkeletonModel *model, CBone *bone);
+	virtual	void		execute(CSkeletonModel *model, CBone *bone) NL_OVERRIDE;
 
 
 private:
 
 	/// The last rotation computed (in LocalSkeleton Space). Used to smooth transition
 	NLMISC::CQuat		_LastLSRotation;
+
+	/// Last frame id when rotation was accumulated (avoid double-accumulation in stereo)
+	uint64				_LastFrameId;
 
 	/// This tells that a Enable/Disable transition is in progress.
 	bool				_LastEnabled;

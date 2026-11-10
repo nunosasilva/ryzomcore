@@ -78,23 +78,27 @@ CWaterEnvMap::CWaterEnvMap()
 	_LastRenderTime = -1;
 	_StartRenderTime = -1;
 	_Alpha = 255;
+	_D3DConvention = false;
 }
 
 // *******************************************************************************
 void CWaterEnvMap::init(uint cubeMapSize, uint projection2DSize, TGlobalAnimationTime updateTime, IDriver &driver)
 {
+	// The flatten VB lookup directions are built for GL cubemap convention (-Z = forward).
+	// On drivers where +Z = forward (D3D), we swap positive_y/negative_y render target faces to compensate.
+	_D3DConvention = driver.cubemapZPositiveForward();
 	// Allocate cube map
 	// a cubic texture with no sharing allowed
 	class CTextureCubeUnshared : public CTextureCube
 	{
 	public:
-		virtual bool supportSharing() const {return false;}
-		virtual uint32 getWidth(uint32 numMipMap = 0) const
+		virtual bool supportSharing() const NL_OVERRIDE {return false;}
+		virtual uint32 getWidth(uint32 numMipMap = 0) const NL_OVERRIDE
 		{
 			nlassert(numMipMap == 0);
 			return Size;
 		}
-		virtual uint32 getHeight(uint32 numMipMap = 0) const
+		virtual uint32 getHeight(uint32 numMipMap = 0) const NL_OVERRIDE
 		{
 			nlassert(numMipMap == 0);
 			return Size;
@@ -105,13 +109,13 @@ void CWaterEnvMap::init(uint cubeMapSize, uint projection2DSize, TGlobalAnimatio
 	class CTexture2DUnshared : public CTextureBlank
 	{
 	public:
-		virtual bool supportSharing() const {return false;}
-		virtual uint32 getWidth(uint32 numMipMap = 0) const
+		virtual bool supportSharing() const NL_OVERRIDE {return false;}
+		virtual uint32 getWidth(uint32 numMipMap = 0) const NL_OVERRIDE
 		{
 			nlassert(numMipMap == 0);
 			return Size;
 		}
-		virtual uint32 getHeight(uint32 numMipMap = 0) const
+		virtual uint32 getHeight(uint32 numMipMap = 0) const NL_OVERRIDE
 		{
 			nlassert(numMipMap == 0);
 			return Size;
@@ -187,7 +191,17 @@ void CWaterEnvMap::update(TGlobalAnimationTime time, IDriver &driver)
 	uint lastCubeFacesToRender = std::min((uint) NUM_FACES_TO_RENDER, _NumRenderedFaces + numTexToRender); // we don't render negative Z (only top hemisphere is used)
 	for(uint k = _NumRenderedFaces; k < lastCubeFacesToRender; ++k)
 	{
-		driver.setRenderTarget(_EnvCubic, 0, 0, _EnvCubicSize, _EnvCubicSize, 0, (uint32) k);
+		// On D3D, swap positive_y/negative_y render target faces.
+		// The flatten VB uses GL cubemap convention (-Z = forward) for lookup directions.
+		// D3D cubemap convention has +Z = forward, so the Y-mapped Z faces are sign-flipped.
+		// Swapping the render target face puts the content where the GL-convention lookup expects it.
+		uint32 rtFace = k;
+		if (_D3DConvention)
+		{
+			if (k == CTextureCube::positive_y) rtFace = CTextureCube::negative_y;
+			else if (k == CTextureCube::negative_y) rtFace = CTextureCube::positive_y;
+		}
+		driver.setRenderTarget(_EnvCubic, 0, 0, _EnvCubicSize, _EnvCubicSize, 0, rtFace);
 		render((CTextureCube::TFace) k, _StartRenderTime);
 	}
 	_NumRenderedFaces = lastCubeFacesToRender;
@@ -197,7 +211,7 @@ void CWaterEnvMap::update(TGlobalAnimationTime time, IDriver &driver)
 		driver.setRenderTarget(_Env2D, 0, 0, _Env2DSize, _Env2DSize);
 		doInit();
 		//
-		driver.activeVertexProgram(NULL);
+		driver.activeVertexProgram(nullptr);
 		driver.activeVertexBuffer(_FlattenVB);
 		driver.activeIndexBuffer(_FlattenIB);
 		driver.setFrustum(-1.f, 1.f, -1.f, 1.f, 0.f, 1.f, false);
@@ -210,7 +224,7 @@ void CWaterEnvMap::update(TGlobalAnimationTime time, IDriver &driver)
 		driver.renderTriangles(_MaterialPassThru, 0, FVB_NUM_TRIS);
 		_NumRenderedFaces = 0; // start to render again
 	}
-	driver.setRenderTarget(NULL);
+	driver.setRenderTarget(nullptr);
 }
 
 // *******************************************************************************
@@ -280,7 +294,7 @@ private:
 };
 
 
-static NLMISC::CSmartPtr<CVertexProgramTestMeshVP> testMeshVP;
+static NLMISC::CSmartPtr<CVertexProgramTestMeshVP> testMeshVP; // STATIC GPU RESOURCE: Blocks multiple driver instances
 
 
 
@@ -319,7 +333,7 @@ void CWaterEnvMap::renderTestMesh(IDriver &driver)
 // *******************************************************************************
 void CWaterEnvMap::initFlattenVB()
 {
-	_FlattenVB.setPreferredMemory(CVertexBuffer::AGPPreferred, true);
+	_FlattenVB.setBufferUsage(CVertexBuffer::Immutable, true);
 	_FlattenVB.setName("Flatten VB");
 	_FlattenVB.clearValueEx();
 	_FlattenVB.addValueEx (CVertexBuffer::Position, CVertexBuffer::Float3);
@@ -402,7 +416,7 @@ void CWaterEnvMap::invalidate()
 // *******************************************************************************
 void CWaterEnvMap::initTestVB()
 {
-	_TestVB.setPreferredMemory(CVertexBuffer::AGPPreferred, true);
+	_TestVB.setBufferUsage(CVertexBuffer::Immutable, true);
 	_TestVB.setName("TestVB");
 	_TestVB.clearValueEx();
 	_TestVB.addValueEx (CVertexBuffer::Position, CVertexBuffer::Float3);

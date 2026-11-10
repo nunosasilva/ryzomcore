@@ -92,10 +92,14 @@ const float MaxInputValue = 1.0f;
 class CPSAttribMakerBase : public NLMISC::IStreamable
 {
 public:
+	CPSAttribMakerBase() : m_RandomId(~0u) {}
+	CPSAttribMakerBase(const CPSAttribMakerBase &) : m_RandomId(~0u) {} // clones get fresh IDs
 	// get the type of this attribute maker
 	virtual const char *getType() = 0;
 	// duplicate this attribute maker
 	virtual CPSAttribMakerBase *clone() const = 0;
+	/// Sequential ID for deterministic random generation, assigned lazily from CParticleSystem counter
+	mutable uint32 m_RandomId;
 	// fast alloc for attrib makers
 	PS_FAST_OBJ_ALLOC
 };
@@ -124,17 +128,17 @@ public:
 		}
 
 		/// serialisation of the object. Derivers MUST call this, (if they use the attribute of this class at least)
-		virtual void serial(NLMISC::IStream &f)
+		virtual void serial(NLMISC::IStream &f) NL_OVERRIDE
 		{
 			f.serialVersion(1);
 			f.serial(_NbCycles);
 		}
 
 		/// inherited from CPSAttribMakerBase. Template specialization will do the job
-		virtual const char *getType() { return "UNKNOWN"; }
+		virtual const char *getType() NL_OVERRIDE { return "UNKNOWN"; }
 
 		/// dtor
-		virtual ~CPSAttribMaker() {}
+		virtual ~CPSAttribMaker() NL_OVERRIDE {}
 	//@}
 
 	/// \name Production of attribute

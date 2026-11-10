@@ -147,14 +147,14 @@ void CPSDot::draw(bool opaque)
 
 	/// update the material if the global color of the system is variable
 	CParticleSystem &ps = *(_Owner->getOwner());
-	if (_ColorScheme == NULL)
+	if (_ColorScheme == nullptr)
 	{
 		NLMISC::CRGBA col;
 		if (ps.getForceGlobalColorLightingFlag() || usesGlobalColorLighting())
 		{
 			col.modulateFromColor(ps.getGlobalColorLighted(), _Color);
 		}
-		else if (ps.getColorAttenuationScheme() != NULL || ps.isUserColorUsed())
+		else if (ps.getColorAttenuationScheme() != nullptr || ps.isUserColorUsed())
 		{
 			col.modulateFromColor(ps.getGlobalColor(), _Color);
 		}
@@ -218,11 +218,11 @@ void CPSDot::initVertexBuffers()
 {
 	NL_PS_FUNC(CPSDot_initVertexBuffers)
 	_DotVb.setName("CPSDot::_DotVb");
-	_DotVb.setPreferredMemory(CVertexBuffer::AGPVolatile, false);
+	_DotVb.setBufferUsage(CVertexBuffer::FullStream, false);
 	_DotVb.setVertexFormat(CVertexBuffer::PositionFlag);
 	_DotVb.setNumVertices(dotBufSize);
 	_DotVbColor.setVertexFormat(CVertexBuffer::PositionFlag | CVertexBuffer::PrimaryColorFlag);
-	_DotVbColor.setPreferredMemory(CVertexBuffer::AGPVolatile, true); // keep local mem because of interleaved fill
+	_DotVbColor.setBufferUsage(CVertexBuffer::FullStream, true); // keep local mem because of interleaved fill
 	_DotVbColor.setNumVertices(dotBufSize);
 	_DotVbColor.setName("CPSDot::_DotVbColor");
 

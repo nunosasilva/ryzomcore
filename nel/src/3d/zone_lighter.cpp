@@ -2,7 +2,7 @@
 // Copyright (C) 2010  Winch Gate Property Limited
 //
 // This source file has been modified by the following contributors:
-// Copyright (C) 2013-2021  Jan BOON (Kaetemi) <jan.boon@kaetemi.be>
+// Copyright (C) 2013-2023  Jan BOON (Kaetemi) <jan.boon@kaetemi.be>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
@@ -376,15 +376,13 @@ public:
 	}
 
 	// Run method
-	void run()
+	void run() NL_OVERRIDE
 	{
 		// Set the CPU mask
 		// setCPUMask (Thread, _Process);
 
 		_ZoneLighter->processCalc (_Process, *_Description);
-		_ZoneLighter->_ProcessExitedMutex.enter();
 		_ZoneLighter->_ProcessExited++;
-		_ZoneLighter->_ProcessExitedMutex.leave();
 	}
 };
 
@@ -421,7 +419,7 @@ public:
 	}
 
 	// Run method
-	virtual void run ();
+	virtual void run () NL_OVERRIDE;
 };
 
 // ***************************************************************************
@@ -492,7 +490,7 @@ void RenderTriangle (const CZoneLighter::CTriangle &triangle, const CZoneLighter
 		gradientTriangle.computeGradient (ooz[0], ooz[1], ooz[2], ozzGradient);
 
 		// Need uv ?
-		bool needUV = triangle.Texture != NULL;
+		bool needUV = triangle.Texture != nullptr;
 
 		// Compute the gradient for uv
 		CVector uGradient;
@@ -506,7 +504,7 @@ void RenderTriangle (const CZoneLighter::CTriangle &triangle, const CZoneLighter
 		// Texture information
 		uint width=0;
 		uint height=0;
-		const CObjectVector<uint8> *pixels = 0;
+		const CObjectVector<uint8> *pixels = nullptr;
 		if (needUV)
 		{
 			// Get pixels
@@ -590,7 +588,7 @@ void RenderTriangle (const CZoneLighter::CTriangle &triangle, const CZoneLighter
 				if (alphaTest)
 				{
 					// Enter the mutex
-					mutex.enter ();
+					CAutoMutex<CFastMutex> lock(mutex);
 
 					// Write Z around
 					uint d;
@@ -611,9 +609,6 @@ void RenderTriangle (const CZoneLighter::CTriangle &triangle, const CZoneLighter
 							}
 						}
 					}
-
-					// Leave the mutex
-					mutex.leave ();
 				}
 			}
 		}
@@ -660,9 +655,7 @@ void NL3D::CRenderZBuffer::run()
 	}
 
 	// Exit
-	_ZoneLighter->_ProcessExitedMutex.enter();
 	_ZoneLighter->_ProcessExited++;
-	_ZoneLighter->_ProcessExitedMutex.leave();
 }
 
 // ***************************************************************************
@@ -686,12 +679,10 @@ public:
 		  _Process(process)
 	{
 	}
-	void run()
+	void run() NL_OVERRIDE
 	{
 		_ZoneLighter->processLightableShapeCalc(_Process, _ShapesToLit, _FirstShape, _LastShape, *_Description);
-		_ZoneLighter->_ProcessExitedMutex.enter();
 		_ZoneLighter->_ProcessExited++;
-		_ZoneLighter->_ProcessExitedMutex.leave();
 	}
 private:
 	CZoneLighter						*_ZoneLighter;
@@ -1157,6 +1148,34 @@ void CZoneLighter::light (CLandscape &landscape, CZone& output, uint zoneToLight
 
 	// Number of patch
 	uint patchCount=(uint)_PatchInfo.size();
+
+	// Debug: dump the exact per-lumel positions/normals the lighting pass will use
+	// (per patch: u32 count, then count * 6 floats pos.xyz normal.xyz). Lets external
+	// tooling fit lighting parameters (e.g. recover a lost sun_direction) in closed
+	// form against reference lumels instead of searching by whole lighter runs.
+	if (const char *dumpPath = getenv ("NL3D_ZONE_LIGHTER_DUMP_LUMELS"))
+	{
+		FILE *dumpFile = fopen (dumpPath, "wb");
+		if (dumpFile)
+		{
+			uint32 dumpPatchCount = (uint32)patchCount;
+			fwrite (&dumpPatchCount, 4, 1, dumpFile);
+			for (uint dp = 0; dp < patchCount; ++dp)
+			{
+				const std::vector<CLumelDescriptor> &dl = _Lumels[dp];
+				uint32 dumpLumelCount = (uint32)dl.size ();
+				fwrite (&dumpLumelCount, 4, 1, dumpFile);
+				for (uint dlIdx = 0; dlIdx < dl.size (); ++dlIdx)
+				{
+					fwrite (&dl[dlIdx].Position.x, 4, 3, dumpFile);
+					fwrite (&dl[dlIdx].Normal.x, 4, 3, dumpFile);
+				}
+			}
+			fclose (dumpFile);
+		}
+		else
+			nlwarning ("NL3D_ZONE_LIGHTER_DUMP_LUMELS: cannot write %s", dumpPath);
+	}
 
 	// Reset patch count
 	{
@@ -1818,7 +1837,7 @@ void CZoneLighter::addTriangles (const CMeshBase &meshBase, const CMeshGeom &mes
 bool CZoneLighter::getTexture (const CMaterial &material, CBitmap *&result, bool &clampU, bool &clampV, uint8 &alphaTestThreshold, bool &doubleSided)
 {
 	// Texture information, not NULL only if texture is used for alpha test
-	result = NULL;
+	result = nullptr;
 	clampU = false;
 	clampV = false;
 
@@ -2887,12 +2906,12 @@ void CZoneLighter::addLightableShape(IShape *shape, const NLMISC::CMatrix& MT)
 bool CZoneLighter::isLightableShape(IShape &shape)
 {
 	/// for now, the only shape that we lit are water shapes
-	if (dynamic_cast<CWaterShape *>(&shape) != NULL)
+	if (dynamic_cast<CWaterShape *>(&shape) != nullptr)
 	{
 		// check that this water surface has a diffuse map that is a CTextureFile (we must be able to save it !)
 		CWaterShape *ws = static_cast<CWaterShape *>(&shape);
 		const ITexture *tex = ws->getColorMap();
-		if (dynamic_cast<const CTextureFile *>(tex) != NULL)
+		if (dynamic_cast<const CTextureFile *>(tex) != nullptr)
 		{
 			return ws->isLightMappingEnabled();
 		}
@@ -3153,7 +3172,7 @@ void CZoneLighter::lightWater(CWaterShape &ws, const CMatrix &MT, const CLightDe
 	catch(const NLMISC::Exception &e)
 	{
 		nlwarning("Water shape lighting failed !");
-		nlwarning(e.what());
+		nlwarning("%s", e.what());
 	}
 }
 
@@ -3569,7 +3588,7 @@ void			CZoneLighter::processZonePointLightRT(vector<CPointLightNamed> &listPoint
 				// Reset any empty slot to NULL.
 				for(; lightInfId<CTileLightInfluence::NumLightPerCorner; lightInfId++)
 				{
-					tli.Light[lightInfId]= NULL;
+					tli.Light[lightInfId] = nullptr;
 				}
 
 
@@ -3624,7 +3643,7 @@ void			CZoneLighter::processZonePointLightRT(vector<CPointLightNamed> &listPoint
 				{
 					CTileLightInfUnpack		&tliSrc= pfpl.TileLightInfluences[tliId];
 					CTileLightInfluence		&tliDst= pInfo.TileLightInfluences[tliId];
-					if(tliSrc.Light[lightId] == NULL)
+					if(tliSrc.Light[lightId] == nullptr)
 					{
 						// Mark as unused.
 						tliDst.Light[lightId]= 0xFF;

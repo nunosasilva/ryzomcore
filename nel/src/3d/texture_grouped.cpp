@@ -322,7 +322,7 @@ void CTextureGrouped::serial(NLMISC::IStream &f)
 		f.serial(nbTex);
 
 		/// cerate a vector of textures
-		ITexture *ptTex = NULL;
+		ITexture *ptTex = nullptr;
 		texList.reserve(nbTex);
 		for (uint k = 0; k < nbTex; ++k)
 		{
@@ -378,7 +378,7 @@ void CTextureGrouped::displayIncompatibleTextureWarning(CSmartPtr<ITexture> *tex
 	{
 		if (textureTab[k])
 		{
-			nlwarning((textureTab[k]->getShareName()).c_str());
+			nlwarning("%s", (textureTab[k]->getShareName()).c_str());
 		}
 		else
 		{

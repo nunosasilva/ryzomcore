@@ -42,25 +42,28 @@ const float		CNELU::DefLy=0.2f;
 const float		CNELU::DefLzNear=0.15f;
 const float		CNELU::DefLzFar=1000.0f;
 
-IDriver				*CNELU::Driver=NULL;
-CScene				*CNELU::Scene=NULL;
-CShapeBank			*CNELU::ShapeBank=NULL;
-CVertexStreamManager*CNELU::MeshSkinManager=NULL;
+IDriver				*CNELU::Driver = nullptr;
+CScene				*CNELU::Scene = nullptr;
+CShapeBank			*CNELU::ShapeBank = nullptr;
+CVertexStreamManager*CNELU::MeshSkinManager = nullptr;
 CRefPtr<CCamera>	CNELU::Camera;
 CEventServer		CNELU::EventServer;
 CEventListenerAsync	CNELU::AsyncListener;
 
 
-bool			CNELU::initDriver (uint w, uint h, uint bpp, bool windowed, nlWindow systemWindow, bool offscreen, bool direct3d)
+bool			CNELU::initDriver (uint w, uint h, uint bpp, bool windowed, nlWindow systemWindow, bool offscreen, bool direct3d, bool gl3)
 {
 	// Init debug system
 //	NLMISC::InitDebug();
 
 	ShapeBank = new CShapeBank;
 
-	CNELU::Driver = NULL;
+	CNELU::Driver = nullptr;
 
 	// Init driver.
+#ifdef __EMSCRIPTEN__
+	CNELU::Driver= CDRU::createGlEs3Driver();
+#else
 #ifdef NL_OS_WINDOWS
 	if (direct3d)
 	{
@@ -68,10 +71,34 @@ bool			CNELU::initDriver (uint w, uint h, uint bpp, bool windowed, nlWindow syst
 	}
 #endif
 
+	// gl3 is asked for, not assumed. Two different failure shapes from CDRU::createGl3Driver
+	// (nel/src/3d/dru.cpp), both handled: a static build returns NULL when the driver was
+	// not compiled in (WITH_DRIVER_OPENGL3=OFF -> no NL_OPENGL3_AVAILABLE), a dynamic build
+	// throws EDruOpengl3DriverNotFound when the DLL will not load. initDriver falls back to
+	// the legacy GL driver either way.
+	// Note this whole block sits in the #else of the __EMSCRIPTEN__ branch above, so on Web
+	// the GLES3 driver is always used and gl3 is ignored rather than honoured.
+	if (!CNELU::Driver && gl3)
+	{
+		bool gl3LoadThrew = false;
+		try
+		{
+			CNELU::Driver = CDRU::createGl3Driver();
+		}
+		catch (const EDru &e)
+		{
+			gl3LoadThrew = true;
+			nlwarning("CNELU::initDriver: OpenGL3 driver failed to load (%s), falling back to the legacy OpenGL driver", e.what());
+		}
+		if (!CNELU::Driver && !gl3LoadThrew)
+			nlwarning("CNELU::initDriver: OpenGL3 driver not compiled in, falling back to the legacy OpenGL driver");
+	}
+
 	if (!CNELU::Driver)
 	{
 		CNELU::Driver= CDRU::createGlDriver();
 	}
+#endif
 
 	if (!CNELU::Driver)
 	{
@@ -107,7 +134,7 @@ void			CNELU::initScene(CViewport viewport)
 	// Register basic csene.
 	CScene::registerBasics();
 
-	if (CNELU::Scene == NULL)
+	if (CNELU::Scene == nullptr)
 		CNELU::Scene = new CScene(false);
 
 	// init default Roots.
@@ -146,7 +173,7 @@ void			CNELU::initEventServer()
 void			CNELU::releaseEventServer()
 {
 	CNELU::AsyncListener.removeFromServer(CNELU::EventServer);
-	if (CNELU::Driver != NULL)
+	if (CNELU::Driver != nullptr)
 	{
 		CNELU::EventServer.removeEmitter(CNELU::Driver->getEventEmitter());
 	}
@@ -156,10 +183,10 @@ void			CNELU::releaseEventServer()
 void			CNELU::releaseScene()
 {
 	// Release the camera.
-	CNELU::Camera= NULL;
+	CNELU::Camera = nullptr;
 
 	// "Release" the Scene.
-	CNELU::Scene->setDriver(NULL);
+	CNELU::Scene->setDriver(nullptr);
 	CNELU::Scene->release();
 }
 
@@ -170,23 +197,23 @@ void			CNELU::releaseDriver()
 		delete MeshSkinManager;
 
 	// "Release" the driver.
-	if (CNELU::Driver != NULL)
+	if (CNELU::Driver != nullptr)
 	{
 		CNELU::Driver->release();
 		delete CNELU::Driver;
-		CNELU::Driver = NULL;
+		CNELU::Driver = nullptr;
 	}
-	if( CNELU::ShapeBank != NULL )
+	if( CNELU::ShapeBank != nullptr)
 	{
 		delete CNELU::ShapeBank;
-		CNELU::ShapeBank = NULL;
+		CNELU::ShapeBank = nullptr;
 	}
 }
 
-bool			CNELU::init (uint w, uint h, CViewport viewport, uint bpp, bool windowed, nlWindow systemWindow, bool offscreen, bool direct3d)
+bool			CNELU::init (uint w, uint h, CViewport viewport, uint bpp, bool windowed, nlWindow systemWindow, bool offscreen, bool direct3d, bool gl3)
 {
 	NL3D::registerSerial3d();
-	if (initDriver(w,h,bpp,windowed,systemWindow,offscreen,direct3d))
+	if (initDriver(w,h,bpp,windowed,systemWindow,offscreen,direct3d,gl3))
 	{
 		initScene(viewport);
 		initEventServer();

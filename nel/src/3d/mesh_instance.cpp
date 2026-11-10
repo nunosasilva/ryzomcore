@@ -21,6 +21,7 @@
 #include "nel/3d/skeleton_model.h"
 #include "nel/3d/u_scene.h"
 #include "nel/3d/scene.h"
+#include "nel/3d/gpu_skin_vp.h"
 #include <list>
 
 using namespace std;
@@ -36,7 +37,7 @@ namespace NL3D
 // ***************************************************************************
 CMeshInstance::CMeshInstance()
 {
-	_ShadowMap= NULL;
+	_ShadowMap = nullptr;
 
 	// LoadBalancing is not useful for Mesh, because meshs cannot be reduced in faces.
 	// Override CTransformShape state.
@@ -120,7 +121,7 @@ const std::vector<NLMISC::CBSphere>	*CMeshInstance::getSkinBoneSphere() const
 // ***************************************************************************
 bool	CMeshInstance::isSkinnable() const
 {
-	if(Shape==NULL)
+	if(Shape == nullptr)
 		return false;
 
 	// Get a pointer on the shape
@@ -161,6 +162,33 @@ void	CMeshInstance::initRenderFilterType()
 		else
 			_RenderFilterType= UScene::FilterMeshNoVP;
 	}
+}
+
+// ***************************************************************************
+bool			CMeshInstance::supportGPUSkinning() const
+{
+	if(Shape)
+	{
+		CMesh	*pMesh= safe_cast<CMesh*>((IShape*)Shape);
+		return	pMesh->getMeshGeom().supportGPUSkinning();
+	}
+	else
+		return false;
+}
+// ***************************************************************************
+void			CMeshInstance::renderGPUSkin(float alphaMRM, CSkeletonModel *skeleton)
+{
+	if(Shape && getVisibility() != CHrcTrav::Hide)
+	{
+		CMesh *pMesh = NLMISC::safe_cast<CMesh *>((IShape*)Shape);
+		CMeshGeom	&meshGeom= const_cast<CMeshGeom&>(pMesh->getMeshGeom ());
+		meshGeom.renderGPUSkin(this, skeleton);
+	}
+}
+// ***************************************************************************
+CVertexProgram			*CMeshInstance::getGPUSkinVP() const
+{
+	return getGPUSkinSimpleInsertVP();
 }
 
 // ***************************************************************************
@@ -284,7 +312,7 @@ void		CMeshInstance::deleteShadowMap()
 	if(_ShadowMap)
 	{
 		delete _ShadowMap;
-		_ShadowMap= NULL;
+		_ShadowMap = nullptr;
 		getOwnerScene()->unregisterShadowCasterToList(this);
 	}
 }

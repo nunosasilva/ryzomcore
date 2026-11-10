@@ -371,8 +371,8 @@ public:
 		uint ViewerPos;
 	};
 	CVertexProgramPerPixelLight(uint vp);
-	virtual ~CVertexProgramPerPixelLight() { };
-	virtual void buildInfo();
+	virtual ~CVertexProgramPerPixelLight() NL_OVERRIDE { };
+	virtual void buildInfo() NL_OVERRIDE;
 	const CIdx &idx() const { return m_Idx; }
 
 private:
@@ -436,7 +436,7 @@ CVertexProgramPerPixelLight::CVertexProgramPerPixelLight(uint vp)
 			std::string          parseOutput;
 			if (!vpParser.parse(vpCode.c_str(), result, parseOutput))
 			{
-				nlwarning(parseOutput.c_str());
+				nlwarning("%s", parseOutput.c_str());
 				nlassert(0);
 			}
 		#endif
@@ -606,13 +606,13 @@ void	CMeshVPPerPixelLight::enable(bool enabled, IDriver *drv)
 			}
 			else
 			{
-				_ActiveVertexProgram = NULL;
+				_ActiveVertexProgram = nullptr;
 			}
 		}
 		else
 		{
-			drv->activeVertexProgram(NULL);
-			_ActiveVertexProgram = NULL;
+			drv->activeVertexProgram(nullptr);
+			_ActiveVertexProgram = nullptr;
 		}
 		_Enabled = enabled;
 	}

@@ -2,7 +2,7 @@
 // Copyright (C) 2010  Winch Gate Property Limited
 //
 // This source file has been modified by the following contributors:
-// Copyright (C) 2012  Jan BOON (Kaetemi) <jan.boon@kaetemi.be>
+// Copyright (C) 2012-2023  Jan BOON (Kaetemi) <jan.boon@kaetemi.be>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
@@ -76,7 +76,7 @@ public:
 	{
 		if( _Instance )
 			delete _Instance;
-		_Instance = NULL;
+		_Instance = nullptr;
 	}
 
 private:
@@ -87,7 +87,7 @@ private:
 	}
 	static CPSTextureCategory	*_Instance;
 };
-CPSTextureCategory	*CPSTextureCategory::_Instance= NULL;
+CPSTextureCategory	*CPSTextureCategory::_Instance = nullptr;
 
 ///===========================================================================
 void CParticleSystemShape::releaseInstance()
@@ -226,13 +226,13 @@ void	CParticleSystemShape::getAABBox(NLMISC::CAABBox &bbox) const
 ///===========================================================================
 CParticleSystem *CParticleSystemShape::instanciatePS(CScene &scene, NLMISC::CContiguousBlockAllocator *blockAllocator /*= NULL*/)
 {
-	if (_Sharing && _SharedSystem != NULL) // is sharing enabled, and is a system already instanciated
+	if (_Sharing && _SharedSystem != nullptr) // is sharing enabled, and is a system already instanciated
 	{
 		return _SharedSystem;
 	}
 
 	// avoid prb with concurrent thread (may happen if an instance group containing ps is loaded in background)
-	s_PSSMutex.enter();
+	NLMISC::CAutoMutex<NLMISC::CMutex> lock(s_PSSMutex);
 
 
 	#ifdef PS_FAST_ALLOC
@@ -247,7 +247,7 @@ CParticleSystem *CParticleSystemShape::instanciatePS(CScene &scene, NLMISC::CCon
 
 	//NLMISC::TTicks start = NLMISC::CTime::getPerformanceTime();
 	// copy the datas
-	CParticleSystem *myInstance = NULL;
+	CParticleSystem *myInstance = nullptr;
 
 	// serialize from the memory stream
 	if (!_ParticleSystemProto.isReading()) // we must be sure that we are reading the stream
@@ -285,7 +285,7 @@ CParticleSystem *CParticleSystemShape::instanciatePS(CScene &scene, NLMISC::CCon
 		/*
 		for(uint k = 0; k < _CachedTex.size(); ++k)
 		{
-			nlinfo(_CachedTex[k]->getShareName().c_str());
+			nlinfo("%s", _CachedTex[k]->getShareName().c_str());
 		}
 		*/
 	}
@@ -304,8 +304,6 @@ CParticleSystem *CParticleSystemShape::instanciatePS(CScene &scene, NLMISC::CCon
 			PSBlockAllocator = NULL;
 		}
 	#endif
-
-	s_PSSMutex.leave();
 
 	/*NLMISC::TTicks end = NLMISC::CTime::getPerformanceTime();
 	nlinfo("instanciation time = %.2f", (float) (1000 * NLMISC::CTime::ticksToSecond(end - start)));	*/
@@ -400,10 +398,10 @@ void CParticleSystemShape::flushTextures(IDriver &driver, uint selectedTexture)
 	}
 	else
 	{
-		s_PSSMutex.enter();
+		NLMISC::CAutoMutex<NLMISC::CMutex> lock(s_PSSMutex);
 
 		// must create an instance just to flush the textures
-		CParticleSystem *myInstance = NULL;
+		CParticleSystem *myInstance = nullptr;
 
 		#ifdef PS_FAST_ALLOC
 			nlassert(PSBlockAllocator == NULL);
@@ -445,7 +443,6 @@ void CParticleSystemShape::flushTextures(IDriver &driver, uint selectedTexture)
 		#ifdef PS_FAST_ALLOC
 			PSBlockAllocator = NULL;
 		#endif
-		s_PSSMutex.leave();
 	}
 	for(uint k = 0; k < _CachedTex.size(); ++k)
 	{

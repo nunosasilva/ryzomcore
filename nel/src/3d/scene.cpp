@@ -55,6 +55,7 @@
 #include "nel/3d/async_texture_manager.h"
 #include "nel/3d/water_env_map.h"
 #include "nel/3d/skeleton_spawn_script.h"
+#include "nel/3d/decal.h"
 
 
 #include <memory>
@@ -121,6 +122,7 @@ void	CScene::registerBasics()
 	CPointLightModel::registerBasic();
 	CSegRemanence::registerBasic();
 	CQuadGridClipManager::registerBasic();
+	CDecal::registerBasic();
 }
 
 
@@ -137,13 +139,14 @@ CScene::CScene(bool bSmallScene) : LightTrav(bSmallScene)
 	AnimDetailTrav.Scene= this;
 	LoadBalancingTrav.Scene= this;
 	RenderTrav.Scene= this;
+	_WaterReflectionManager.setScene(this);
 
-	_ShapeBank = NULL;
+	_ShapeBank = nullptr;
 
-	Root= NULL;
-	RootCluster= NULL;
-	SonsOfAncestorSkeletonModelGroup= NULL;
-	_QuadGridClipManager= NULL;
+	Root = nullptr;
+	RootCluster = nullptr;
+	SonsOfAncestorSkeletonModelGroup = nullptr;
+	_QuadGridClipManager = nullptr;
 
 	_CurrentTime = 0 ;
 	_EllapsedTime = 0 ;
@@ -158,10 +161,12 @@ CScene::CScene(bool bSmallScene) : LightTrav(bSmallScene)
 	_GlobalWindPower= 0.2f;
 
 	// global manager (created in CDriverUser)
-	_LodCharacterManager= NULL;
-	_AsyncTextureManager= NULL;
+	_LodCharacterManager = nullptr;
+	_AsyncTextureManager = nullptr;
 
 	_NumRender = 0;
+	_FrameId = 0;
+	_LastRenderFrameId = 0;
 
 	_MaxSkeletonsInNotCLodForm= 20;
 
@@ -174,7 +179,7 @@ CScene::CScene(bool bSmallScene) : LightTrav(bSmallScene)
 	_CoarseMeshManager->setTextureFile (NL3D_SCENE_COARSE_MANAGER_TEXTURE);
 
 	// Update model list to NULL
-	_UpdateModelList= NULL;
+	_UpdateModelList = nullptr;
 
 	_FlareContext = 0;
 
@@ -184,18 +189,21 @@ CScene::CScene(bool bSmallScene) : LightTrav(bSmallScene)
 	_ShadowMapDistFadeEnd= NL3D_SCENE_DEFAULT_SHADOW_MAP_DIST_FADE_END;
 	_ShadowMapMaxCasterInScreen= NL3D_SCENE_DEFAULT_SHADOW_MAP_MAX_CASTER_IN_SCREEN;
 	_ShadowMapMaxCasterAround= NL3D_SCENE_DEFAULT_SHADOW_MAP_MAX_CASTER_AROUND;
-	_VisualCollisionManagerForShadow= NULL;
+	_VisualCollisionManagerForShadow = nullptr;
 
-	_WaterCallback = NULL;
-	_PolyDrawingCallback = NULL;
+	_GPUSkinningEnabled = true;
+
+	_WaterCallback = nullptr;
+	_PolyDrawingCallback = nullptr;
 	_IsRendering = false;
 
-	_FirstFlare = NULL;
+	_FirstFlare = nullptr;
 	_RenderedPart = UScene::RenderNothing;
 	//_WaterEnvMapRdr = NULL;
 	//_WaterEnvMap = new CTextureCube;
 
-	_WaterEnvMap = NULL;
+	_WaterEnvMap = nullptr;
+	_ForceWaterEnvMap = false;
 
 	_GlobalSystemTime= 0.0;
 
@@ -204,6 +212,9 @@ CScene::CScene(bool bSmallScene) : LightTrav(bSmallScene)
 // ***************************************************************************
 void	CScene::release()
 {
+	// release water reflection targets and camera (before model deletion below)
+	_WaterReflectionManager.release();
+
 	// reset the _QuadGridClipManager, => unlink models, and delete clusters.
 	if( _QuadGridClipManager )
 		_QuadGridClipManager->reset();
@@ -233,49 +244,49 @@ void	CScene::release()
 	if(SonsOfAncestorSkeletonModelGroup)
 	{
 		deleteModel(SonsOfAncestorSkeletonModelGroup);
-		SonsOfAncestorSkeletonModelGroup= NULL;
+		SonsOfAncestorSkeletonModelGroup = nullptr;
 	}
 	if(RootCluster)
 	{
 		deleteModel(RootCluster);
-		RootCluster= NULL;
+		RootCluster = nullptr;
 	}
 	if(Root)
 	{
 		deleteModel(Root);
-		Root= NULL;
+		Root = nullptr;
 	}
 
 	// No models at all.
-	_UpdateModelList= NULL;
+	_UpdateModelList = nullptr;
 
 	// reset ptrs
-	_ShapeBank = NULL;
-	Root= NULL;
-	RootCluster= NULL;
-	SonsOfAncestorSkeletonModelGroup= NULL;
-	CurrentCamera= NULL;
-	_QuadGridClipManager= NULL;
-	ClipTrav.setQuadGridClipManager(NULL);
+	_ShapeBank = nullptr;
+	Root = nullptr;
+	RootCluster = nullptr;
+	SonsOfAncestorSkeletonModelGroup = nullptr;
+	CurrentCamera = nullptr;
+	_QuadGridClipManager = nullptr;
+	ClipTrav.setQuadGridClipManager(nullptr);
 
 	// DON'T reset the _LodCharacterManager, because it can be shared across scenes
 	/*
 	if(_LodCharacterManager)
 		_LodCharacterManager->reset();
 	*/
-	_LodCharacterManager= NULL;
+	_LodCharacterManager = nullptr;
 
 	// delete the coarseMeshManager
 	if(_CoarseMeshManager)
 	{
 		delete _CoarseMeshManager;
-		_CoarseMeshManager= NULL;
+		_CoarseMeshManager = nullptr;
 	}
 
 	if(_GlobalInstanceGroup)
 	{
 		delete _GlobalInstanceGroup;
-		_GlobalInstanceGroup = NULL;
+		_GlobalInstanceGroup = nullptr;
 	}
 
 	// delete the play list
@@ -390,12 +401,13 @@ void	CScene::endPartRender(bool keepTrav)
 	_NextRenderProfile= false;
 
 	IDriver *drv = getDriver();
-	drv->activeVertexProgram(NULL);
-	drv->activePixelProgram(NULL);
-	drv->activeGeometryProgram(NULL);
+	drv->activeVertexProgram(nullptr);
+	drv->activePixelProgram(nullptr);
+	drv->activeGeometryProgram(nullptr);
 
-	// Ensure nothing animates on subsequent renders
-	_EllapsedTime = 0.f;
+	// Ensure nothing animates on subsequent renders (but keep for stereo second eye)
+	if (!keepTrav)
+		_EllapsedTime = 0.f;
 
 	/*
 	uint64 total = PSStatsRegisterPSModelObserver +
@@ -580,12 +592,15 @@ void	CScene::renderPart(UScene::TRenderPart rp, bool	doHrcPass, bool doTrav, boo
 	if (_RenderedPart == UScene::RenderNothing)
 	{
 		RenderTrav.clearWaterModelList();
+		_FirstFlare = nullptr;
 
-		if (doTrav)
+		// Update system time once per real frame
+		if (_FrameId != _LastRenderFrameId)
 		{
+			_LastRenderFrameId = _FrameId;
+
 			// update water envmap
 			//updateWaterEnvmap();
-			_FirstFlare = NULL;
 
 			double fNewGlobalSystemTime = NLMISC::CTime::ticksToSecond(NLMISC::CTime::getPerformanceTime());
 			if(_GlobalSystemTime==0)
@@ -640,14 +655,11 @@ void	CScene::renderPart(UScene::TRenderPart rp, bool	doHrcPass, bool doTrav, boo
 		// loadBalance
 		LoadBalancingTrav.traverse();
 
-		if (doTrav)
+		// Animate particles once per frame (_RequestParticlesAnimate is set in animate(), cleared after use)
+		if (_RequestParticlesAnimate)
 		{
-			//
-			if (_RequestParticlesAnimate)
-			{
-				_ParticleSystemManager.processAnimate(_EllapsedTime); // deals with permanently animated particle systems
-				_RequestParticlesAnimate = false;
-			}
+			_ParticleSystemManager.processAnimate(_EllapsedTime);
+			_RequestParticlesAnimate = false;
 		}
 
 		// Light
@@ -665,25 +677,18 @@ void	CScene::renderPart(UScene::TRenderPart rp, bool	doHrcPass, bool doTrav, boo
 	// render flare
 	if (rp & UScene::RenderFlare)
 	{
-		if (doTrav)
+		if (_FirstFlare)
 		{
-			if (_FirstFlare)
+			IDriver *drv = getDriver();
+			CFlareModel::updateOcclusionQueryBegin(drv);
+			CFlareModel	*currFlare = _FirstFlare;
+			do
 			{
-				IDriver *drv = getDriver();
-				CFlareModel::updateOcclusionQueryBegin(drv);
-				CFlareModel	*currFlare = _FirstFlare;
-				do
-				{
-					currFlare->updateOcclusionQuery(drv);
-					currFlare = currFlare->Next;
-				}
-				while(currFlare);
-				CFlareModel::updateOcclusionQueryEnd(drv);
+				currFlare->updateOcclusionQuery(drv);
+				currFlare = currFlare->Next;
 			}
-		}
-		else
-		{
-			_FirstFlare = NULL;
+			while(currFlare);
+			CFlareModel::updateOcclusionQueryEnd(drv);
 		}
 	}
 	_RenderedPart = (UScene::TRenderPart) (_RenderedPart | rp);
@@ -766,7 +771,7 @@ CTransformShape	*CScene::createInstance(const string &shapeName)
 		_ShapeBank->load( shapeName );
 		if (_ShapeBank->getPresentState( shapeName ) != CShapeBank::Present)
 		{
-			return NULL;
+			return nullptr;
 		}
 	}
 	// Then create a reference to the shape
@@ -777,10 +782,10 @@ CTransformShape	*CScene::createInstance(const string &shapeName)
 #if defined(__GNUC__) && __GNUC__ < 3
 	CMeshBase *pMB = pTShp ? (CMeshBase*)((IShape*)(pTShp->Shape)) : NULL;
 #else // not GNUC
-	CMeshBase *pMB = pTShp ? dynamic_cast<CMeshBase*>((IShape*)(pTShp->Shape)) : NULL;
+	CMeshBase *pMB = pTShp ? dynamic_cast<CMeshBase*>((IShape*)(pTShp->Shape)) : nullptr;
 #endif // not GNUC
 	CMeshBaseInstance *pMBI = dynamic_cast<CMeshBaseInstance*>( pTShp );
-	if( ( pMB != NULL ) && ( pMBI != NULL ) )
+	if( ( pMB != nullptr) && ( pMBI != nullptr) )
 	{
 		// Init lightmap information
 		pMBI->initAnimatedLightIndex (*this);
@@ -810,7 +815,7 @@ CTransformShape	*CScene::createInstance(const string &shapeName)
 	}
 
 	CLandscapeModel *pLM = dynamic_cast<CLandscapeModel*>( pTShp );
-	if( pLM != NULL )
+	if( pLM != nullptr)
 	{
 		// Init lightmap information
 		pLM->Landscape.initAnimatedLightIndex (*this);
@@ -826,22 +831,22 @@ void CScene::createInstanceAsync(const string &shapeName, CTransformShape **pIns
 	// We must attach a bank to the scene (a ShapeBank handle the shape caches and
 	// the creation/deletion of the instances)
 	nlassert( _ShapeBank != NULL );
-	*pInstance = NULL;
+	*pInstance = nullptr;
 	// Add the instance request
 	_WaitingInstances.insert(TWaitingInstancesMMap::value_type(shapeName,pInstance));
 	// If the shape is not present in the bank
 	if (_ShapeBank->getPresentState( shapeName ) != CShapeBank::Present)
 	{
 		// Load it from file asynchronously
-		_ShapeBank->loadAsync( toLowerAscii(shapeName), getDriver(), position, NULL, selectedTexture);
+		_ShapeBank->loadAsync( toLowerAscii(shapeName), getDriver(), position, nullptr, selectedTexture);
 	}
 }
 
 // ***************************************************************************
 void CScene::deleteInstance(CTransformShape *pTrfmShp)
 {
-	IShape *pShp = NULL;
-	if( pTrfmShp == NULL )
+	IShape *pShp = nullptr;
+	if( pTrfmShp == nullptr)
 		return;
 
 	pShp = pTrfmShp->Shape;
@@ -859,6 +864,8 @@ void CScene::deleteInstance(CTransformShape *pTrfmShp)
 // ***************************************************************************
 void CScene::animate( TGlobalAnimationTime atTime )
 {
+	++_FrameId;
+
 	// todo hulud remove
 	if (_FirstAnimateCall)
 	{
@@ -1184,12 +1191,12 @@ CTransform	*CScene::createModel(const CClassId &idModel)
 	if(itModel==_RegModels.end())
 	{
 		nlstop;			// Warning, CScene::registerBasics () has not been called !
-		return NULL;
+		return nullptr;
 	}
 	else
 	{
 		CTransform	*m= (*itModel).Creator();
-		if(!m)	return NULL;
+		if(!m)	return nullptr;
 
 		// Set the owner for the model.
 		m->_OwnerScene= this;
@@ -1223,7 +1230,7 @@ CTransform	*CScene::createModel(const CClassId &idModel)
 // ***************************************************************************
 void	CScene::deleteModel(CTransform *model)
 {
-	if(model==NULL)
+	if(model == nullptr)
 		return;
 
 	// No model delete during the render
@@ -1448,7 +1455,7 @@ void			CScene::setShadowMapMaxCasterAround(uint num)
 CInstanceGroup *CScene::findCameraClusterSystemFromRay(CInstanceGroup *startClusterSystem,
 											   const NLMISC::CVector &startPos, NLMISC::CVector &endPos)
 {
-	CInstanceGroup	*resultCS= NULL;
+	CInstanceGroup	*resultCS = nullptr;
 
 	CClipTrav	&clipTrav= getClipTrav();
 
@@ -1510,7 +1517,7 @@ CInstanceGroup *CScene::findCameraClusterSystemFromRay(CInstanceGroup *startClus
 	// In this case, ensure the Camera position in a cluster
 	if(possibleClusterSystem.empty())
 	{
-		CCluster	*bestCluster= NULL;
+		CCluster	*bestCluster = nullptr;
 		float		shortDist= FLT_MAX;
 
 		for(i=0;i<vClusterVisited.size();i++)
@@ -1551,12 +1558,12 @@ CInstanceGroup *CScene::findCameraClusterSystemFromRay(CInstanceGroup *startClus
 	// **** From each possible clusterSystem, select the one that is the lower in hierarchy
 	// common case
 	if(possibleClusterSystem.empty())
-		resultCS= NULL;
+		resultCS = nullptr;
 	else if(possibleClusterSystem.size()==1)
 	{
 		// if it is the rootCluster set NULL (should have the same behavior but do like standard case)
 		if(possibleClusterSystem[0]==RootCluster->getClusterSystem())
-			resultCS= NULL;
+			resultCS = nullptr;
 		// set this cluster system
 		else
 			resultCS= possibleClusterSystem[0];
@@ -1565,7 +1572,7 @@ CInstanceGroup *CScene::findCameraClusterSystemFromRay(CInstanceGroup *startClus
 	else
 	{
 		// compute the hierarchy level of each cluster system, take the highest
-		CInstanceGroup	*highest= NULL;
+		CInstanceGroup	*highest = nullptr;
 		uint			highestLevel= 0;
 		for(i=0;i<possibleClusterSystem.size();i++)
 		{
@@ -1608,9 +1615,9 @@ void CScene::renderOcclusionTestMeshs()
 {
 	nlassert(RenderTrav.getDriver());
 	RenderTrav.getDriver()->setupViewport(RenderTrav.getViewport());
-	RenderTrav.getDriver()->activeVertexProgram(NULL);
-	RenderTrav.getDriver()->activePixelProgram(NULL);
-	RenderTrav.getDriver()->activeGeometryProgram(NULL);
+	RenderTrav.getDriver()->activeVertexProgram(nullptr);
+	RenderTrav.getDriver()->activePixelProgram(nullptr);
+	RenderTrav.getDriver()->activeGeometryProgram(nullptr);
 	IDriver::TPolygonMode oldPolygonMode = RenderTrav.getDriver()->getPolygonMode();
 	CMaterial m;
 	m.initUnlit();

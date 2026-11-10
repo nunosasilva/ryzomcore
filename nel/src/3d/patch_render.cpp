@@ -79,9 +79,9 @@ void			CPatch::computeNewFar(const NLMISC::CBSphere &patchSphere, sint &newFar0,
 		CPatchRdrPass	*oldPass1=_PatchRdrPassFar1;
 
 		// Checks
-		if (oldPass0==NULL)
+		if (oldPass0 == nullptr)
 			nlassert (Far0<=0);
-		if (oldPass1==NULL)
+		if (oldPass1 == nullptr)
 			nlassert (Far1<=0);
 
 		float oldFar0UScale=Far0UScale;
@@ -93,11 +93,11 @@ void			CPatch::computeNewFar(const NLMISC::CBSphere &patchSphere, sint &newFar0,
 
 		// Don't delete the pass0 if the new newFar1 will use it
 		if ((newFar1==Far0)&&(Far0>0))
-			_PatchRdrPassFar0=NULL;
+			_PatchRdrPassFar0 = nullptr;
 
 		// Don't delete the pass1 if the new newFar0 will use it
 		if ((newFar0==Far1)&&(Far1>0))
-			_PatchRdrPassFar1=NULL;
+			_PatchRdrPassFar1 = nullptr;
 
 		// Pass0 have changed ?
 		if (newFar0!=Far0)
@@ -144,7 +144,7 @@ void			CPatch::computeNewFar(const NLMISC::CBSphere &patchSphere, sint &newFar0,
 				if (_PatchRdrPassFar0)
 				{
 					Zone->Landscape->freeFarRenderPass (this, _PatchRdrPassFar0, Far0);
-					_PatchRdrPassFar0=NULL;
+					_PatchRdrPassFar0 = nullptr;
 				}
 			}
 		}
@@ -208,7 +208,7 @@ void			CPatch::computeNewFar(const NLMISC::CBSphere &patchSphere, sint &newFar0,
 				if (_PatchRdrPassFar1)
 				{
 					Zone->Landscape->freeFarRenderPass (this, _PatchRdrPassFar1, Far1);
-					_PatchRdrPassFar1=NULL;
+					_PatchRdrPassFar1 = nullptr;
 				}
 			}
 		}
@@ -342,7 +342,7 @@ void			CPatch::preRender(const NLMISC::CBSphere &patchSphere)
 	bool	doClipFar= Far0==0 && Far1==1;
 	// Parse all TessBlocks.
 	uint			nTessBlock= TessBlocks.size();
-	CTessBlock		*pTessBlock= nTessBlock>0? &TessBlocks[0]: NULL ;
+	CTessBlock		*pTessBlock= nTessBlock>0? &TessBlocks[0] : nullptr;
 	for(; nTessBlock>0; pTessBlock++, nTessBlock--)
 	{
 		CTessBlock		&tblock= *pTessBlock;
@@ -582,7 +582,7 @@ void			CPatch::renderFar0()
 
 	// Render tris of TessBlocks.
 	uint			nTessBlock= TessBlocks.size();
-	CTessBlock		*pTessBlock= nTessBlock>0? &TessBlocks[0]: NULL ;
+	CTessBlock		*pTessBlock= nTessBlock>0? &TessBlocks[0] : nullptr;
 	for(; nTessBlock>0; pTessBlock++, nTessBlock--)
 	{
 		CTessBlock		&tblock= *pTessBlock;
@@ -614,7 +614,7 @@ void			CPatch::renderFar1()
 
 	// Render tris of TessBlocks.
 	uint			nTessBlock= TessBlocks.size();
-	CTessBlock		*pTessBlock= nTessBlock>0? &TessBlocks[0]: NULL ;
+	CTessBlock		*pTessBlock= nTessBlock>0? &TessBlocks[0] : nullptr;
 	for(; nTessBlock>0; pTessBlock++, nTessBlock--)
 	{
 		CTessBlock		&tblock= *pTessBlock;
@@ -1065,6 +1065,8 @@ inline void		CPatch::fillFar0VertexVB(CTessFarVertex *pVert)
 		*(CVector*)(CurVBPtr + CLandscapeGlobals::CurrentFar0VBInfo.DeltaPosOff)=
 			pVert->Src->EndPos - pVert->Src->StartPos;
 	}
+
+	CLandscapeGlobals::CurrentFar0VBAllocator->getVertexBuffer().invalidateRange(pVert->Index0, pVert->Index0 + 1);
 }
 // ***************************************************************************
 // NB: need to be inlined only for fillFar1VB() in this file.
@@ -1162,6 +1164,8 @@ inline void		CPatch::fillFar1VertexVB(CTessFarVertex *pVert)
 		*(CUV*)(CurVBPtr + CLandscapeGlobals::CurrentFar1VBInfo.AlphaInfoOff)= geomInfo;
 
 	}
+
+	CLandscapeGlobals::CurrentFar1VBAllocator->getVertexBuffer().invalidateRange(pVert->Index1, pVert->Index1 + 1);
 }
 // ***************************************************************************
 // NB: need to be inlined only for fillTileVB() in this file.
@@ -1223,6 +1227,8 @@ inline void		CPatch::fillTileVertexVB(CTessNearVertex *pVert)
 		*(CVector*)(CurVBPtr + CLandscapeGlobals::CurrentTileVBInfo.DeltaPosOff)=
 			pVert->Src->EndPos - pVert->Src->StartPos;
 	}
+
+	CLandscapeGlobals::CurrentTileVBAllocator->getVertexBuffer().invalidateRange(pVert->Index, pVert->Index + 1);
 }
 
 
@@ -1391,6 +1397,8 @@ void		CPatch::computeGeomorphFar0VertexListVB(CTessList<CTessFarVertex>  &vertLi
 		// Set Geomorphed Position. Set it local to the current center of landscape
 		CHECK_VBA_RANGE(CLandscapeGlobals::CurrentFar0VBInfo.Accessor, CurVBPtr, sizeof(CVector))
 		*(CVector*)CurVBPtr= pVert->Src->Pos - CLandscapeGlobals::PZBModelPosition;
+
+		CLandscapeGlobals::CurrentFar0VBAllocator->getVertexBuffer().invalidateRange(pVert->Index0, pVert->Index0 + 1);
 	}
 }
 
@@ -1423,6 +1431,8 @@ void		CPatch::computeGeomorphAlphaFar1VertexListVB(CTessList<CTessFarVertex>  &v
 		col.A= (uint8)(f*255);
 		CHECK_VBA_RANGE(CLandscapeGlobals::CurrentFar1VBInfo.Accessor, CurVBPtr + CLandscapeGlobals::CurrentFar1VBInfo.ColorOff, sizeof(CRGBA))
 		*(CRGBA*)(CurVBPtr + CLandscapeGlobals::CurrentFar1VBInfo.ColorOff)= col;
+
+		CLandscapeGlobals::CurrentFar1VBAllocator->getVertexBuffer().invalidateRange(pVert->Index1, pVert->Index1 + 1);
 	}
 }
 
@@ -1442,6 +1452,8 @@ void		CPatch::computeGeomorphTileVertexListVB(CTessList<CTessNearVertex>  &vertL
 		// Set Geomorphed Position. Set it local to the current center of landscape
 		CHECK_VBA_RANGE(CLandscapeGlobals::CurrentTileVBInfo.Accessor, CurVBPtr, sizeof(CVector))
 		*(CVector*)CurVBPtr= pVert->Src->Pos - CLandscapeGlobals::PZBModelPosition;
+
+		CLandscapeGlobals::CurrentTileVBAllocator->getVertexBuffer().invalidateRange(pVert->Index, pVert->Index + 1);
 	}
 }
 

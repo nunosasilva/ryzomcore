@@ -30,7 +30,8 @@
 namespace NL3D {
 
 
-CMotionBlur::CMotionBlur() : _Tex(NULL), _X(0), _Y(0), _W(0), _H(0)
+CMotionBlur::CMotionBlur() : _Tex(nullptr)
+    , _X(0), _Y(0), _W(0), _H(0)
 {
 }
 
@@ -49,7 +50,7 @@ void CMotionBlur::startMotionBlur(uint x, uint y, uint width, uint height)
 
 void CMotionBlur::releaseMotionBlur()
 {
-	_Tex = NULL ;
+	_Tex = nullptr;
 	_X = _Y = _W = _H = 0 ;
 }
 
@@ -59,7 +60,7 @@ void CMotionBlur::performMotionBlur(IDriver *driver, float motionBlurAmount)
 	nlassert(driver) ;
 	nlassert(motionBlurAmount >= 0.f && motionBlurAmount <= 1.f) ;
 
-	static CVertexBuffer  vb ;
+	static CVertexBuffer  vb ; // STATIC GPU RESOURCE: Blocks multiple driver instances
 	vb.setVertexFormat(CVertexBuffer::PositionFlag | CVertexBuffer::TexCoord0Flag ) ;
 	vb.setNumVertices(4) ;
 
@@ -71,7 +72,7 @@ void CMotionBlur::performMotionBlur(IDriver *driver, float motionBlurAmount)
 
 	driver->setFrustum(0, (float) width, 0, (float) height, -1, 1, false) ;
 
-	static CMaterial mbMat ;
+	static CMaterial mbMat ; // STATIC GPU RESOURCE: Blocks multiple driver instances
 	{
 		CVertexBufferReadWrite vba;
 		vb.lock (vba);

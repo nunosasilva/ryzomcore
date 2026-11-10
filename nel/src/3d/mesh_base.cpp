@@ -1,6 +1,9 @@
 // NeL - MMORPG Framework <http://dev.ryzom.com/projects/nel/>
 // Copyright (C) 2010  Winch Gate Property Limited
 //
+// This source file has been modified by the following contributors:
+// Copyright (C) 2021  Jan BOON (Kaetemi) <jan.boon@kaetemi.be>
+//
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
 // published by the Free Software Foundation, either version 3 of the
@@ -54,11 +57,11 @@ CMeshBase::CMeshBase()
 
 	_AutoAnim = false;
 
-	_LodCharacterTexture= NULL;
+	_LodCharacterTexture = nullptr;
 
 	_CollisionMeshGeneration= AutoCameraCol;
 
-	_VisualCollisionMesh= NULL;
+	_VisualCollisionMesh = nullptr;
 
 	_DefaultOpacity= false;
 	_DefaultTransparency= false;
@@ -79,7 +82,7 @@ CMeshBase::~CMeshBase()
 	if(_VisualCollisionMesh)
 	{
 		delete _VisualCollisionMesh;
-		_VisualCollisionMesh= NULL;
+		_VisualCollisionMesh = nullptr;
 	}
 }
 
@@ -112,7 +115,7 @@ CMaterialBase	*CMeshBase::getAnimatedMaterial(uint id)
 	if(it!=_AnimatedMaterials.end())
 		return &it->second;
 	else
-		return NULL;
+		return nullptr;
 }
 
 
@@ -138,20 +141,17 @@ CMeshBase::CMeshBaseBuild::CMeshBaseBuild()
 }
 
 // ***************************************************************************
-#if 0
 void	CMeshBase::CMeshBaseBuild::serial(NLMISC::IStream &f)
 {
-	/*
-	Version 1:
-		- Cut in version because of badly coded ITexture* serialisation. throw an exception if
-			find a version < 1.
-	Version 0:
-		- 1st version.
-	*/
-	sint	ver= f.serialVersion(1);
+	/* Versioned pre-build base-mesh state — the 1_export -> standalone-lightmapper
+	 * scene-graph contract (never serialized before that; an old #if 0 sketch of this
+	 * method existed but was never shipped). Bump the version and keep old readers
+	 * working when fields change. */
+	(void)f.serialVersion(0);
 
-	if(ver<1)
-		throw NLMISC::EStream(f, "MeshBuild in Stream is too old (MeshBaseBuild version < 1)");
+	f.serial( bCastShadows );
+	f.serial( bRcvShadows );
+	f.serial( UseLightingLocalAttenuation );
 
 	f.serial( DefaultPos );
 	f.serial( DefaultPivot );
@@ -160,8 +160,13 @@ void	CMeshBase::CMeshBaseBuild::serial(NLMISC::IStream &f)
 	f.serial( DefaultScale );
 
 	f.serialCont( Materials );
+	f.serialCont( LightInfoMap );
+
+	f.serialCont( DefaultBSFactors );
+	f.serialCont( BSNames );
+
+	f.serialEnum( CollisionMeshGeneration );
 }
-#endif
 
 // ***************************************************************************
 void	CMeshBase::serialMeshBase(NLMISC::IStream &f)
@@ -221,6 +226,25 @@ void	CMeshBase::serialMeshBase(NLMISC::IStream &f)
 	{
 		TLightInfoMapV7 temp;
 		f.serialCont(temp);
+		// Convert old format to new format when reading
+		if(f.isReading())
+		{
+			_LightInfos.clear();
+			for(TLightInfoMapV7::iterator it = temp.begin(); it != temp.end(); ++it)
+			{
+				CLightMapInfoList lmil;
+				lmil.AnimatedLight = it->first;
+				lmil.LightGroup = 0;
+				for(CLightInfoMapListV7::iterator itStage = it->second.begin(); itStage != it->second.end(); ++itStage)
+				{
+					CLightMapInfoList::CMatStage ms;
+					ms.MatId = itStage->nMatNb;
+					ms.StageId = itStage->nStageNb;
+					lmil.StageList.push_back(ms);
+				}
+				_LightInfos.push_back(lmil);
+			}
+		}
 	}
 
 	if(ver>=3)
@@ -476,7 +500,7 @@ void	CMeshBase::resetLodCharacterTexture()
 	if(_LodCharacterTexture)
 	{
 		delete _LodCharacterTexture;
-		_LodCharacterTexture= NULL;
+		_LodCharacterTexture = nullptr;
 	}
 }
 

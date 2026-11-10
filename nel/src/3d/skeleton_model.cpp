@@ -31,6 +31,7 @@
 #include "nel/3d/vertex_stream_manager.h"
 #include "nel/3d/mesh_base_instance.h"
 #include "nel/3d/async_texture_manager.h"
+#include "nel/3d/gpu_skin_vp.h"
 
 
 using namespace std;
@@ -163,7 +164,7 @@ CSkeletonModel::CSkeletonModel()
 
 	// ShadowMap
 	CTransform::setIsShadowMapCaster(true);
-	_ShadowMap= NULL;
+	_ShadowMap = nullptr;
 
 	// SpawnScript
 	_SSSWOPos= CVector::Null;
@@ -381,12 +382,12 @@ void		CSkeletonModel::updateBoneToCompute()
 			sint	fatherId= Bones[i].getFatherId();
 			// if a root bone...
 			if(fatherId==-1)
-				bc.Father= NULL;
+				bc.Father = nullptr;
 			else
 				bc.Father= &Bones[fatherId];
 			// MustInterpolate??
 			bc.MustInterpolate= false;
-			const CSkeletonShape::CLod	*lodNext= NULL;
+			const CSkeletonShape::CLod	*lodNext = nullptr;
 			// if a lod exist after current lod, and if lod interpolation enabled
 			if( _CurLod < skeShape->getNumLods()-1 && _LodInterpMultiplier>0 )
 			{
@@ -523,10 +524,10 @@ bool CSkeletonModel::forceComputeBone(uint boneId)
 			while (currBoneIndex != -1);
 			const CMatrix &modelWorldMatrix = it->Transform->getWorldMatrix();
 			// recompute bones
-			CBone *fatherBone = NULL;
+			CBone *fatherBone = nullptr;
 			while (numBones--)
 			{
-				OrderedBone[numBones]->compute(fatherBone, modelWorldMatrix, NULL);
+				OrderedBone[numBones]->compute(fatherBone, modelWorldMatrix, nullptr);
 				fatherBone = OrderedBone[numBones];
 			}
 			parentWorldMatrix = &(OrderedBone[0]->getWorldMatrix());
@@ -656,7 +657,7 @@ void		CSkeletonModel::detachSkeletonSon(CTransform *tr)
 	}
 
 	// advert transform it is no more sticked/skinned.
-	tr->_FatherSkeletonModel= NULL;
+	tr->_FatherSkeletonModel = nullptr;
 	tr->_ForceCLodSticked= false;
 
 	// link correctly Hrc / Clip / UpdateList...
@@ -780,7 +781,7 @@ void	CSkeletonModel::traverseAnimDetail()
 	//===============
 
 	float	lodBoneInterp;
-	const CSkeletonShape::CLod	*lodNext= NULL;
+	const CSkeletonShape::CLod	*lodNext = nullptr;
 	// if a lod exist after current lod, and if lod interpolation enabled
 	if( _CurLod < skeShape->getNumLods()-1 && _LodInterpMultiplier>0 && _IsEnableLOD)
 	{
@@ -791,7 +792,7 @@ void	CSkeletonModel::traverseAnimDetail()
 		NLMISC::clamp(lodBoneInterp, 0.f, 1.f);
 		// if still 1, keep cur matrix => disable interpolation
 		if(lodBoneInterp==1.f)
-			lodNext=NULL;
+			lodNext = nullptr;
 	}
 	// else, no interpolation
 	else
@@ -812,7 +813,7 @@ void	CSkeletonModel::traverseAnimDetail()
 	// must test / update the hierarchy of Bones.
 	// Since they are orderd in depth-first order, we are sure that parent are computed before sons.
 	uint							numBoneToCompute= (uint)_BoneToCompute.size();
-	CSkeletonModel::CBoneCompute	*pBoneCompute= numBoneToCompute? &_BoneToCompute[0] : NULL;
+	CSkeletonModel::CBoneCompute	*pBoneCompute= numBoneToCompute? &_BoneToCompute[0] : nullptr;
 	// traverse only bones which need to be computed
 	for(;numBoneToCompute>0;numBoneToCompute--, pBoneCompute++)
 	{
@@ -863,10 +864,10 @@ void		CSkeletonModel::computeAllBones(const CMatrix &modelWorldMatrix)
 		// if a root bone...
 		if(fatherId==-1)
 			// Compute root bone worldMatrix. Do not allow special AnimCtrl
-			Bones[i].compute( NULL, modelWorldMatrix, NULL);
+			Bones[i].compute(nullptr, modelWorldMatrix, nullptr);
 		else
 			// Compute bone worldMatrix. Do not allow special AnimCtrl
-			Bones[i].compute( &Bones[fatherId], modelWorldMatrix, NULL);
+			Bones[i].compute( &Bones[fatherId], modelWorldMatrix, nullptr);
 	}
 
 }
@@ -968,15 +969,16 @@ void		CSkeletonModel::computeLodTexture()
 
 					// if the material stage 0 is not textured, or has not a valid async id, build the bitmap with a color.
 					sint			asyncTextId= mbi->getAsyncTextureId(i,0);
-					const CBitmap	*coarseBitmap= NULL;
+					const CBitmap	*coarseBitmap = nullptr;
 					if(asyncTextId!=-1)
 					{
 						// get it from async manager
 						coarseBitmap= asyncMngr->getCoarseBitmap(asyncTextId);
 					}
 
-					// So if we have no bmp here, build with material color, else build a texture
-					if(!coarseBitmap)
+					// So if we have no bmp here (or a refused one, see CTextureEntry::createCoarseBitmap), build with
+					// material color, else build a texture
+					if(!coarseBitmap || coarseBitmap->getWidth()==0)
 					{
 						dstBmp.build(mbi->Materials[i].getDiffuse());
 					}
@@ -1027,7 +1029,7 @@ float		CSkeletonModel::computeDisplayLodCharacterPriority() const
 
 		// Get object position, test visibility;
 		// If has a skeleton ancestor, take his world position instead, because ours is invalid.
-		if( _AncestorSkeletonModel != NULL)
+		if( _AncestorSkeletonModel != nullptr)
 		{
 			// if the ancestore is clipped, quit
 			if( !_AncestorSkeletonModel->isClipVisible() )
@@ -1076,11 +1078,25 @@ void		CSkeletonModel::traverseRender()
 {
 	H_AUTO( NL3D_Skeleton_Render );
 
+	// Inside water reflection passes, entities clip at the exact water
+	// surface instead of the below-surface biased plane: the bias keeps
+	// the waterline seamless on static geometry, but would show the
+	// entity's submerged parts in its reflection. (CLod impostors are
+	// batched and drawn later under the biased plane — far-LOD characters
+	// in a reflection, negligible.)
+	CWaterReflectionManager &wrm = getOwnerScene()->getWaterReflectionManager();
+	const bool entityClip = wrm.isRenderingReflection();
+	if (entityClip)
+		wrm.selectClipBias(getOwnerScene()->getRenderTrav().getDriver(), CWaterReflectionManager::ClipBiasEntity);
+
 	// render as CLod, or render Skins.
 	if(isDisplayedAsLodCharacter())
 		renderCLod();
 	else
 		renderSkins();
+
+	if (entityClip)
+		wrm.selectClipBias(getOwnerScene()->getRenderTrav().getDriver(), CWaterReflectionManager::ClipBiasStatic);
 }
 
 
@@ -1363,7 +1379,7 @@ void			CSkeletonModel::renderCLod()
 	const CLightContribution	*lightContrib;
 
 	// the std case is to take my model lightContribution
-	if(_AncestorSkeletonModel==NULL)
+	if(_AncestorSkeletonModel == nullptr)
 		lightContrib= &getSkeletonLightContribution();
 	// but if skinned/sticked (directly or not) to a skeleton, take its.
 	else
@@ -1465,7 +1481,7 @@ void			CSkeletonModel::renderSkins()
 		// Easier for skeleton: suppose lightable, no local attenuation
 
 		// the std case is to take my model lightContribution
-		if(_AncestorSkeletonModel==NULL)
+		if(_AncestorSkeletonModel == nullptr)
 			setupCurrentLightContribution(&_LightContribution, false);
 		// but if sticked (directly or not) to a skeleton, take its.
 		else
@@ -1503,13 +1519,76 @@ void			CSkeletonModel::renderSkins()
 void			CSkeletonModel::renderSkinList(NLMISC::CObjectVector<CTransform*, false> &skinList, float alphaMRM)
 {
 	CRenderTrav			&rdrTrav= getOwnerScene()->getRenderTrav();
+	IDriver				*drv= rdrTrav.getDriver();
+
+	// Check if GPU skinning is available (driver supports glsl3vi profile, large UBO arrays, and scene has it enabled)
+	bool gpuSkinAvailable = drv && drv->supportVertexProgram(IProgram::glsl3vi)
+		&& drv->supportLargeUBOArrays()
+		&& getOwnerScene()->isGPUSkinningEnabled();
+
+	// Try GPU skinning first: render GPU-capable skins, collect non-GPU skins for CPU path
+	static std::vector<CTransform*> cpuSkins;
+	cpuSkins.clear();
+
+	if (gpuSkinAvailable)
+	{
+		// Separate GPU-capable and non-GPU skins
+		static std::vector<CTransform*> gpuSkins;
+		gpuSkins.clear();
+
+		for (uint i = 0; i < skinList.size(); i++)
+		{
+			if (skinList[i]->supportGPUSkinning())
+				gpuSkins.push_back(skinList[i]);
+			else
+				cpuSkins.push_back(skinList[i]);
+		}
+
+		// Render GPU skins
+		if (!gpuSkins.empty())
+		{
+			H_AUTO( NL3D_Skin_GPU );
+
+			// Fill bone UBO once for this skeleton, bind at UBBindingSkeleton
+			CUniformBuffer *boneUB = getGPUSkinBoneUBO();
+			fillGPUSkinBoneUBO(boneUB, this);
+			drv->bindUniformBuffer(UBBindingSkeleton, boneUB);
+
+			// Render each GPU skin, switching VP as needed
+			CVertexProgram *activeVP = nullptr;
+			for (uint i = 0; i < gpuSkins.size(); i++)
+			{
+				CVertexProgram *vp = gpuSkins[i]->getGPUSkinVP();
+				if (vp != activeVP)
+				{
+					drv->activeVertexProgram(vp);
+					activeVP = vp;
+				}
+				gpuSkins[i]->renderGPUSkin(alphaMRM, this);
+			}
+
+			// Unbind bone UBO and deactivate the insert VP
+			drv->activeVertexProgram(nullptr);
+			drv->bindUniformBuffer(UBBindingSkeleton, nullptr);
+		}
+	}
+	else
+	{
+		// No GPU skinning, all skins go to CPU path
+		for (uint i = 0; i < skinList.size(); i++)
+			cpuSkins.push_back(skinList[i]);
+	}
+
+	// CPU path for remaining skins
+	if (!cpuSkins.empty())
+	{
 
 	// if the SkinManager is not possible at all, just rendered the std way.
 	if( !rdrTrav.getMeshSkinManager() )
 	{
-		for(uint i=0;i<skinList.size();i++)
+		for(uint i=0;i<cpuSkins.size();i++)
 		{
-			skinList[i]->renderSkin(alphaMRM);
+			cpuSkins[i]->renderSkin(alphaMRM);
 		}
 	}
 	else
@@ -1528,17 +1607,17 @@ void			CSkeletonModel::renderSkinList(NLMISC::CObjectVector<CTransform*, false> 
 		uint	vertexSize= meshSkinManager.getVertexSize();
 
 		// render any skins which do not support SkinGrouping, and fill array of skins to group
-		for(uint i=0;i<skinList.size();i++)
+		for(uint i=0;i<cpuSkins.size();i++)
 		{
 			// If don't support, or if too big to fit in the manager, just renderSkin()
-			if(!skinList[i]->supportSkinGrouping())
+			if(!cpuSkins[i]->supportSkinGrouping())
 			{
 				H_AUTO( NL3D_Skin_NotGrouped );
-				skinList[i]->renderSkin(alphaMRM);
+				cpuSkins[i]->renderSkin(alphaMRM);
 			}
 			else
 			{
-				skinsToGroup.push_back(skinList[i]);
+				skinsToGroup.push_back(cpuSkins[i]);
 			}
 		}
 
@@ -1625,6 +1704,8 @@ void			CSkeletonModel::renderSkinList(NLMISC::CObjectVector<CTransform*, false> 
 			meshSkinManager.swapVBHard();
 		}
 	}
+
+	} // if (!cpuSkins.empty())
 }
 
 
@@ -1889,7 +1970,7 @@ void		CSkeletonModel::setBoneAnimCtrl(uint boneId, IAnimCtrl *ctrl)
 IAnimCtrl	*CSkeletonModel::getBoneAnimCtrl(uint boneId) const
 {
 	if(boneId>=Bones.size())
-		return NULL;
+		return nullptr;
 
 	return Bones[boneId]._AnimCtrl;
 }
@@ -2099,7 +2180,7 @@ void			CSkeletonModel::deleteShadowMap()
 	if(_ShadowMap)
 	{
 		delete _ShadowMap;
-		_ShadowMap= NULL;
+		_ShadowMap = nullptr;
 		getOwnerScene()->unregisterShadowCasterToList(this);
 	}
 }
