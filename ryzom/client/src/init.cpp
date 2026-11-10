@@ -1086,6 +1086,9 @@ void prelogInit()
 			case CClientConfig::OpenGL3:
 				driver = UDriver::OpenGl3;
 			break;
+			case CClientConfig::Vulkan:
+				driver = UDriver::Vulkan;
+			break;
 			default:
 			break;
 		}

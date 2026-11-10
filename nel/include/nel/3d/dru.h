@@ -32,18 +32,21 @@
 # define NL3D_GL3_DLL_NAME "libnel_drv_opengl3_win"
 # define NL3D_GLES_DLL_NAME "libnel_drv_opengles_win"
 # define NL3D_GLES3_DLL_NAME "libnel_drv_opengles3_win"
+# define NL3D_VK_DLL_NAME "libnel_drv_vulkan_win"
 # define NL3D_D3D_DLL_NAME "libnel_drv_direct3d_win"
 #elif defined (NL_OS_WINDOWS)
 # define NL3D_GL_DLL_NAME "nel_drv_opengl_win"
 # define NL3D_GL3_DLL_NAME "nel_drv_opengl3_win"
 # define NL3D_GLES_DLL_NAME "nel_drv_opengles_win"
 # define NL3D_GLES3_DLL_NAME "nel_drv_opengles3_win"
+# define NL3D_VK_DLL_NAME "nel_drv_vulkan_win"
 # define NL3D_D3D_DLL_NAME "nel_drv_direct3d_win"
 #elif defined (NL_OS_UNIX)
 # define NL3D_GL_DLL_NAME "nel_drv_opengl"
 # define NL3D_GL3_DLL_NAME "nel_drv_opengl3"
 # define NL3D_GLES_DLL_NAME "nel_drv_opengles"
 # define NL3D_GLES3_DLL_NAME "nel_drv_opengles3"
+# define NL3D_VK_DLL_NAME "nel_drv_vulkan"
 #else
 # error "Unknown system"
 #endif
@@ -107,6 +110,32 @@ struct EDruOpengl3DriverUnknownVersion : public EDru
 struct EDruOpengl3DriverCantCreateDriver : public EDru
 {
 	EDruOpengl3DriverCantCreateDriver() : EDru( NL3D_GL3_DLL_NAME " can't create driver" ) {}
+};
+
+// Vulkan
+struct EDruVulkanDriverNotFound : public EDru
+{
+	EDruVulkanDriverNotFound() : EDru( NL3D_VK_DLL_NAME " not found" ) {}
+};
+
+struct EDruVulkanDriverCorrupted : public EDru
+{
+	EDruVulkanDriverCorrupted() : EDru( "Can't get NL3D_createIDriverInstance from " NL3D_VK_DLL_NAME " (Bad dll?)" ) {}
+};
+
+struct EDruVulkanDriverOldVersion : public EDru
+{
+	EDruVulkanDriverOldVersion() : EDru( NL3D_VK_DLL_NAME " is a too old version. Ask for a more recent file" ) {}
+};
+
+struct EDruVulkanDriverUnknownVersion : public EDru
+{
+	EDruVulkanDriverUnknownVersion() : EDru( NL3D_VK_DLL_NAME " is more recent than the application" ) {}
+};
+
+struct EDruVulkanDriverCantCreateDriver : public EDru
+{
+	EDruVulkanDriverCantCreateDriver() : EDru( NL3D_VK_DLL_NAME " can't create driver" ) {}
 };
 
 // OpenGL ES
@@ -179,6 +208,9 @@ public:
 
 	/// Portable Function which create a GL ES 3.0 Driver (using gl dll...).
 	static IDriver		*createGlEs3Driver();
+
+	/// Portable Function which create a Vulkan Driver.
+	static IDriver		*createVkDriver();
 
 #ifdef NL_OS_WINDOWS
 	/// Windows Function which create a Direct3d Driver.
