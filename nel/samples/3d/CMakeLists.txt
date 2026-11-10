@@ -62,6 +62,21 @@ IF(WITH_DRIVER_OPENGL3 AND (WITH_NEL_TESTS OR WITH_TESTING))
                              TIMEOUT 40)
       ENDIF()
     ENDFOREACH()
+
+    # The Specular sample covers two generated texture-coordinate modes, and the second one is
+    # only reachable through a cube-map stage: sphere map (default) and reflection map (--cube).
+    # Both are registered, because a regression in the texgen mask reaches the pixel program only
+    # through that path (see AGENTS_trackD.md ## D.3).
+    IF(TARGET nl_sample_specular)
+      ADD_TEST(NAME nel_gl3_smoke_specular_cube
+               COMMAND ${NL_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/headless_smoke.sh
+                       14 $<TARGET_FILE:nl_sample_specular> --cube)
+      SET_TESTS_PROPERTIES(nel_gl3_smoke_specular_cube
+                           PROPERTIES
+                           WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+                           ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1"
+                           TIMEOUT 40)
+    ENDIF()
   ENDIF()
 ENDIF()
 

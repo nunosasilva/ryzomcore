@@ -18,7 +18,10 @@
 //
 //   nl_sample_specular            specular material (default)
 //   nl_sample_specular --normal   plain Normal material, one texture: the reference
+//   nl_sample_specular --cube     stage 1 is a cube map: the driver then generates the
+//                                 reflection-map coordinate instead of the sphere map
 //   nl_sample_specular --legacy   fixed-function GL driver (reference implementation of Specular)
+//   nl_sample_specular --spin     animation, for looking at it
 //
 // MULTI-ARCH: same pattern as the other samples — C++98 only, `sint main`, emscripten builds the
 // GLES3 driver and an animation callback, and nothing here is platform specific.
@@ -29,6 +32,7 @@
 #include "nel/3d/u_material.h"
 #include "nel/3d/u_texture.h"
 #include "nel/3d/texture_mem.h"
+#include "nel/3d/texture_cube.h"
 #include "nel/3d/material.h"
 #include "nel/3d/vertex_buffer.h"
 #include "nel/3d/index_buffer.h"
@@ -92,6 +96,36 @@ static void fillEnvMap(uint8 *pixels)
 			p[0] = (uint8)(255.f * (core + 0.6f * ring));
 			p[1] = (uint8)(255.f * (0.7f * core + 0.4f * ring));
 			p[2] = (uint8)(255.f * (0.2f * core + 0.9f * ring));
+			p[3] = 255;
+		}
+	}
+}
+
+
+// One face of a cube map: a colour ramp keyed by the face index, with a bright spot whose
+// position differs per face. A reflection map that silently falls back to UV0 shows the same
+// face pattern all over the sphere instead of six distinct directions.
+static void fillCubeFace(uint8 *pixels, uint face)
+{
+	static const uint8 base[6][3] = {
+		{ 220,  60,  60 }, // +X
+		{  60, 220,  60 }, // -X
+		{  60,  60, 220 }, // +Y
+		{ 220, 220,  60 }, // -Y
+		{ 220,  60, 220 }, // +Z
+		{  60, 220, 220 }  // -Z
+	};
+	const uint sx = face & 1, sy = (face >> 1) & 1;
+	for (uint y = 0; y < TEX_SIZE; ++y)
+	{
+		for (uint x = 0; x < TEX_SIZE; ++x)
+		{
+			uint8 *p = &pixels[(y * TEX_SIZE + x) * 4];
+			const float fx = float(x) / float(TEX_SIZE), fy = float(y) / float(TEX_SIZE);
+			const float spot = ((int(x / 16) == int(sx * 3 + 3) && int(y / 16) == int(sy * 3 + 3))) ? 1.f : 0.f;
+			p[0] = (uint8)(base[face][0] * (0.35f + 0.65f * fx) + 255.f * spot) / (spot > 0.f ? 2 : 1);
+			p[1] = (uint8)(base[face][1] * (0.35f + 0.65f * fy) + 255.f * spot) / (spot > 0.f ? 2 : 1);
+			p[2] = (uint8)(base[face][2] * (0.35f + 0.65f * (1.f - fx)) + 255.f * spot) / (spot > 0.f ? 2 : 1);
 			p[3] = 255;
 		}
 	}
@@ -170,12 +204,13 @@ static CMatrix buildCamWorldMatrix(const CVector &eye, const CVector &target, co
 class CSpecularDemo
 {
 public:
-	CSpecularDemo(bool normalMaterial, bool legacy)
+	CSpecularDemo(bool normalMaterial, bool legacy, bool cubeMap)
 	{
 		_NormalMaterial = normalMaterial;
 		_LegacyDriver = legacy;
 		_CloseWindow = false;
 		_Spin = false;
+		_CubeMap = cubeMap; // must be known before the textures are built below
 		_Time = 0.0;
 		_Frame = 0;
 		_Driver = NULL;
@@ -222,11 +257,35 @@ public:
 		texSurface->setWrapS(ITexture::Clamp);
 		texSurface->setWrapT(ITexture::Clamp);
 
-		px = new uint8[texBytes];
-		fillEnvMap(px);
-		CTextureMem *texEnv = new CTextureMem(px, texBytes, true, false, TEX_SIZE, TEX_SIZE, CBitmap::RGBA);
-		texEnv->setWrapS(ITexture::Clamp);
-		texEnv->setWrapT(ITexture::Clamp);
+		ITexture *texEnv = NULL;
+		if (_CubeMap)
+		{
+			// A cube map stage is what makes the driver choose the *reflection* texgen mode
+			// (TexGenReflectionMap) instead of the sphere map, so the two generated modes are
+			// covered one at a time by --cube.
+			CTextureCube *cube = new CTextureCube();
+			for (uint f = 0; f < 6; ++f)
+			{
+				px = new uint8[texBytes];
+				fillCubeFace(px, f);
+				CTextureMem *face = new CTextureMem(px, texBytes, true, false, TEX_SIZE, TEX_SIZE, CBitmap::RGBA);
+				// A face with no share name makes supportSharing() false, and the cube path still
+				// calls getShareName(), which asserts on an empty name (texture_mem.h:148). Give
+				// each face one; they are only ever used by this sample.
+				face->setShareName(NLMISC::toString("nl_sample_specular_cube_%u", f));
+				cube->setTexture((CTextureCube::TFace)f, face);
+			}
+			texEnv = cube;
+		}
+		else
+		{
+			px = new uint8[texBytes];
+			fillEnvMap(px);
+			CTextureMem *env = new CTextureMem(px, texBytes, true, false, TEX_SIZE, TEX_SIZE, CBitmap::RGBA);
+			env->setWrapS(ITexture::Clamp);
+			env->setWrapT(ITexture::Clamp);
+			texEnv = env;
+		}
 
 		// The material under test. createMaterial() gives a UMaterial whose CMaterial the driver
 		// owns (deleteMaterial() deletes it), and getObjectPtr() is how the shader is reached:
@@ -313,6 +372,7 @@ private:
 	bool			_LegacyDriver;
 	bool			_CloseWindow;
 	bool			_Spin;
+	bool			_CubeMap;
 	double			_Time;
 	uint			_Frame;
 
@@ -329,6 +389,7 @@ sint main(sint argc, char **argv)
 	bool normalMaterial = false;
 	bool legacy = false;
 	bool spin = false;
+	bool cubeMap = false;
 	sint maxFrames = 0; // 0 = run until the window is closed
 	for (sint i = 1; i < argc; ++i)
 	{
@@ -340,10 +401,12 @@ sint main(sint argc, char **argv)
 			maxFrames = atoi(argv[++i]);
 		else if (strcmp(argv[i], "--spin") == 0)
 			spin = true;
+		else if (strcmp(argv[i], "--cube") == 0)
+			cubeMap = true;
 	}
 
 #ifdef __EMSCRIPTEN__
-	static CSpecularDemo *demo = new CSpecularDemo(normalMaterial, legacy);
+	static CSpecularDemo *demo = new CSpecularDemo(normalMaterial, legacy, cubeMap);
 	demo->setSpin(spin);
 	static sint framesLeft = maxFrames;
 	struct CLoop {
@@ -356,7 +419,7 @@ sint main(sint argc, char **argv)
 	};
 	emscripten_set_main_loop(CLoop::run, 0, 1);
 #else
-	CSpecularDemo demo(normalMaterial, legacy);
+	CSpecularDemo demo(normalMaterial, legacy, cubeMap);
 	demo.setSpin(spin);
 	while (!demo.mustClose() && (maxFrames == 0 || (sint)demo.getFrame() < maxFrames))
 	{
