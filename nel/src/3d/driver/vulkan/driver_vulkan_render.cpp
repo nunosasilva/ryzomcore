@@ -43,6 +43,18 @@ namespace NLVULKAN {
 // Shaders
 // ---------------------------------------------------------------------------
 
+static const char *s_PushConstantGLSL =
+	"layout(push_constant) uniform Push {\n"
+	"    mat4 mvp;\n"
+	"    vec4 color;\n"
+	"    float alphaRef;\n"
+	"    int flags;\n"
+	"    uint texEnv0;\n"
+	"    uint texEnv1;\n"
+	"    uint texEnv2;\n"
+	"    uint texEnv3;\n"
+	"} pc;\n";
+
 static std::string buildVertexShader(uint32 flags)
 {
 	bool hasColor = (flags & CVertexBuffer::PrimaryColorFlag) != 0;
@@ -55,14 +67,8 @@ static std::string buildVertexShader(uint32 flags)
 		src += "layout(location = 3) in vec4 attrColor;\n";
 	if (hasUV)
 		src += "layout(location = 8) in vec2 attrTexCoord0;\n";
+	src += s_PushConstantGLSL;
 	src +=
-		"layout(push_constant) uniform Push {\n"
-		"    mat4 mvp;\n"
-		"    vec4 color;\n"
-		"    vec4 uvTransform;\n"
-		"    float alphaRef;\n"
-		"    int flags;\n"
-		"} pc;\n"
 		"layout(location = 0) out vec4 vColor;\n"
 		"layout(location = 1) out vec2 vUv;\n"
 		"void main() {\n"
@@ -74,46 +80,101 @@ static std::string buildVertexShader(uint32 flags)
 	else
 		src += "    vColor = pc.color;\n";
 	if (hasUV)
-		src += "    vUv = attrTexCoord0 * pc.uvTransform.xy + pc.uvTransform.zw;\n";
+		src += "    vUv = attrTexCoord0;\n";
 	else
-		src += "    vUv = pc.uvTransform.zw;\n";
+		src += "    vUv = vec2(0.0);\n";
 	src += "}\n";
 	return src;
 }
 
-static const char *s_FragmentShader =
-	"#version 450\n"
+/// TexEnv interpreter, the same packing as CMaterial::CTexEnv (see the GL3 mega
+/// pixel program for the reference implementation).
+static const std::string s_FragmentShader =
+	std::string("#version 450\n") +
 	"layout(location = 0) in vec4 vColor;\n"
 	"layout(location = 1) in vec2 vUv;\n"
 	"layout(binding = 0) uniform sampler2D tex0;\n"
 	"layout(binding = 1) uniform sampler2D tex1;\n"
 	"layout(binding = 2) uniform sampler2D tex2;\n"
 	"layout(binding = 3) uniform sampler2D tex3;\n"
-	"layout(push_constant) uniform Push {\n"
-	"    mat4 mvp;\n"
-	"    vec4 color;\n"
-	"    vec4 uvTransform;\n"
-	"    float alphaRef;\n"
-	"    int flags;\n"
-	"} pc;\n"
+	+ std::string(s_PushConstantGLSL) +
 	"layout(location = 0) out vec4 fragColor;\n"
+	"vec4 getTexEnvSrc(int src, vec4 texel, vec4 previous, vec4 diffuse, vec4 cnst) {\n"
+	"  return (src == 0) ? texel : (src == 1) ? previous : (src == 2) ? diffuse : cnst;\n"
+	"}\n"
+	"vec3 getArgRGB(int src, int op, vec4 texel, vec4 previous, vec4 diffuse, vec4 cnst) {\n"
+	"  vec4 s = getTexEnvSrc(src, texel, previous, diffuse, cnst);\n"
+	"  return (op == 0) ? s.rgb : (op == 1) ? (vec3(1.0) - s.rgb) : (op == 2) ? s.aaa : (vec3(1.0) - s.aaa);\n"
+	"}\n"
+	"float getArgA(int src, int op, vec4 texel, vec4 previous, vec4 diffuse, vec4 cnst) {\n"
+	"  vec4 s = getTexEnvSrc(src, texel, previous, diffuse, cnst);\n"
+	"  return (op == 0) ? s.a : (op == 1) ? (1.0 - s.a) : s.a;\n"
+	"}\n"
+	"vec3 combRGB(int op, vec3 a0, vec3 a1, vec3 a2, vec4 texel, vec4 prev, vec4 diff, vec4 cnst) {\n"
+	"  if (op == 0) return a0;\n"
+	"  if (op == 1) return a0 * a1;\n"
+	"  if (op == 2) return a0 + a1;\n"
+	"  if (op == 3) return a0 + a1 - vec3(0.5);\n"
+	"  if (op == 4) { float s = texel.a; return a0 * s + a1 * (1.0 - s); }\n"
+	"  if (op == 5) { float s = prev.a;  return a0 * s + a1 * (1.0 - s); }\n"
+	"  if (op == 6) { float s = diff.a;  return a0 * s + a1 * (1.0 - s); }\n"
+	"  if (op == 7) { float s = cnst.a;  return a0 * s + a1 * (1.0 - s); }\n"
+	"  if (op == 9) return a0 * a1 + a2;\n"
+	"  return a0;\n"
+	"}\n"
+	"float combA(int op, float a0, float a1, float a2, vec4 texel, vec4 prev, vec4 diff, vec4 cnst) {\n"
+	"  if (op == 0) return a0;\n"
+	"  if (op == 1) return a0 * a1;\n"
+	"  if (op == 2) return a0 + a1;\n"
+	"  if (op == 3) return a0 + a1 - 0.5;\n"
+	"  if (op == 4) { float s = texel.a; return a0 * s + a1 * (1.0 - s); }\n"
+	"  if (op == 5) { float s = prev.a;  return a0 * s + a1 * (1.0 - s); }\n"
+	"  if (op == 6) { float s = diff.a;  return a0 * s + a1 * (1.0 - s); }\n"
+	"  if (op == 7) { float s = cnst.a;  return a0 * s + a1 * (1.0 - s); }\n"
+	"  if (op == 9) return a0 * a1 + a2;\n"
+	"  return a0;\n"
+	"}\n"
+	"vec4 applyTexEnv(uint env, vec4 texel, vec4 prev, vec4 diff, vec4 cnst) {\n"
+	"  int opRGB   = int(env & 0xFu);\n"
+	"  int src0RGB = int((env >>  4) & 0x3u);\n"
+	"  int op0RGB  = int((env >>  6) & 0x3u);\n"
+	"  int src1RGB = int((env >>  8) & 0x3u);\n"
+	"  int op1RGB  = int((env >> 10) & 0x3u);\n"
+	"  int src2RGB = int((env >> 12) & 0x3u);\n"
+	"  int op2RGB  = int((env >> 14) & 0x3u);\n"
+	"  int opA     = int((env >> 16) & 0xFu);\n"
+	"  int src0A   = int((env >> 20) & 0x3u);\n"
+	"  int op0A    = int((env >> 22) & 0x3u);\n"
+	"  int src1A   = int((env >> 24) & 0x3u);\n"
+	"  int op1A    = int((env >> 26) & 0x3u);\n"
+	"  int src2A   = int((env >> 28) & 0x3u);\n"
+	"  int op2A    = int((env >> 30) & 0x3u);\n"
+	"  vec3 a0r = getArgRGB(src0RGB, op0RGB, texel, prev, diff, cnst);\n"
+	"  vec3 a1r = getArgRGB(src1RGB, op1RGB, texel, prev, diff, cnst);\n"
+	"  vec3 a2r = getArgRGB(src2RGB, op2RGB, texel, prev, diff, cnst);\n"
+	"  float a0a = getArgA(src0A, op0A, texel, prev, diff, cnst);\n"
+	"  float a1a = getArgA(src1A, op1A, texel, prev, diff, cnst);\n"
+	"  float a2a = getArgA(src2A, op2A, texel, prev, diff, cnst);\n"
+	"  return vec4(combRGB(opRGB, a0r, a1r, a2r, texel, prev, diff, cnst),\n"
+	"              combA(opA, a0a, a1a, a2a, texel, prev, diff, cnst));\n"
+	"}\n"
 	"void main() {\n"
-	"    vec4 res = vColor;\n"
-	"    if ((pc.flags & 1) != 0) res *= texture(tex0, vUv);\n"
-	"    if ((pc.flags & 2) != 0) res *= texture(tex1, vUv);\n"
-	"    if ((pc.flags & 4) != 0) res *= texture(tex2, vUv);\n"
-	"    if ((pc.flags & 8) != 0) res *= texture(tex3, vUv);\n"
-	"    if ((pc.flags & 16) != 0 && res.a < pc.alphaRef) discard;\n"
-	"    fragColor = res;\n"
+	"    vec4 frag = vColor;\n"
+	"    if ((pc.flags & 1) != 0) frag = applyTexEnv(pc.texEnv0, texture(tex0, vUv), frag, vColor, vColor);\n"
+	"    if ((pc.flags & 2) != 0) frag = applyTexEnv(pc.texEnv1, texture(tex1, vUv), frag, vColor, vColor);\n"
+	"    if ((pc.flags & 4) != 0) frag = applyTexEnv(pc.texEnv2, texture(tex2, vUv), frag, vColor, vColor);\n"
+	"    if ((pc.flags & 8) != 0) frag = applyTexEnv(pc.texEnv3, texture(tex3, vUv), frag, vColor, vColor);\n"
+	"    if ((pc.flags & 16) != 0 && frag.a < pc.alphaRef) discard;\n"
+	"    fragColor = frag;\n"
 	"}\n";
 
 struct SPushConstants
 {
 	float	MVP[16];
 	float	Color[4];
-	float	UVTransform[4];
 	float	AlphaRef;
 	sint32	Flags;
+	uint32	TexEnv[4];
 };
 
 // ---------------------------------------------------------------------------
@@ -307,7 +368,7 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	VkShaderModule fragmentShader = _FragmentShader;
 	if (fragmentShader == VK_NULL_HANDLE)
 	{
-		if (!compileShader(s_FragmentShader, &fragmentShader, false))
+		if (!compileShader(s_FragmentShader.c_str(), &fragmentShader, false))
 			return VK_NULL_HANDLE;
 		_FragmentShader = fragmentShader;
 	}
@@ -764,6 +825,8 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 	_MaterialAlphaTest = (mat.getFlags() & IDRV_MAT_ALPHA_TEST) != 0;
 	_MaterialAlphaRef = mat.getAlphaTestThreshold();
 	_MaterialColor = mat.getColor();
+	for (uint stage = 0; stage < 4; ++stage)
+		_TexEnv[stage] = mat.getTexEnvMode(stage);
 	_MaterialShader = mat.getShader();
 	_CurrentMaterial = &mat;
 
@@ -824,9 +887,11 @@ void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	push.Color[1] = _MaterialColor.G / 255.f;
 	push.Color[2] = _MaterialColor.B / 255.f;
 	push.Color[3] = _MaterialColor.A / 255.f;
-	push.UVTransform[0] = 1.f;
-	push.UVTransform[1] = 1.f;
 	push.AlphaRef = _MaterialAlphaRef;
+	push.TexEnv[0] = _TexEnv[0];
+	push.TexEnv[1] = _TexEnv[1];
+	push.TexEnv[2] = _TexEnv[2];
+	push.TexEnv[3] = _TexEnv[3];
 
 	int flags = 0;
 	for (uint stage = 0; stage < 4; ++stage)
@@ -897,7 +962,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 	key.DepthCompare = _DepthFunc;
 	key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
-	key.FrontFace = VK_FRONT_FACE_CLOCKWISE;
+	key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	key.ColorWriteMask = _ClearColorMask ? _ClearColorMask : 0xF;
 	key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 	key.HasTexture0 = _StageTextures[0] ? 1 : 0;
@@ -945,7 +1010,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 	key.DepthCompare = _DepthFunc;
 	key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
-	key.FrontFace = VK_FRONT_FACE_CLOCKWISE;
+	key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	key.ColorWriteMask = _ClearColorMask ? _ClearColorMask : 0xF;
 	key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 	key.HasTexture0 = _StageTextures[0] ? 1 : 0;
@@ -1091,7 +1156,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 		key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 		key.DepthCompare = _DepthFunc;
 		key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
-		key.FrontFace = VK_FRONT_FACE_CLOCKWISE;
+		key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 		key.ColorWriteMask = _ClearColorMask ? _ClearColorMask : 0xF;
 		key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 		key.HasTexture0 = _StageTextures[0] ? 1 : 0;
