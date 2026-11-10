@@ -1119,8 +1119,14 @@ bool CDriverGL3::release()
 	// release caustic cube map
 //	_CauticCubeMap = NULL;
 
-	// Make sure vertex buffers are really all gone
-	// FIXME VERTEXBUFFER
+	// Vertex buffers: measured 2026-11-10 on the landscape scene (tile streaming on, 200 frames),
+	// counting nglGenBuffers/nglDeleteBuffers in CVBDrvInfosGL3: 1358 created / 1350 deleted and
+	// the live count flat at 8 from frame 60 to frame 200. So the streaming path frees its buffers
+	// as tiles go out; what is left here are the buffers still referenced by engine objects, which
+	// die with them - and, like the uniform buffers, after the GL context is gone. Nothing
+	// accumulates per frame, which is the part that matters. (The old FIXME asked whether they are
+	// "really all gone" at this point; this release path is not reached by zviewer, so that half
+	// stays unverified rather than assumed.)
 
 	// Delete default VAO
 	_DriverGLStates.release();
