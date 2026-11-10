@@ -632,12 +632,66 @@ uint32 CDriverVulkan::allocUniformBlock(const void *data, uint32 size)
 		align = 16;
 	uint32 offset = (_UniformRingOffset + align - 1) & ~(align - 1);
 	if (offset + size > _UniformRingSize)
+	{
+		// Wrapping would overwrite blocks already referenced by the command
+		// buffer being recorded. Grow instead; the old buffer stays alive until
+		// the next frame boundary (see growUniformRing()).
+		if (!growUniformRing(size))
+			return 0xFFFFFFFF;
 		offset = 0;
-	if (size > _UniformRingSize)
-		return 0xFFFFFFFF;
+	}
 	memcpy((uint8 *)_UniformRingMapped + offset, data, size);
 	_UniformRingOffset = offset + size;
 	return offset;
+}
+
+bool CDriverVulkan::growUniformRing(uint32 required)
+{
+	uint32 newSize = _UniformRingSize ? _UniformRingSize : 1024 * 1024;
+	while (newSize < required || newSize <= _UniformRingSize)
+		newSize *= 2;
+
+	VkBufferCreateInfo bci;
+	memset(&bci, 0, sizeof(bci));
+	bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bci.size = newSize;
+	bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+	bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	VkBuffer buffer = VK_NULL_HANDLE;
+	if (vkCreateBuffer(_Device, &bci, NULL, &buffer) != VK_SUCCESS)
+		return false;
+	VkMemoryRequirements req;
+	vkGetBufferMemoryRequirements(_Device, buffer, &req);
+	VkMemoryAllocateInfo mai;
+	memset(&mai, 0, sizeof(mai));
+	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	mai.allocationSize = req.size;
+	mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	VkDeviceMemory memory = VK_NULL_HANDLE;
+	if (vkAllocateMemory(_Device, &mai, NULL, &memory) != VK_SUCCESS)
+	{
+		vkDestroyBuffer(_Device, buffer, NULL);
+		return false;
+	}
+	vkBindBufferMemory(_Device, buffer, memory, 0);
+	void *mapped = NULL;
+	if (vkMapMemory(_Device, memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS)
+	{
+		vkDestroyBuffer(_Device, buffer, NULL);
+		vkFreeMemory(_Device, memory, NULL);
+		return false;
+	}
+
+	if (_UniformRing)
+		deferDestroyBuffer(_UniformRing, _UniformRingMemory);
+	_UniformRing = buffer;
+	_UniformRingMemory = memory;
+	_UniformRingMapped = mapped;
+	_UniformRingSize = newSize;
+	_UniformRingOffset = 0;
+	nlinfo("Vulkan: uniform ring grown to %u bytes", newSize);
+	return true;
 }
 
 // ---------------------------------------------------------------------------

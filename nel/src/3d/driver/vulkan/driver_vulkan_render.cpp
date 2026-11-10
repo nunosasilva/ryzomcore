@@ -879,36 +879,56 @@ bool CDriverVulkan::activeIndexBuffer(CIndexBuffer &ib)
 
 VkBuffer CDriverVulkan::getIndexUploadBuffer(const void *data, uint32 size, uint32 stride)
 {
-	if (_IndexRing == VK_NULL_HANDLE)
+	(void)stride;
+	const uint32 required = _IndexRingOffset + size;
+	if (_IndexRing == VK_NULL_HANDLE || required > _IndexRingSize)
 	{
-		if (_IndexRing)
-		{
-			vkDestroyBuffer(_Device, _IndexRing, NULL);
-			vkFreeMemory(_Device, _IndexRingMemory, NULL);
-		}
-		_IndexRingSize = 16 * 1024 * 1024u;
+		uint32 newSize = _IndexRingSize ? _IndexRingSize : 64 * 1024 * 1024u;
+		while (newSize < size || newSize < required)
+			newSize *= 2;
 		VkBufferCreateInfo bci;
 		memset(&bci, 0, sizeof(bci));
 		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-		bci.size = _IndexRingSize;
+		bci.size = newSize;
 		bci.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 		bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		vkCreateBuffer(_Device, &bci, NULL, &_IndexRing);
+		VkBuffer buffer = VK_NULL_HANDLE;
+		if (vkCreateBuffer(_Device, &bci, NULL, &buffer) != VK_SUCCESS)
+			return VK_NULL_HANDLE;
 		VkMemoryRequirements req;
-		vkGetBufferMemoryRequirements(_Device, _IndexRing, &req);
+		vkGetBufferMemoryRequirements(_Device, buffer, &req);
 		VkMemoryAllocateInfo mai;
 		memset(&mai, 0, sizeof(mai));
 		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		mai.allocationSize = req.size;
 		mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		vkAllocateMemory(_Device, &mai, NULL, &_IndexRingMemory);
-		vkBindBufferMemory(_Device, _IndexRing, _IndexRingMemory, 0);
-		vkMapMemory(_Device, _IndexRingMemory, 0, VK_WHOLE_SIZE, 0, &_IndexRingMapped);
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		if (vkAllocateMemory(_Device, &mai, NULL, &memory) != VK_SUCCESS)
+		{
+			vkDestroyBuffer(_Device, buffer, NULL);
+			return VK_NULL_HANDLE;
+		}
+		vkBindBufferMemory(_Device, buffer, memory, 0);
+		void *mapped = NULL;
+		if (vkMapMemory(_Device, memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS)
+		{
+			vkDestroyBuffer(_Device, buffer, NULL);
+			vkFreeMemory(_Device, memory, NULL);
+			return VK_NULL_HANDLE;
+		}
+		// The old ring is still referenced by the command buffer being
+		// recorded (and possibly the other in-flight frame); release it at the
+		// next frame boundary.
+		if (_IndexRing)
+			deferDestroyBuffer(_IndexRing, _IndexRingMemory);
+		_IndexRing = buffer;
+		_IndexRingMemory = memory;
+		_IndexRingMapped = mapped;
+		_IndexRingSize = newSize;
 		_IndexRingOffset = 0;
+		nlinfo("Vulkan: index ring grown to %u bytes", newSize);
 	}
-	if (_IndexRingOffset + size > _IndexRingSize)
-		_IndexRingOffset = 0; // simple wrap; frame is small enough that this is fine for now
 	// Always 4-byte align: 16- and 32-bit index draws share this ring, and
 	// vkCmdBindIndexBuffer needs the offset to be a multiple of the index size.
 	_IndexRingOffset = (_IndexRingOffset + 3) & ~3u;
@@ -1211,36 +1231,8 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	const uint32 slot = 512;
 	if (_UniformRingOffset + slot > _UniformRingSize)
 	{
-		// Wrapping mid-frame would overwrite data already referenced by recorded
-		// commands; grow the ring instead.
-		vkDeviceWaitIdle(_Device);
-		if (_UniformRing)
-		{
-			vkDestroyBuffer(_Device, _UniformRing, NULL);
-			vkFreeMemory(_Device, _UniformRingMemory, NULL);
-		}
-		_UniformRingSize *= 2;
-		VkBufferCreateInfo bci;
-		memset(&bci, 0, sizeof(bci));
-		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-		bci.size = _UniformRingSize;
-		bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-		bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		if (vkCreateBuffer(_Device, &bci, NULL, &_UniformRing) != VK_SUCCESS)
+		if (!growUniformRing(slot))
 			return false;
-		VkMemoryRequirements req;
-		vkGetBufferMemoryRequirements(_Device, _UniformRing, &req);
-		VkMemoryAllocateInfo mai;
-		memset(&mai, 0, sizeof(mai));
-		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		mai.allocationSize = req.size;
-		mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		if (vkAllocateMemory(_Device, &mai, NULL, &_UniformRingMemory) != VK_SUCCESS)
-			return false;
-		vkBindBufferMemory(_Device, _UniformRing, _UniformRingMemory, 0);
-		vkMapMemory(_Device, _UniformRingMemory, 0, VK_WHOLE_SIZE, 0, &_UniformRingMapped);
-		_UniformRingOffset = 0;
 	}
 	uint8 *dst = (uint8 *)_UniformRingMapped + _UniformRingOffset;
 	memcpy(dst, &u, sizeof(u));
