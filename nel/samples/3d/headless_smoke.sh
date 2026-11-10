@@ -70,6 +70,11 @@ SP_PID=$!
 # would match outright as 0x64 on ~12% of runs, silently capturing the whole display.)
 WIN=""
 COLORS=0
+# Capture only once the frame clears the sample's colour floor. Without this the
+# loop stops at the first non-blank frame, which can be before a sample has
+# finished loading its subject (the water sample shows its sky checker first and
+# its water surface a few seconds later, so a "not blank" break is a race).
+MIN_COLOURS=${SMOKE_MIN_COLOURS:-1}
 for t in $(seq 1 "$RUNSECS"); do
   if ! kill -0 "$SP_PID" 2>/dev/null; then
     echo "FAIL: sample exited after ${t}s, before any frame could be captured"
@@ -85,7 +90,7 @@ for t in $(seq 1 "$RUNSECS"); do
       || DISPLAY=":$DISPLAY_NUM" import -window root "$FRAME" 2>/dev/null
     if [ -s "$FRAME" ]; then
       COLORS=$(identify -format "%k" "$FRAME" 2>/dev/null)
-      [ "${COLORS:-0}" -gt 1 ] && break
+      [ "${COLORS:-0}" -gt "$MIN_COLOURS" ] && break
     fi
   fi
   sleep 1
@@ -151,8 +156,8 @@ if [ -s "$FRAME" ]; then
   # surface: nl_sample_water draws its sky checker and cube even when the water shape failed to
   # load (32 unique colours) and draws the wave-distorted surface when it did (849), so a floor
   # of ~100 is what makes it a water test rather than a "did it crash" test. Default 1 keeps
-  # every other sample exactly as strict as it was.
-  MIN_COLOURS=${SMOKE_MIN_COLOURS:-1}
+  # every other sample exactly as strict as it was. The poll above uses the same floor, so
+  # the timeout expires while the subject is missing rather than capturing too early.
   if [ -z "${COLORS:-}" ] || [ "${COLORS:-0}" -le "$MIN_COLOURS" ]; then
     if [ "$MIN_COLOURS" -le 1 ]; then
       echo "FAIL: captured frame is blank ($COLORS unique colours)"
