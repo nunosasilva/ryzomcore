@@ -196,6 +196,60 @@ IDriver		*CDRU::createGl3Driver()
 }
 
 // ***************************************************************************
+IDriver		*CDRU::createVkDriver()
+{
+#ifdef NL_STATIC
+
+#ifdef NL_VULKAN_AVAILABLE
+	return createVulkanDriverInstance ();
+#else
+	return NULL;
+#endif // NL_VULKAN_AVAILABLE
+
+#else
+
+	IDRV_CREATE_PROC	createDriver = nullptr;
+	IDRV_VERSION_PROC	versionDriver = nullptr;
+
+	CLibrary	driverLib;
+
+#if defined(NL_OS_UNIX) && defined(NL_DRIVER_PREFIX)
+	driverLib.addLibPath(NL_DRIVER_PREFIX);
+#endif
+
+	if (!driverLib.loadLibrary(NL3D_VK_DLL_NAME, true, true, false))
+	{
+		throw EDruVulkanDriverNotFound();
+	}
+
+	nlinfo ("Using the library '" NL3D_VK_DLL_NAME "' that is in the directory: '%s'", driverLib.getLibFileName().c_str());
+
+	createDriver = (IDRV_CREATE_PROC) driverLib.getSymbolAddress(IDRV_CREATE_PROC_NAME);
+	if (createDriver == nullptr)
+	{
+		throw EDruVulkanDriverCorrupted();
+	}
+
+	versionDriver = (IDRV_VERSION_PROC) driverLib.getSymbolAddress(IDRV_VERSION_PROC_NAME);
+	if (versionDriver != nullptr)
+	{
+		if (versionDriver()<IDriver::InterfaceVersion)
+			throw EDruVulkanDriverOldVersion();
+		else if (versionDriver()>IDriver::InterfaceVersion)
+			throw EDruVulkanDriverUnknownVersion();
+	}
+
+	IDriver		*ret= createDriver();
+	if (ret == nullptr)
+	{
+		throw EDruVulkanDriverCantCreateDriver();
+	}
+
+	return ret;
+#endif
+}
+
+// ***************************************************************************
 IDriver		*CDRU::createGlEsDriver()
 {
 #ifdef NL_STATIC

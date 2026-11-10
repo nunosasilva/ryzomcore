@@ -152,6 +152,9 @@ CDriverUser::CDriverUser (uintptr_t windowIcon, TDriver driver, emptyProc exitFu
 	if( !_Driver && driver == OpenGlEs3 )
 		_Driver = CDRU::createGlEs3Driver();
 
+	if( !_Driver && driver == Vulkan )
+		_Driver = CDRU::createVkDriver();
+
 	nlassert(_Driver);
 	_Driver->init (windowIcon, exitFunc);
 
