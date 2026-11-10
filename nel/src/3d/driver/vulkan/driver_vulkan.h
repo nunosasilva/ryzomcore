@@ -19,6 +19,8 @@
 
 #include "stdvulkan.h"
 
+#include "driver_vulkan_mega.h"
+
 #include "nel/3d/driver.h"
 #include "nel/3d/driver_user.h"
 #include "nel/3d/vertex_buffer.h"
@@ -111,6 +113,8 @@ struct CPipelineKey
 	uint32	AlphaTest;
 	uint32	HasTexture0;
 	uint32	AlphaBlendBits;
+	uint32	Mega;             // use the mega VP/PP instead of the simple shader
+	uint32	MegaCube;         // mega PP samples a cubemap at sampler1 (Specular)
 
 	bool operator==(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
 	bool operator<(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) < 0; }
@@ -481,6 +485,20 @@ private:
 	void					drawTestTriangle(VkCommandBuffer cmd);
 	void					commitPushConstants(const CPipelineKey &key, VkCommandBuffer cmd, CVertexBuffer &vb);
 
+	// --- Mega shaders (driver_vulkan_mega_render.cpp) ---
+	bool					initMega();
+	void					shutdownMega();
+	VkShaderModule			getMegaVertexShader();
+	VkShaderModule			getMegaPixelShader(bool cube, bool specular);
+	bool					canUseMegaPath(bool &cube);
+	void					fillMegaPipelineKey(CPipelineKey &key);
+	bool					bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb, bool cube, bool specular);
+	const CCameraUBOData	&stageMegaCameraUBO();
+	void					stageMegaLightTableUBO();
+	void					stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data);
+	void					stageMegaMaterialUBO(CMaterial &mat, CMaterialUBOData &data);
+	uint32					allocUniformBlock(const void *data, uint32 size);
+
 	// --- Textures (driver_vulkan_texture.cpp) ---
 	CTextureVulkan			*getTextureVulkan(ITexture &tex);
 	bool					uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool upload);
@@ -499,6 +517,21 @@ private:
 	VkShaderModule				_FragmentShader;
 	VkSampler					_DefaultSampler;
 	CTextureVulkan				_WhiteTexture;
+
+	// --- Mega shader resources ---
+	bool						_MegaEnabled;
+	VkDescriptorSetLayout		_MegaDescriptorSetLayout;
+	VkPipelineLayout			_MegaPipelineLayout;
+	VkShaderModule				_MegaVertexShader;
+	std::map<uint32, VkShaderModule>	_MegaPixelShaderVariants;
+	VkBuffer					_MegaLightTableBuffer[2];
+	VkDeviceMemory				_MegaLightTableMemory[2];
+	void						*_MegaLightTableMapped[2];
+	bool						_MegaLightTableStaged;
+	VkBuffer					_MegaUserBuffer;
+	VkDeviceMemory				_MegaUserBufferMemory;
+	CCameraUBOData				_MegaCameraData;
+	bool						_MegaCameraDirty;
 
 	std::map<ITexture *, CTextureVulkan>	_TexturesVulkan;
 	std::vector<CTextureVulkan>				_PendingTextureDestroy;
@@ -544,6 +577,7 @@ private:
 		CRGBA		Ambient;
 		uint8		Mode;
 		bool		Enabled;
+		CLightTableUBOEntry	Entry; // full std140 light table entry for the mega shaders
 	};
 	SLightState				_Lights[8];
 	SLightState				_LightTable[128];
@@ -552,6 +586,7 @@ private:
 	sint16					_LightIndices[8];
 	uint8					_LightFactors[8];
 	uint32					_LightCount;
+	uint32					_NumPerPixelLights;
 	CRGBA					_ObjectAmbient;
 	CRGBA					_AmbientColor;
 

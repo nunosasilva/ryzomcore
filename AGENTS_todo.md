@@ -1,12 +1,14 @@
 # Port Ryzom to Vulkan — handoff
 
-_Last updated: 2026-11-10, late evening (unattended session)_
+_Last updated: 2026-11-10, late evening (mega shader port session)_
 
 ## Status in one line
 
 **`nel_drv_vulkan` runs the live client on Vulkan: the login screen (all text),
-the in-game UI, the sky and the landscape render.** Lighting, lightmaps, vertex
-programs and post effects are still missing; the world therefore looks flat and
+the in-game UI, the sky and the landscape render.** The GL3 mega shaders are
+ported and can replace the simple shader with `NLVK_MEGA=1` (login screen
+pixel-identical); they are off by default. Vertex programs, texgen, lightmap
+passes and post effects are still missing; the world therefore looks flat and
 some meshes (vegetation) are black.
 
 ## Branch
@@ -38,21 +40,36 @@ after the Vulkan changes: the GL3 mega shaders initialise and the client runs).
   table (`setLights`/`setLightTableEntry`).
 - Y is handled with a negative-height viewport (GL-like bottom-up), GL depth is
   converted to Vulkan [0,1] in the vertex shader, front face is CCW.
+- **Mega shaders** (`driver_vulkan_mega.cpp`, `driver_vulkan_mega.h`,
+  `driver_vulkan_mega_render.cpp`), enabled with `NLVK_MEGA=1`:
+  the GL3 `megaVPGenerate`/`megaPPGenerate` are ported (fully UBO-backed
+  variant, explicit `layout(location)` varyings, `#version 450`, UBO/sampler
+  bindings injected); descriptor layout 0-3 builtin UBOs, 4-6 user UBO
+  placeholders, 8-15 samplers; camera/light-table/object/material data staged
+  like `driver_opengl3_render_state.cpp` + `driver_opengl3_light.cpp`;
+  per-frame light-table buffer, per-draw camera/object/material from the
+  uniform ring; PPL and fog paths are generated and driven by the object UBO.
+  With `NLVK_MEGA=1` on the login screen: 2392/2392 draws use the mega path and
+  the frame is pixel-identical to the simple path (ImageMagick AE=0).
+  Materials the mega path cannot represent yet (LightMap, cubemaps outside
+  stage 1) fall back to the simple shader per draw.
 - ~60 fps (vsync) in game on RADV, ~600 draw calls/frame.
 - Validation layer is clean apart from a gamescope WSI
   `VkSwapchainPresentModeInfoKHR` warning that comes from the gamescope layer.
 
 ## Known gaps
 
-1. **Lightmaps / shader types.** Only the TexEnv path exists. The GL3 mega
-   shaders implement `CMaterial::LightMap`, `Specular`, PPL, water and fog;
-   porting them (`megaVPGenerate`/`megaPPGenerate` are pure GLSL text builders,
-   `convertNelvpToGLSL` too) is the main remaining rendering work. This is also
-   why vegetation and lightmapped meshes look black.
+1. **Shader types.** The mega path implements `Normal`, `UserColor` and
+   `Specular` (with the cube variant). `CMaterial::LightMap` still uses the
+   simple path because lightmap texture passes are not set up; `Water` and the
+   deprecated shaders render as Normal. EMBM matrices are not staged.
+   Remaining GL3 reference code: `driver_opengl3_material.cpp` (`setupLightMapPass`,
+   `setupWaterPass`).
 2. **Vertex programs.** `supportVertexProgram()`/`compileVertexProgram()` return
    false, so NelVP skinning, GPU skinning and the wind-tree VP never run. The
    engine falls back to its fixed path, but skinned characters and vegetation
-   are wrong or missing.
+   are wrong or missing. The mega descriptor set already reserves bindings 4-6
+   (user VP/PP/skeleton) for this.
 3. **Render targets.** `setRenderTarget`/`copyTargetToTexture` are stubs, so
    bloom, FXAA, water reflection and shadow maps are disabled.
 4. **Partial texture uploads.** `uploadTexture` re-uploads the whole texture;
@@ -63,7 +80,8 @@ after the Vulkan changes: the GL3 mega shaders initialise and the client runs).
    no pipeline cache persistence, no vertex buffer ring. Fine at the current
    draw counts, not great.
 7. `getTotalVideoMemory()` returns a hard-coded 4 GiB.
-8. Cubemaps are uploaded as 2D textures (`CTextureCube` path not implemented).
+8. Cubemaps are uploaded as 2D textures (`CTextureCube` path not implemented),
+   so the Specular cube variant is generated but cannot get a cube view yet.
 
 ## Environment check: official client OK (2026-11-10)
 
@@ -121,27 +139,31 @@ symlinked to `~/Projects/ryzom/ryzom_live`, local `client.cfg`
 (`Driver3D="Vulkan"`, 1280x800 windowed), `save/`. Copy
 `build-vulkan/bin/ryzom_client_dev` there as `ryzom_client` and run inside
 gamescope with `LD_LIBRARY_PATH=<repo>/build-vulkan/lib`.
+(`~/Projects/ryzom/ryzom_live_vk2_mega` is a second run dir with the same layout,
+used to test the mega shader path without racing the other client tests.)
 
 Driver debug env vars: `NLVK_VALIDATION=1`, `NLVK_SCREENSHOT[_SEQ]`,
 `NLVK_NOCULL=1`, `NLVK_FORCECLEAR=1`, `NLVK_TESTTRI=1`.
 
 ## Next steps (in order of value)
 
-1. Port the GL3 mega vertex/pixel programs and the four builtin UBOs
-   (`NlCamera`, `NlLightTable`, `NlModel`, `NlMaterial`): the generators are
-   `driver_opengl3_vertex_mega_program.cpp`, `driver_opengl3_pixel_mega_program.cpp`,
-   the UBO layout is in `driver_opengl3_uniform_buffer.cpp` + `driver_vulkan`
-   needs `layout(binding=N)` injected or reflected. Staging code to copy:
-   `driver_opengl3_render_state.cpp` (camera/object/material) and
-   `driver_opengl3_light.cpp`.
-2. Vertex programs: reuse `convertNelvpToGLSL` (`driver_opengl3_nelvp.cpp`) and
-   the `NlNelvpConstants` UBO for user VPs; then GPU skinning and the wind tree
-   VP can compile and `supportVertexProgram()` can return true.
-3. Render targets + bloom/FXAA/water reflection (start with
+1. User vertex programs: reuse `convertNelvpToGLSL` (`driver_opengl3_nelvp.cpp`)
+   as the mega VP insert source and the `NlNelvpConstants` UBO; then GPU
+   skinning and the wind tree VP can compile and `supportVertexProgram()` can
+   return true. Use descriptor bindings 4-6 already reserved by the mega layout.
+2. Lightmap passes: stage `CMaterial::_LightMaps` into the mega sampler stages
+   and the per-pass material UBO slots (see `setupLightMapPass` in
+   `driver_opengl3_material.cpp`), then enable mega for `CMaterial::LightMap`.
+3. TexGen: the mega VP already implements object/eye linear, reflection and
+   sphere map from `nlTexGenMode`; the Vulkan driver stages `-1` (disabled).
+   Copy the mode selection from `driver_opengl3_material.cpp`.
+4. Cubemaps: implement `CTextureCube` upload (cube image + cube view) so the
+   Specular mega variant gets a real cube sampler.
+5. Render targets + bloom/FXAA/water reflection (start with
    `setRenderTarget`, `getRenderTargetSize`, `copyTargetToTexture`).
-4. `getBuffer()` for in-game screenshots (the `recordScreenshotCopy` code in
+6. `getBuffer()` for in-game screenshots (the `recordScreenshotCopy` code in
    `driver_vulkan.cpp` already does the hard part).
-5. Partial texture uploads and compressed (BC) textures.
+7. Partial texture uploads and compressed (BC) textures.
 
 ## Reference map
 

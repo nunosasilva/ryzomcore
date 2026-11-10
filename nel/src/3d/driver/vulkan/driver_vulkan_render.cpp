@@ -29,6 +29,8 @@
 #include "nel/3d/viewport.h"
 #include "nel/3d/scissor.h"
 
+#include <cmath>
+
 #include <glslang/Public/ShaderLang.h>
 #include <SPIRV/GlslangToSpv.h>
 #include <glslang/Public/ResourceLimits.h>
@@ -410,21 +412,35 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 		return it->second.Pipeline;
 
 	uint32 shaderFlags = key.VertexFlags & (CVertexBuffer::PrimaryColorFlag | CVertexBuffer::TexCoord0Flag);
-	VkShaderModule vertexShader = _VertexShaderVariants[shaderFlags];
-	if (vertexShader == VK_NULL_HANDLE)
+	VkShaderModule vertexShader;
+	VkShaderModule fragmentShader;
+	VkPipelineLayout pipelineLayout = _PipelineLayout;
+	if (key.Mega)
 	{
-		std::string source = buildVertexShader(key.VertexFlags);
-		if (!compileShader(source.c_str(), &vertexShader, true))
-			return VK_NULL_HANDLE;
-		_VertexShaderVariants[shaderFlags] = vertexShader;
+		vertexShader = getMegaVertexShader();
+		fragmentShader = getMegaPixelShader(key.MegaCube != 0, true);
+		pipelineLayout = _MegaPipelineLayout;
 	}
-	VkShaderModule fragmentShader = _FragmentShader;
-	if (fragmentShader == VK_NULL_HANDLE)
+	else
 	{
-		if (!compileShader(s_FragmentShader.c_str(), &fragmentShader, false))
-			return VK_NULL_HANDLE;
-		_FragmentShader = fragmentShader;
+		vertexShader = _VertexShaderVariants[shaderFlags];
+		if (vertexShader == VK_NULL_HANDLE)
+		{
+			std::string source = buildVertexShader(key.VertexFlags);
+			if (!compileShader(source.c_str(), &vertexShader, true))
+				return VK_NULL_HANDLE;
+			_VertexShaderVariants[shaderFlags] = vertexShader;
+		}
+		fragmentShader = _FragmentShader;
+		if (fragmentShader == VK_NULL_HANDLE)
+		{
+			if (!compileShader(s_FragmentShader.c_str(), &fragmentShader, false))
+				return VK_NULL_HANDLE;
+			_FragmentShader = fragmentShader;
+		}
 	}
+	if (vertexShader == VK_NULL_HANDLE || fragmentShader == VK_NULL_HANDLE)
+		return VK_NULL_HANDLE;
 
 	CPipelineKey k = key;
 
@@ -455,6 +471,32 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	else
 	{
 		attributes = layoutIt->second;
+	}
+
+	if (key.Mega)
+	{
+		// The mega vertex program declares all 16 standard attribute locations.
+		// Without the vertexAttributeRobustness/maintenance9 features, every
+		// declared location must have an attribute description. The unused ones
+		// get a single float read at offset 0; the shader never consumes them
+		// (nlVertexFormat guards the code paths).
+		bool present[16];
+		memset(present, 0, sizeof(present));
+		for (size_t i = 0; i < attributes.size(); ++i)
+			if (attributes[i].location < 16)
+				present[attributes[i].location] = true;
+		for (uint location = 0; location < 16; ++location)
+		{
+			if (present[location])
+				continue;
+			VkVertexInputAttributeDescription attribute;
+			memset(&attribute, 0, sizeof(attribute));
+			attribute.location = location;
+			attribute.binding = 0;
+			attribute.format = VK_FORMAT_R32_SFLOAT;
+			attribute.offset = 0;
+			attributes.push_back(attribute);
+		}
 	}
 
 	VkVertexInputBindingDescription binding;
@@ -545,7 +587,7 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	pci.pDepthStencilState = &depthStencil;
 	pci.pColorBlendState = &colorBlend;
 	pci.pDynamicState = &dynamicState;
-	pci.layout = _PipelineLayout;
+	pci.layout = pipelineLayout;
 	pci.renderPass = _RenderPass;
 	pci.subpass = 0;
 
@@ -554,6 +596,8 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	if (res != VK_SUCCESS)
 	{
 		nlwarning("Vulkan: vkCreateGraphicsPipelines failed (%d)", (int)res);
+		if (key.Mega)
+			_MegaEnabled = false;
 		return VK_NULL_HANDLE;
 	}
 
@@ -1112,6 +1156,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	key.ColorWriteMask = _ClearColorMask ? _ClearColorMask : 0xF;
 	key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 	key.HasTexture0 = _StageTextures[0] ? 1 : 0;
+	fillMegaPipelineKey(key);
 
 	VkPipeline pipeline = getPipeline(key);
 	if (pipeline == VK_NULL_HANDLE)
@@ -1119,7 +1164,13 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 
 	VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-	commitPushConstants(key, cmd, *_CurrentVB);
+	if (key.Mega)
+	{
+		if (!bindMegaDescriptors(cmd, *_CurrentVB, key.MegaCube != 0, true))
+			return false;
+	}
+	else
+		commitPushConstants(key, cmd, *_CurrentVB);
 
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &info->_VertexBuffer, &offset);
@@ -1160,6 +1211,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	key.ColorWriteMask = _ClearColorMask ? _ClearColorMask : 0xF;
 	key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 	key.HasTexture0 = _StageTextures[0] ? 1 : 0;
+	fillMegaPipelineKey(key);
 
 	if (_IndexedDrawCount == 0)
 	{
@@ -1177,7 +1229,13 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 
 	VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-	commitPushConstants(key, cmd, *_CurrentVB);
+	if (key.Mega)
+	{
+		if (!bindMegaDescriptors(cmd, *_CurrentVB, key.MegaCube != 0, true))
+			return false;
+	}
+	else
+		commitPushConstants(key, cmd, *_CurrentVB);
 
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &info->_VertexBuffer, &offset);
@@ -1312,6 +1370,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 		key.ColorWriteMask = _ClearColorMask ? _ClearColorMask : 0xF;
 		key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 		key.HasTexture0 = _StageTextures[0] ? 1 : 0;
+		fillMegaPipelineKey(key);
 
 		VkPipeline pipeline = getPipeline(key);
 		if (pipeline == VK_NULL_HANDLE)
@@ -1319,7 +1378,13 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 
 		VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-		commitPushConstants(key, cmd, *_CurrentVB);
+		if (key.Mega)
+		{
+			if (!bindMegaDescriptors(cmd, *_CurrentVB, key.MegaCube != 0, true))
+				return false;
+		}
+		else
+			commitPushConstants(key, cmd, *_CurrentVB);
 		VkDeviceSize offset = 0;
 		vkCmdBindVertexBuffers(cmd, 0, 1, &info->_VertexBuffer, &offset);
 		vkCmdBindIndexBuffer(cmd, indexBuffer, _IndexRingDrawOffset, VK_INDEX_TYPE_UINT16);
@@ -1358,6 +1423,57 @@ bool CDriverVulkan::renderSimpleTrianglesWithIndexOffset(uint32 firstIndex, uint
 // Lights
 // ---------------------------------------------------------------------------
 
+/// Pack a CLight into the std140 layout the mega shaders read from NlLightTable.
+static void packLightToEntry(CLightTableUBOEntry &e, const CLight &light)
+{
+	const CLight::TLightMode mode = light.getMode();
+	e.mode = (sint32)mode;
+
+	if (mode == CLight::DirectionalLight)
+	{
+		const CVector dir = light.getDirection();
+		e.dirOrPos[0] = dir.x;
+		e.dirOrPos[1] = dir.y;
+		e.dirOrPos[2] = dir.z;
+	}
+	else
+	{
+		const CVector pos = light.getPosition();
+		e.dirOrPos[0] = pos.x;
+		e.dirOrPos[1] = pos.y;
+		e.dirOrPos[2] = pos.z;
+	}
+
+	const CRGBAF diff(light.getDiffuse());
+	e.diffuse[0] = diff.R;
+	e.diffuse[1] = diff.G;
+	e.diffuse[2] = diff.B;
+	e.diffuse[3] = diff.A;
+
+	const CRGBAF spec(light.getSpecular());
+	e.specular[0] = spec.R;
+	e.specular[1] = spec.G;
+	e.specular[2] = spec.B;
+	e.specular[3] = spec.A;
+
+	e.constAttn = light.getConstantAttenuation();
+	e.linAttn = light.getLinearAttenuation();
+	e.quadAttn = light.getQuadraticAttenuation();
+	e.spotExp = light.getExponent();
+
+	const CVector spotDir = light.getDirection();
+	e.spotDir[0] = spotDir.x;
+	e.spotDir[1] = spotDir.y;
+	e.spotDir[2] = spotDir.z;
+	e.spotCutoff = cosf(light.getCutoff());
+
+	const CRGBAF amb(light.getAmbiant());
+	e.ambient[0] = amb.R;
+	e.ambient[1] = amb.G;
+	e.ambient[2] = amb.B;
+	e.ambient[3] = amb.A;
+}
+
 void CDriverVulkan::setLight(uint8 num, const CLight &light)
 {
 	if (num < 8)
@@ -1367,13 +1483,18 @@ void CDriverVulkan::setLight(uint8 num, const CLight &light)
 		_Lights[num].Diffuse = light.getDiffuse();
 		_Lights[num].Ambient = light.getAmbiant();
 		_Lights[num].Enabled = true;
+		packLightToEntry(_Lights[num].Entry, light);
+		_MegaLightTableStaged = false;
 	}
 }
 
 void CDriverVulkan::enableLight(uint8 num, bool enable)
 {
 	if (num < 8)
+	{
 		_Lights[num].Enabled = enable;
+		_MegaLightTableStaged = false;
+	}
 }
 
 void CDriverVulkan::setAmbientColor(CRGBA color)
@@ -1392,11 +1513,13 @@ void CDriverVulkan::setLightMapDynamicLight(bool enable, const CLight &light)
 void CDriverVulkan::enableLightTableMode(bool enable)
 {
 	_LightTableMode = enable;
+	_MegaLightTableStaged = false;
 }
 
 void CDriverVulkan::setLightTableSize(uint count)
 {
 	_LightTableSize = std::min(count, 128u);
+	_MegaLightTableStaged = false;
 }
 
 void CDriverVulkan::setLightTableEntry(uint index, const CLight &light)
@@ -1408,18 +1531,28 @@ void CDriverVulkan::setLightTableEntry(uint index, const CLight &light)
 		_LightTable[index].Diffuse = light.getDiffuse();
 		_LightTable[index].Ambient = light.getAmbiant();
 		_LightTable[index].Enabled = true;
+		packLightToEntry(_LightTable[index].Entry, light);
+		_MegaLightTableStaged = false;
 	}
 }
 
 void CDriverVulkan::setLights(const sint16 *tableIndices, const uint8 *factors, uint numLights, uint numPerPixelLights, CRGBA ambient)
 {
+	// Clear all slots first: the mega shaders read eight packed indices.
+	for (uint i = 0; i < 8; ++i)
+	{
+		_LightIndices[i] = -1;
+		_LightFactors[i] = 0;
+	}
 	_LightCount = std::min(numLights, 8u);
+	_NumPerPixelLights = std::min(numPerPixelLights, _LightCount);
 	for (uint i = 0; i < _LightCount; ++i)
 	{
 		_LightIndices[i] = tableIndices[i];
 		_LightFactors[i] = factors[i];
 	}
 	_ObjectAmbient = ambient;
+	_MegaLightTableStaged = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1432,11 +1565,13 @@ void CDriverVulkan::setFrustum(float left, float right, float bottom, float top,
 		_GLProjMat.frustum(left, right, bottom, top, znear, zfar);
 	else
 		_GLProjMat.ortho(left, right, bottom, top, znear, zfar);
+	_MegaCameraDirty = true;
 }
 
 void CDriverVulkan::setFrustumMatrix(CMatrix &frustumMatrix)
 {
 	_GLProjMat = frustumMatrix;
+	_MegaCameraDirty = true;
 }
 
 CMatrix CDriverVulkan::getFrustumMatrix()
@@ -1448,12 +1583,14 @@ void CDriverVulkan::setupViewMatrix(const CMatrix &mtx)
 {
 	_ViewMatrix = mtx;
 	_ModelViewMatrix = mtx * _ModelMatrix;
+	_MegaCameraDirty = true;
 }
 
 void CDriverVulkan::setupViewMatrixEx(const CMatrix &mtx, const CVector &cameraPos)
 {
 	_ViewMatrix = mtx;
 	_ModelViewMatrix = mtx * _ModelMatrix;
+	_MegaCameraDirty = true;
 }
 
 void CDriverVulkan::setupModelMatrix(const CMatrix &mtx)
@@ -1554,12 +1691,14 @@ void CDriverVulkan::setupFog(float start, float end, CRGBA color)
 	_FogStart = start;
 	_FogEnd = end;
 	_FogColor = color;
+	_MegaCameraDirty = true;
 }
 
 void CDriverVulkan::setupFogMode(IDriver::TFogMode mode, float density)
 {
 	_FogMode = mode;
 	_FogDensity = density;
+	_MegaCameraDirty = true;
 }
 
 float CDriverVulkan::getFogStart() const { return _FogStart; }
