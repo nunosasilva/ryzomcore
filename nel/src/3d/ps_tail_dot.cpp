@@ -272,7 +272,7 @@ void CPSTailDot::displayRibbons(uint32 nbRibbons, uint32 srcStep)
 	// Material setup //
 	////////////////////
 		CParticleSystem &ps = *(_Owner->getOwner());
-		bool useGlobalColor = ps.getColorAttenuationScheme() != NULL || ps.isUserColorUsed();
+		bool useGlobalColor = ps.getColorAttenuationScheme() != nullptr || ps.isUserColorUsed();
 		if (useGlobalColor != _GlobalColor)
 		{
 			_GlobalColor = useGlobalColor;
@@ -415,7 +415,7 @@ CPSTailDot::CVBnPB &CPSTailDot::getVBnPB()
 		/// In the case of a ribbon with color and fading, we encode the fading in a texture
 		/// If the ribbon has fading, but only a global color, we encode it in the primary color
 		CVertexBuffer &vb = VBnPB.VB;
-		vb.setPreferredMemory(CVertexBuffer::AGPVolatile, true);
+		vb.setBufferUsage(CVertexBuffer::FullStream, true);
 		vb.setVertexFormat(CVertexBuffer::PositionFlag
 						   |(_ColorScheme || _ColorFading ? CVertexBuffer::PrimaryColorFlag : 0)
 						   | (_ColorScheme && _ColorFading ? CVertexBuffer::TexCoord0Flag : 0));
@@ -480,7 +480,7 @@ void	CPSTailDot::updateMaterial()
 	NL_PS_FUNC(CPSTailDot_updateMaterial)
 	if (!_Touch) return;
 
-	static NLMISC::CRefPtr<ITexture> ptGradTexture;
+	static NLMISC::CRefPtr<ITexture> ptGradTexture; // STATIC GPU RESOURCE: Blocks multiple driver instances
 
 	CParticleSystem &ps = *(_Owner->getOwner());
 	if (_ColorScheme)
@@ -491,7 +491,7 @@ void	CPSTailDot::updateMaterial()
 			{
 				// the first stage is used to get fading * global color
 				// the second stage multiply the result by the diffuse colot
-				if (ptGradTexture == NULL) // have we got a gradient texture ?
+				if (ptGradTexture == nullptr) // have we got a gradient texture ?
 				{
 					ptGradTexture = CreateGradientTexture();
 				}
@@ -510,7 +510,7 @@ void	CPSTailDot::updateMaterial()
 		{
 			if (_ColorFading) // per ribbon color, fading
 			{
-				if (ptGradTexture == NULL) // have we got a gradient texture ?
+				if (ptGradTexture == nullptr) // have we got a gradient texture ?
 				{
 					ptGradTexture = CreateGradientTexture();
 				}

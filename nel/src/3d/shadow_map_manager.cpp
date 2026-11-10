@@ -74,7 +74,7 @@ CShadowMapManager::CShadowMapManager()
 	_FillMaterial.setZWrite(false);
 	_FillMaterial.setZFunc(CMaterial::always);
 	_FillMaterial.setDoubleSided(true);
-	_FillQuads.setPreferredMemory(CVertexBuffer::RAMVolatile, true);
+	_FillQuads.setBufferUsage(CVertexBuffer::SmallStream, true);
 
 	// **** Setup Blur
 	_BlurQuads.setVertexFormat(CVertexBuffer::PositionFlag |
@@ -82,7 +82,7 @@ CShadowMapManager::CShadowMapManager()
 		CVertexBuffer::TexCoord1Flag |
 		CVertexBuffer::TexCoord2Flag |
 		CVertexBuffer::TexCoord3Flag);
-	_BlurQuads.setPreferredMemory(CVertexBuffer::RAMVolatile, true);
+	_BlurQuads.setBufferUsage(CVertexBuffer::SmallStream, true);
 
 	// Only 2 quads are used to blur
 	_BlurQuads.setNumVertices(8);
@@ -117,7 +117,7 @@ CShadowMapManager::CShadowMapManager()
 	// *** Setup copy
 	_CopyQuads.setVertexFormat (CVertexBuffer::PositionFlag | CVertexBuffer::TexCoord0Flag);
 	_CopyQuads.setNumVertices(4);
-	_CopyQuads.setPreferredMemory(CVertexBuffer::RAMVolatile, true);
+	_CopyQuads.setBufferUsage(CVertexBuffer::SmallStream, true);
 	CVertexBufferReadWrite vba;
 	_CopyQuads.lock (vba);
 	vba.setVertexCoord (0, CVector (0, 0, 0));
@@ -472,7 +472,7 @@ void			CShadowMapManager::renderGenerate(CScene *scene)
 						driverForShadowGeneration->renderRawQuads (_CopyMaterial, 0, 1);
 
 						// Set default render target
-						driverForShadowGeneration->setRenderTarget (NULL);
+						driverForShadowGeneration->setRenderTarget (nullptr);
 					}
 
 					// Indicate to the ShadowMap that we have updated his Texture
@@ -684,8 +684,8 @@ void			CShadowMapManager::renderProject(CScene *scene)
 	vp.init (0, 0, 0.5f, 0.5f);
 	driver->setupViewport(vp);
 
-	static CVertexBuffer CopyQuads;
-	static CMaterial CopyMaterial;
+	static CVertexBuffer CopyQuads; // STATIC GPU RESOURCE: Blocks multiple driver instances
+	static CMaterial CopyMaterial; // STATIC GPU RESOURCE: Blocks multiple driver instances
 	CopyMaterial.initUnlit();
 	CopyMaterial.setColor(CRGBA::White);
 	CopyMaterial.setZWrite(false);
@@ -918,13 +918,13 @@ void			CShadowMapManager::updateBlurTexture(IDriver &drv, uint w, uint h)
 	uint i, j;
 	for (i=0; i<2; i++)
 	{
-		_BlurMaterial[i].setTexture(0, NULL);
-		_BlurMaterial[i].setTexture(1, NULL);
-		_BlurMaterial[i].setTexture(2, NULL);
-		_BlurMaterial[i].setTexture(3, NULL);
+		_BlurMaterial[i].setTexture(0, nullptr);
+		_BlurMaterial[i].setTexture(1, nullptr);
+		_BlurMaterial[i].setTexture(2, nullptr);
+		_BlurMaterial[i].setTexture(3, nullptr);
 	}
-	_BlurTexture[0]= NULL;
-	_BlurTexture[1]= NULL;
+	_BlurTexture[0] = nullptr;
+	_BlurTexture[1] = nullptr;
 	_BlurTextureW= w;
 	_BlurTextureH= h;
 	// NB: the format must be RGBA; else slow copyFrameBufferToTexture()

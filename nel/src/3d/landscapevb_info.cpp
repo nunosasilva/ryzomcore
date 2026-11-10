@@ -39,13 +39,13 @@ namespace NL3D
 void		CFarVertexBufferInfo::setupNullPointers()
 {
 	Accessor.unlock();
-	VertexCoordPointer= NULL;
-	TexCoordPointer0= NULL;
-	TexCoordPointer1= NULL;
-	ColorPointer= NULL;
-	GeomInfoPointer= NULL;
-	DeltaPosPointer= NULL;
-	AlphaInfoPointer= NULL;
+	VertexCoordPointer = nullptr;
+	TexCoordPointer0 = nullptr;
+	TexCoordPointer1 = nullptr;
+	ColorPointer = nullptr;
+	GeomInfoPointer = nullptr;
+	DeltaPosPointer = nullptr;
+	AlphaInfoPointer = nullptr;
 }
 
 
@@ -98,6 +98,19 @@ void		CFarVertexBufferInfo::setupVertexBuffer(CVertexBuffer &vb, bool forVertexP
 	{
 		TexCoordOff0= vb.getTexCoordOff(0);
 		TexCoordOff1= vb.getTexCoordOff(1);
+		// GeomInfoOff/DeltaPosOff/AlphaInfoOff are only ever assigned in the
+		// forVertexProgram branch above, yet the landscape fills the VB through them from
+		// its OWN layout decision (fillFar0/fillFar1/fillTileVertexVB, patch_render.cpp:1060-1065
+		// /:1150-1155/:1222-1227 - the else arm of the VertexProgramEnabled guard, which does
+		// not re-check this flag) via CurVBPtr + GeomInfoOff. So a layout/program mismatch
+		// writes through an uninitialised offset, and nothing catches it: CHECK_VBA_RANGE
+		// compiles to a no-op unless NL_DEBUG_VB is defined (debug_vb.h:25), and even with
+		// it on, offset 0 is IN RANGE and the write lands on StartPos (v[0]). Zeroing makes
+		// the mismatch a deterministic wrong write instead of a read of uninitialised memory
+		// - it removes the UB, it does not make the mismatch detectable.
+		GeomInfoOff= 0;
+		DeltaPosOff= 0;
+		AlphaInfoOff= 0;
 		TexCoordPointer0= Accessor.getTexCoordPointer(0, 0);
 		TexCoordPointer1= Accessor.getTexCoordPointer(0, 1);
 
@@ -111,7 +124,7 @@ void		CFarVertexBufferInfo::setupVertexBuffer(CVertexBuffer &vb, bool forVertexP
 		else
 		{
 			ColorOff= 0;
-			ColorPointer= NULL;
+			ColorPointer = nullptr;
 		}
 	}
 
@@ -122,12 +135,12 @@ void		CFarVertexBufferInfo::setupVertexBuffer(CVertexBuffer &vb, bool forVertexP
 void		CNearVertexBufferInfo::setupNullPointers()
 {
 	Accessor.unlock();
-	VertexCoordPointer= NULL;
-	TexCoordPointer0= NULL;
-	TexCoordPointer1= NULL;
-	TexCoordPointer2= NULL;
-	GeomInfoPointer= NULL;
-	DeltaPosPointer= NULL;
+	VertexCoordPointer = nullptr;
+	TexCoordPointer0 = nullptr;
+	TexCoordPointer1 = nullptr;
+	TexCoordPointer2 = nullptr;
+	GeomInfoPointer = nullptr;
+	DeltaPosPointer = nullptr;
 }
 
 
@@ -179,6 +192,10 @@ void		CNearVertexBufferInfo::setupVertexBuffer(CVertexBuffer &vb, bool forVertex
 		TexCoordPointer0= Accessor.getTexCoordPointer(0, 0);
 		TexCoordPointer1= Accessor.getTexCoordPointer(0, 1);
 		TexCoordPointer2= Accessor.getTexCoordPointer(0, 2);
+
+		// Same reason as CFarVertexBufferInfo::setupVertexBuffer: zero the VP-only offsets.
+		GeomInfoOff= 0;
+		DeltaPosOff= 0;
 
 		TexCoordOff0= vb.getTexCoordOff(0);
 		TexCoordOff1= vb.getTexCoordOff(1);

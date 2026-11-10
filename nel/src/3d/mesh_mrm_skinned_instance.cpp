@@ -23,6 +23,7 @@
 #include "nel/3d/shifted_triangle_cache.h"
 #include "nel/3d/u_scene.h"
 #include "nel/3d/scene.h"
+#include "nel/3d/gpu_skin_vp.h"
 
 
 using namespace NLMISC;
@@ -63,14 +64,14 @@ void		CMeshMRMSkinnedInstance::registerBasic()
 void		CMeshMRMSkinnedInstance::clearRawSkinCache()
 {
 	delete	_RawSkinCache;
-	_RawSkinCache= NULL;
+	_RawSkinCache = nullptr;
 }
 
 // ***************************************************************************
 void		CMeshMRMSkinnedInstance::clearShiftedTriangleCache()
 {
 	delete	_ShiftedTriangleCache;
-	_ShiftedTriangleCache= NULL;
+	_ShiftedTriangleCache = nullptr;
 }
 
 // ***************************************************************************
@@ -189,7 +190,7 @@ const	CMRMLevelDetail		*CMeshMRMSkinnedInstance::getMRMLevelDetail() const
 		return &meshMrm->getMeshGeom().getLevelDetail();
 	}
 	else
-		return NULL;
+		return nullptr;
 }
 
 // ***************************************************************************
@@ -246,6 +247,35 @@ void	CMeshMRMSkinnedInstance::initRenderFilterType()
 	}
 }
 
+
+// ***************************************************************************
+bool			CMeshMRMSkinnedInstance::supportGPUSkinning() const
+{
+	if(Shape)
+	{
+		CMeshMRMSkinned	*meshMrm= safe_cast<CMeshMRMSkinned*>((IShape*)Shape);
+		return	meshMrm->getMeshGeom().supportGPUSkinning();
+	}
+	else
+		return false;
+}
+
+// ***************************************************************************
+void			CMeshMRMSkinnedInstance::renderGPUSkin(float alphaMRM, CSkeletonModel *skeleton)
+{
+	if(Shape && getVisibility() != CHrcTrav::Hide)
+	{
+		CMeshMRMSkinned *pMesh = NLMISC::safe_cast<CMeshMRMSkinned *>((IShape*)Shape);
+		CMeshMRMSkinnedGeom	&meshGeom= const_cast<CMeshMRMSkinnedGeom&>(pMesh->getMeshGeom ());
+		meshGeom.renderGPUSkin(this, alphaMRM, skeleton);
+	}
+}
+
+// ***************************************************************************
+CVertexProgram			*CMeshMRMSkinnedInstance::getGPUSkinVP() const
+{
+	return getGPUSkinInsertVP();
+}
 
 // ***************************************************************************
 bool			CMeshMRMSkinnedInstance::supportShadowSkinGrouping() const

@@ -319,8 +319,8 @@ void CPSShockWave::draw(bool opaque)
 	/// update the material if the global color of the system is variable
 	CParticleSystem &ps = *(_Owner->getOwner());
 	/// update the material if the global color of the system is variable
-	if (_ColorScheme != NULL &&
-		(ps.getColorAttenuationScheme() != NULL ||
+	if (_ColorScheme != nullptr &&
+		(ps.getColorAttenuationScheme() != nullptr ||
 		 ps.isUserColorUsed() ||
 		 ps.getForceGlobalColorLightingFlag()   ||
 		 usesGlobalColorLighting()
@@ -506,8 +506,8 @@ void CPSShockWave::resize(uint32 aSize)
 void CPSShockWave::getVBnPB(CVertexBuffer *&retVb, CIndexBuffer *&retPb)
 {
 	NL_PS_FUNC(CPSShockWave_getVBnPB)
-	TVBMap &vbMap = _ColorScheme == NULL  ? (_TexGroup == NULL ?  _VBMap : _AnimTexVBMap)
-										  : (_TexGroup == NULL ?  _ColoredVBMap : _ColoredAnimTexVBMap);
+	TVBMap &vbMap = _ColorScheme == nullptr ? (_TexGroup == nullptr ?  _VBMap : _AnimTexVBMap)
+										  : (_TexGroup == nullptr ?  _ColoredVBMap : _ColoredAnimTexVBMap);
 
 
 	TVBMap::iterator vbIt = vbMap.find(_NbSeg);
@@ -526,10 +526,10 @@ void CPSShockWave::getVBnPB(CVertexBuffer *&retVb, CIndexBuffer *&retPb)
 		const uint32 size = getNumShockWavesInVB();
 		vb.setVertexFormat(CVertexBuffer::PositionFlag |
 						   CVertexBuffer::TexCoord0Flag |
-						   (_ColorScheme != NULL ?  CVertexBuffer::PrimaryColorFlag : 0)
+						   (_ColorScheme != nullptr ?  CVertexBuffer::PrimaryColorFlag : 0)
 						  );
 		vb.setNumVertices((size * (_NbSeg + 1)) << 1 );
-		vb.setPreferredMemory(CVertexBuffer::AGPVolatile, true);
+		vb.setBufferUsage(CVertexBuffer::FullStream, true);
 		CVertexBufferReadWrite vba;
 		vb.lock (vba);
 		pb.setFormat(NL_DEFAULT_INDEX_BUFFER_FORMAT);

@@ -44,6 +44,7 @@ CTargetAnimCtrl::CTargetAnimCtrl()
 	Enabled= true;
 	_EnableToDisableTransition= false;
 	_LastEnabled= true;
+	_LastFrameId= 0;
 }
 
 
@@ -151,9 +152,18 @@ void	CTargetAnimCtrl::execute(CSkeletonModel *model, CBone *bone)
 		currentLSRotation.setAngleAxis(angleAxis);
 	}
 
-	// get the dt of the scene.
+	// get the dt of the scene. Only accumulate once per real frame (avoid double in stereo).
 	CScene	*scene= model->getOwnerScene();
-	float	sceneDt= scene->getEllapsedTime();
+	float	sceneDt;
+	if(scene->getFrameId() != _LastFrameId)
+	{
+		sceneDt= scene->getEllapsedTime();
+		_LastFrameId= scene->getFrameId();
+	}
+	else
+	{
+		sceneDt= 0.f;
+	}
 	float	maxDeltaAngle= MaxAngularVelocity*sceneDt;
 	// get the quat that change from LastRotation to CurrentRotation
 	CQuat	rotMod= _LastLSRotation.conjugate() * currentLSRotation;
@@ -191,7 +201,7 @@ void	CTargetAnimCtrl::execute(CSkeletonModel *model, CBone *bone)
 
 	// get it in bone local space.
 	// get the Bone Parent LocalSkeletonMatrix
-	CBone	*boneParent= bone->getFatherId()==-1? NULL : &model->Bones[bone->getFatherId()];
+	CBone	*boneParent= bone->getFatherId()==-1 ? nullptr : &model->Bones[bone->getFatherId()];
 	CQuat	currentLocalQuat;
 	if(!boneParent)
 		currentLocalQuat= boneBindPosInLS;
@@ -205,7 +215,7 @@ void	CTargetAnimCtrl::execute(CSkeletonModel *model, CBone *bone)
 	// set the new LocalRotQuat
 	bone->setRotQuat(currentLocalQuat);
 	// and recompute the bone (but without AnimCtrl of course :) )
-	bone->compute(boneParent, model->getWorldMatrix(), NULL);
+	bone->compute(boneParent, model->getWorldMatrix(), nullptr);
 
 }
 

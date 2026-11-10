@@ -1,6 +1,9 @@
 // NeL - MMORPG Framework <http://dev.ryzom.com/projects/nel/>
 // Copyright (C) 2010  Winch Gate Property Limited
 //
+// This source file has been modified by the following contributors:
+// Copyright (C) 2023  Jan BOON (Kaetemi) <jan.boon@kaetemi.be>
+//
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as
 // published by the Free Software Foundation, either version 3 of the
@@ -29,6 +32,10 @@ using namespace NLMISC;
 
 namespace NL3D
 {
+
+// --------------------------------------------------
+
+bool CVertexBuffer::SerialOldPreferredMemory = false;
 
 // --------------------------------------------------
 
@@ -106,11 +113,12 @@ void CVertexBuffer::construct()
 	_VertexSize = 0;
 	_VertexColorFormat = TRGBA;
 	_LockCounter = 0;
-	_LockedBuffer = NULL;
-	_PreferredMemory = RAMPreferred;
+	_LockedBuffer = nullptr;
+	_BufferUsage = CpuReadWrite;
 	_Location = NotResident;
 	_ResidentSize = 0;
 	_KeepLocalMemory = false;
+	_DirtyTracking = false;
 
 	// Default routing
 	uint i;
@@ -146,11 +154,12 @@ CVertexBuffer::CVertexBuffer(const CVertexBuffer &vb) : CRefCount()
 	_NbVerts = 0;
 	_VertexSize = 0;
 	_LockCounter = 0;
-	_LockedBuffer = NULL;
-	_PreferredMemory = RAMPreferred;
+	_LockedBuffer = nullptr;
+	_BufferUsage = CpuReadWrite;
 	_Location = NotResident;
 	_ResidentSize = 0;
 	_KeepLocalMemory = false;
+	_DirtyTracking = false;
 
 	operator=(vb);
 
@@ -170,7 +179,7 @@ CVertexBuffer::~CVertexBuffer()
 	 * ***********************************************/
 
 	if (DrvInfos)
-		DrvInfos->VertexBufferPtr = NULL;	// Tell the driver info to not restore memory when it will die
+		DrvInfos->VertexBufferPtr = nullptr;	// Tell the driver info to not restore memory when it will die
 
 	// Must kill the drv mirror of this VB.
 	DrvInfos.kill();
@@ -191,11 +200,13 @@ CVertexBuffer	&CVertexBuffer::operator=(const CVertexBuffer &vb)
 	_Capacity = vb._Capacity;
 	_NonResidentVertices = vb._NonResidentVertices;
 	_VertexColorFormat = vb._VertexColorFormat;
-	_PreferredMemory = vb._PreferredMemory;
+	_BufferUsage = vb._BufferUsage;
 	_KeepLocalMemory = vb._KeepLocalMemory;
+	_DirtyTracking = false;
+	_DirtyRanges.clear();
 	uint i;
 	_LockCounter = 0;
-	_LockedBuffer = NULL;
+	_LockedBuffer = nullptr;
 
 	// Arraies
 	for (uint value=0; value<NumValue; value++)
@@ -219,8 +230,8 @@ CVertexBuffer	&CVertexBuffer::operator=(const CVertexBuffer &vb)
 // --------------------------------------------------
 void CVertexBuffer::copyVertices(CVertexBuffer &dest) const
 {
-	nlassert(_PreferredMemory != RAMVolatile);
-	nlassert(_PreferredMemory != AGPVolatile);
+	nlassert(_BufferUsage != SmallStream);
+	nlassert(_BufferUsage != FullStream);
 	// copy setup
 	dest = *this;
 	CVertexBufferReadWrite srcDatas;
@@ -401,7 +412,7 @@ void CVertexBuffer::dumpFormat() const
 					result += "???";
 				break;
 			}
-			nlinfo(result.c_str());
+			nlinfo("%s", result.c_str());
 		}
 	}
 }
@@ -778,6 +789,8 @@ void		CVertexBuffer::serialHeader(NLMISC::IStream &f)
 	 * ***********************************************/
 
 	/*
+	Version 4:
+		- TBufferUsage replaces TPreferredMemory.
 	Version 3:
 		- Preferred memory.
 	Version 2:
@@ -787,7 +800,7 @@ void		CVertexBuffer::serialHeader(NLMISC::IStream &f)
 	Version 0:
 		- base verison of the header serialisation.
 	*/
-	sint	ver= f.serialVersion(3);	// Hulud
+	sint	ver= f.serialVersion(SerialOldPreferredMemory ? 3 : 4);
 
 	// Serial VBuffers format/size.
 	//=============================
@@ -878,17 +891,57 @@ void		CVertexBuffer::serialHeader(NLMISC::IStream &f)
 	if (ver>=2)
 		f.serial (_VertexColorFormat);
 
-	if (ver>=3)
+	if (ver>=4)
 	{
-		f.serialEnum(_PreferredMemory);
+		f.serialEnum(_BufferUsage);
 		f.serial(_Name);
+	}
+	else if (ver>=3)
+	{
+		// Version 3: old TPreferredMemory enum
+		if (f.isReading())
+		{
+			sint32 oldPref;
+			f.serial(oldPref);
+			// Remap old enum values to new TBufferUsage
+			switch (oldPref)
+			{
+			case 0: _BufferUsage = CpuReadWrite; break;  // RAMPreferred
+			case 1: _BufferUsage = FullRewrite; break;    // AGPPreferred
+			case 2: _BufferUsage = Immutable; break;      // StaticPreferred
+			case 3: _BufferUsage = SmallStream; break;    // RAMVolatile
+			case 4: _BufferUsage = FullStream; break;     // AGPVolatile
+			default: _BufferUsage = CpuReadWrite; break;
+			}
+			f.serial(_Name);
+		}
+		else
+		{
+			// Write the old format (SerialOldPreferredMemory compatibility mode; the version
+			// byte above is 3 in that mode): TBufferUsage mapped back to TPreferredMemory.
+			nlassert(SerialOldPreferredMemory);
+			sint32 oldPref;
+			switch (_BufferUsage)
+			{
+			case CpuReadWrite: oldPref = 0; break;         // RAMPreferred
+			case FullRewrite:
+			case PartialWrite:
+			case UnsynchronizedWrite: oldPref = 1; break;  // AGPPreferred
+			case Immutable: oldPref = 2; break;            // StaticPreferred
+			case SmallStream: oldPref = 3; break;          // RAMVolatile
+			case FullStream: oldPref = 4; break;           // AGPVolatile
+			default: oldPref = 0; break;
+			}
+			f.serial(oldPref);
+			f.serial(_Name);
+		}
 	}
 	else
 	{
-		// Init preferred memory
+		// Init defaults
 		if(f.isReading())
 		{
-			_PreferredMemory = RAMPreferred;
+			_BufferUsage = CpuReadWrite;
 			_Name.clear();
 		}
 	}
@@ -1004,13 +1057,13 @@ bool CVertexBuffer::setVertexColorFormat (TVertexColorType format)
 		if (_Flags & (PrimaryColorFlag|SecondaryColorFlag))
 		{
 			uint i;
-			uint32 *ptr0 = (_Flags&PrimaryColorFlag)?(uint32*)&(_NonResidentVertices[_Offset[PrimaryColor]]):NULL;
-			uint32 *ptr1 = (_Flags&SecondaryColorFlag)?(uint32*)&(_NonResidentVertices[_Offset[SecondaryColor]]):NULL;
+			uint32 *ptr0 = (_Flags&PrimaryColorFlag)?(uint32*)&(_NonResidentVertices[_Offset[PrimaryColor]]) : nullptr;
+			uint32 *ptr1 = (_Flags&SecondaryColorFlag)?(uint32*)&(_NonResidentVertices[_Offset[SecondaryColor]]) : nullptr;
 			for (i=0; i<_NbVerts; i++)
 			{
 				if (ptr0)
 				{
-					const register uint32 value = *ptr0;
+					const NL_REGISTER uint32 value = *ptr0;
 #ifdef NL_LITTLE_ENDIAN
 					*ptr0 = (value&0xff00ff00)|((value&0xff)<<16)|((value&0xff0000)>>16);
 #else // NL_LITTLE_ENDIAN
@@ -1020,7 +1073,7 @@ bool CVertexBuffer::setVertexColorFormat (TVertexColorType format)
 				}
 				if (ptr1)
 				{
-					const register uint32 value = *ptr1;
+					const NL_REGISTER uint32 value = *ptr1;
 #ifdef NL_LITTLE_ENDIAN
 					*ptr1 = (value&0xff00ff00)|((value&0xff)<<16)|((value&0xff0000)>>16);
 #else // NL_LITTLE_ENDIAN
@@ -1040,16 +1093,27 @@ bool CVertexBuffer::setVertexColorFormat (TVertexColorType format)
 
 // --------------------------------------------------
 
-void CVertexBuffer::setPreferredMemory (TPreferredMemory preferredMemory, bool keepLocalMemory)
+void CVertexBuffer::setBufferUsage (TBufferUsage usage, bool keepLocalMemory)
 {
-	if ((_PreferredMemory != preferredMemory) || (_KeepLocalMemory != keepLocalMemory))
+	if ((_BufferUsage != usage) || (_KeepLocalMemory != keepLocalMemory))
 	{
-		_PreferredMemory = preferredMemory;
+		_BufferUsage = usage;
 		_KeepLocalMemory = keepLocalMemory;
 
 		// Force non resident
 		restoreNonResidentMemory();
 	}
+}
+
+// --------------------------------------------------
+
+void CVertexBuffer::invalidateRange(uint first, uint last)
+{
+	if (!_DirtyTracking || first >= last) return;
+	CDirtyRange r;
+	r.Begin = first * _VertexSize;
+	r.End = last * _VertexSize;
+	_DirtyRanges.push_back(r);
 }
 
 // --------------------------------------------------
@@ -1062,7 +1126,7 @@ void CVertexBuffer::setLocation (TLocation newLocation)
 		nlassert (DrvInfos);
 
 		// Current size of the buffer
-		const uint size = ((_PreferredMemory==RAMVolatile)||(_PreferredMemory==AGPVolatile))?_NbVerts*_VertexSize:_Capacity*_VertexSize;
+		const uint size = ((_BufferUsage==SmallStream)||(_BufferUsage==FullStream))?_NbVerts*_VertexSize:_Capacity*_VertexSize;
 
 		// The buffer must not be resident
 		if (_Location != NotResident)
@@ -1074,8 +1138,8 @@ void CVertexBuffer::setLocation (TLocation newLocation)
 		memcpy (dest, &(_NonResidentVertices[0]), size);
 		DrvInfos->unlock(0, 0);
 
-		// Reset the non resident container if not a static preferred memory and not put in RAM
-		if ((_PreferredMemory != StaticPreferred) && (_Location != RAMResident) && !_KeepLocalMemory)
+		// Reset the non resident container if not immutable and not put in RAM
+		if ((_BufferUsage != Immutable) && (_Location != RAMResident) && !_KeepLocalMemory)
 			contReset(_NonResidentVertices);
 
 		// Clear touched flags
@@ -1093,7 +1157,7 @@ void CVertexBuffer::setLocation (TLocation newLocation)
 		_NonResidentVertices.resize (size);
 
 		// If resident in RAM, backup the data in non resident memory
-		if ((_Location == RAMResident) && (_PreferredMemory != RAMVolatile) && (_PreferredMemory != AGPVolatile) && !_KeepLocalMemory)
+		if ((_Location == RAMResident) && (_BufferUsage != SmallStream) && (_BufferUsage != FullStream) && !_KeepLocalMemory)
 		{
 			// The driver must have setuped the driver info
 			nlassert (DrvInfos);
@@ -1118,8 +1182,11 @@ void CVertexBuffer::restoreNonResidentMemory()
 {
 	setLocation (NotResident);
 
+	_DirtyRanges.clear();
+	_DirtyTracking = false;
+
 	if (DrvInfos)
-		DrvInfos->VertexBufferPtr = NULL;	// Tell the driver info to not restore memory when it will die
+		DrvInfos->VertexBufferPtr = nullptr;	// Tell the driver info to not restore memory when it will die
 
 	// Must kill the drv mirror of this VB.
 	DrvInfos.kill();
@@ -1178,7 +1245,7 @@ NLMISC::CVector* CVertexBufferReadWrite::getNormalCoordPointer(uint idx)
 
 	if ( !(_Parent->_Flags & CVertexBuffer::NormalFlag) )
 	{
-		return(NULL);
+		return (nullptr);
 	}
 	ptr=_Parent->_LockedBuffer;
 	ptr+=_Parent->_Offset[CVertexBuffer::Normal];
@@ -1195,7 +1262,7 @@ void* CVertexBufferReadWrite::getColorPointer(uint idx)
 
 	if ( !(_Parent->_Flags & CVertexBuffer::PrimaryColorFlag) )
 	{
-		return(NULL);
+		return (nullptr);
 	}
 	ptr=_Parent->_LockedBuffer;
 	ptr+=_Parent->_Offset[CVertexBuffer::PrimaryColor];
@@ -1212,7 +1279,7 @@ void* CVertexBufferReadWrite::getSpecularPointer(uint idx)
 
 	if ( !(_Parent->_Flags & CVertexBuffer::SecondaryColorFlag) )
 	{
-		return(NULL);
+		return (nullptr);
 	}
 	ptr=_Parent->_LockedBuffer;
 	ptr+=_Parent->_Offset[CVertexBuffer::SecondaryColor];
@@ -1229,7 +1296,7 @@ NLMISC::CUV* CVertexBufferReadWrite::getTexCoordPointer(uint idx, uint8 stage)
 
 	if ( !(_Parent->_Flags & (CVertexBuffer::TexCoord0Flag<<stage)) )
 	{
-		return(NULL);
+		return (nullptr);
 	}
 	ptr=_Parent->_LockedBuffer;
 	ptr+=_Parent->_Offset[CVertexBuffer::TexCoord0+stage];
@@ -1246,7 +1313,7 @@ float* CVertexBufferReadWrite::getWeightPointer(uint idx, uint8 wgt)
 
 	nlassert(wgt<CVertexBuffer::MaxWeight);
 	if( !(_Parent->_Flags & CVertexBuffer::WeightFlag))
-		return NULL;
+		return nullptr;
 
 	ptr=(uint8*)(&_Parent->_LockedBuffer[idx*_Parent->_VertexSize]);
 	ptr+=_Parent->_Offset[CVertexBuffer::Weight]+wgt*sizeof(float);
@@ -1263,7 +1330,7 @@ CPaletteSkin* CVertexBufferReadWrite::getPaletteSkinPointer(uint idx)
 
 	if ( (_Parent->_Flags & CVertexBuffer::PaletteSkinFlag) != CVertexBuffer::PaletteSkinFlag )
 	{
-		return(NULL);
+		return (nullptr);
 	}
 	ptr=_Parent->_LockedBuffer;
 	ptr+=_Parent->_Offset[CVertexBuffer::PaletteSkin];
@@ -1303,7 +1370,7 @@ const NLMISC::CVector* CVertexBufferRead::getNormalCoordPointer(uint idx) const
 
 	if ( !(_Parent->_Flags & CVertexBuffer::NormalFlag) )
 	{
-		return(NULL);
+		return (nullptr);
 	}
 	ptr=_Parent->_LockedBuffer;
 	ptr+=_Parent->_Offset[CVertexBuffer::Normal];
@@ -1320,7 +1387,7 @@ const void* CVertexBufferRead::getColorPointer(uint idx) const
 
 	if ( !(_Parent->_Flags & CVertexBuffer::PrimaryColorFlag) )
 	{
-		return(NULL);
+		return (nullptr);
 	}
 	ptr=_Parent->_LockedBuffer;
 	ptr+=_Parent->_Offset[CVertexBuffer::PrimaryColor];
@@ -1337,7 +1404,7 @@ const void* CVertexBufferRead::getSpecularPointer(uint idx) const
 
 	if ( !(_Parent->_Flags & CVertexBuffer::SecondaryColorFlag) )
 	{
-		return(NULL);
+		return (nullptr);
 	}
 	ptr=_Parent->_LockedBuffer;
 	ptr+=_Parent->_Offset[CVertexBuffer::SecondaryColor];
@@ -1354,7 +1421,7 @@ const NLMISC::CUV* CVertexBufferRead::getTexCoordPointer(uint idx, uint8 stage) 
 
 	if ( !(_Parent->_Flags & (CVertexBuffer::TexCoord0Flag<<stage)) )
 	{
-		return(NULL);
+		return (nullptr);
 	}
 	ptr=_Parent->_LockedBuffer;
 	ptr+=_Parent->_Offset[CVertexBuffer::TexCoord0+stage];
@@ -1371,7 +1438,7 @@ const float* CVertexBufferRead::getWeightPointer(uint idx, uint8 wgt) const
 
 	nlassert(wgt<CVertexBuffer::MaxWeight);
 	if( !(_Parent->_Flags & CVertexBuffer::WeightFlag))
-		return NULL;
+		return nullptr;
 
 	ptr=(uint8*)(&_Parent->_LockedBuffer[idx*_Parent->_VertexSize]);
 	ptr+=_Parent->_Offset[CVertexBuffer::Weight]+wgt*sizeof(float);
@@ -1388,7 +1455,7 @@ const CPaletteSkin* CVertexBufferRead::getPaletteSkinPointer(uint idx) const
 
 	if ( (_Parent->_Flags & CVertexBuffer::PaletteSkinFlag) != CVertexBuffer::PaletteSkinFlag )
 	{
-		return(NULL);
+		return (nullptr);
 	}
 	ptr=_Parent->_LockedBuffer;
 	ptr+=_Parent->_Offset[CVertexBuffer::PaletteSkin];

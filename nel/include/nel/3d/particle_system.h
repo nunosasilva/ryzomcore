@@ -137,6 +137,9 @@ public:
 
 		//// get the scene set by setScene()
 		CScene *getScene() const { return _Scene; }
+
+		/// Allocate a sequential ID for attrib makers (deterministic random seeding)
+		uint32 allocAttribMakerId() { return _NextAttribMakerId++; }
 		//@}
 
 	// *****************************************************************************************************
@@ -363,8 +366,8 @@ public:
 			const NLMISC::CVector &get() const						 { nlassert(_Value); return *_Value; }
 			void				   set(const NLMISC::CVector &value) { nlassert(_Value); *_Value = value; }
 			const std::string     &getName() const					 { nlassert(_Name); return *_Name; }
-			bool				   isValid() const { return _Name != NULL && _Value != NULL; }
-			void                   reset() { _Name = NULL; _Value = NULL; }
+			bool				   isValid() const { return _Name != nullptr && _Value != nullptr; }
+			void                   reset() { _Name = nullptr; _Value = nullptr; }
 		/////////////////////////////
 		private:
 			friend class CParticleSystem;
@@ -386,7 +389,7 @@ public:
 		 *  \index the index of the element in the located.
 		 *  \lb the located bindable that is selected into a located (NULL = all)
 		 */
-		 void setCurrentEditedElement(CPSLocated *loc = NULL , uint32 index = 0, class CPSLocatedBindable *bd = NULL )
+		 void setCurrentEditedElement(CPSLocated *loc = nullptr, uint32 index = 0, class CPSLocatedBindable *bd = nullptr)
 		 {
 			NL_PS_FUNC_MAIN(setCurrentEditedElement)
 			_CurrEditedElementLocated = loc;
@@ -535,13 +538,13 @@ public:
 		  * \param lastingForeverObj, if not NULL, the pointer will be filled with the first object that last or emit forever, or create a loop.
 		  */
 
-		bool canFinish(CPSLocatedBindable **lastingForeverObj = NULL) const;
+		bool canFinish(CPSLocatedBindable **lastingForeverObj = nullptr) const;
 
 		/** Test if there are loops in the system. E.g A emit B emit A
 		  * NB : we assume that all emitters in the system are accessible, e.g that the located graph is connex
 		  * \param loopingObj, if not NULL, will be filled with the first object that creates a loop.
 		  */
-		bool hasLoop(CPSLocatedBindable **loopingObj = NULL) const;
+		bool hasLoop(CPSLocatedBindable **loopingObj = nullptr) const;
 
 
 	// @}
@@ -1087,7 +1090,7 @@ private:
 	public:
 		CCoordSystemInfo()
 		{
-			Matrix = NULL;
+			Matrix = nullptr;
 		}
 	};
 
@@ -1128,6 +1131,11 @@ private:
 	/// Last update date of the system. Useful with sharing only, to avoid several motions.
 	sint64					 _LastUpdateDate;
 
+	/// Frame ID deduplication for stereo rendering: prevents double-processing of
+	/// animation and render state updates when the scene is rendered multiple times per frame.
+	uint64					 _LastAnimFrameId;
+	uint64					 _LastRenderFrameId;
+
 	// current edited element located (edition purpose only)
 	CPSLocated				 *_CurrEditedElementLocated;
 	// current edited located bindable, NULL means all binadable of a located. (edition purpose only)
@@ -1142,6 +1150,7 @@ private:
 
 	CScene					*_Scene;
 
+	uint32					_NextAttribMakerId; // sequential counter for deterministic attrib maker IDs
 
 	// contains the name of the system. (VERSION >= 2 only)
 	std::string _Name;
@@ -1253,6 +1262,7 @@ public:
 	static TAnimationTime								InverseTotalEllapsedTime;
 	static TAnimationTime								RealEllapsedTime;
 	static float										RealEllapsedTimeRatio;
+	static uint32										RandomSeed; // deterministic seed for CRandomIterator, set per frame from _FrameId
 	static bool											InsideSimLoop;
 	static bool											InsideRemoveLoop;
 	static bool											InsideNewElementsLoop;

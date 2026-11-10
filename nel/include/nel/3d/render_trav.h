@@ -29,6 +29,7 @@
 #include "nel/3d/light.h"
 #include "nel/3d/mesh_block_manager.h"
 #include "nel/3d/shadow_map_manager.h"
+#include "nel/3d/decal_manager.h"
 #include "nel/3d/u_scene.h"
 #include "nel/3d/vertex_program.h"
 #include "nel/3d/transform.h"
@@ -48,6 +49,7 @@ class	CMaterial;
 
 class	CTransform;
 class	CLandscapeModel;
+class	CDecal;
 
 class	CVertexStreamManager;
 class   CWaterModel;
@@ -99,8 +101,8 @@ public:
 		uint CtStartNeLVP;
 	};
 	CVertexProgramLighted() { }
-	virtual ~CVertexProgramLighted() { }
-	virtual void buildInfo();
+	virtual ~CVertexProgramLighted() NL_OVERRIDE { }
+	virtual void buildInfo() NL_OVERRIDE;
 	const CIdxLighted &idxLighted() const { return m_IdxLighted; }
 	const CFeaturesLighted &featuresLighted() const { return m_FeaturesLighted; }
 
@@ -247,8 +249,16 @@ public:
 	CVertexStreamManager		*getShadowMeshSkinManager() const {return _ShadowMeshSkinManager;}
 
 
+	/// get the decal manager
+	CDecalManager				&getDecalManager() {return _DecalManager;}
+	const CDecalManager			&getDecalManager() const {return _DecalManager;}
+
+
 	// add a landscape. Special for CLandscapeModel::traverseRender();
 	void			addRenderLandscape(CLandscapeModel *model);
+
+	/// Get list of landscape models registered this frame (for decal face collection).
+	const std::vector<CLandscapeModel*>	&getLandscapeRenderList() const { return _LandscapeRenderList; }
 
 
 	/// \name Temp Debug
@@ -263,6 +273,19 @@ public:
 
 	/// \name Render Lighting Setup. FOR MODEL TRAVERSING ONLY.
 	// @{
+
+	// Light table mode
+	bool					_LightTableMode;
+	bool					_LightTableActive;        // True between init and teardown within a frame
+	std::vector<CPointLight*>	_LightTablePointLights; // For resetting _TableIndex at frame end
+	uint					_LightTableSize;          // Current table size in driver
+	uint					_MaxLightTableSize;       // Queried from driver via getMaxLightTableSize()
+
+	void		changeLightSetupTable(CLightContribution *lightContribution, bool useLocalAttenuation);
+	void		flushLightTable();
+	/// Pre-register an object's lights in the table without rendering.
+	/// Returns false if the lights don't fit (batch is full).
+	bool		collectObjectLights(const CLightContribution *lightContribution);
 
 	// Max VP Light setup Infos.
 	enum	{MaxVPLight = CVertexProgramLighted::MaxLight};
@@ -460,6 +483,8 @@ private:
 	CShadowMapManager			_ShadowMapManager;
 	/// The SkinManager, but For Shadow rendering
 	CVertexStreamManager		*_ShadowMeshSkinManager;
+	/// The decal manager
+	CDecalManager				_DecalManager;
 
 
 	/** \name Special Landscape RenderList.

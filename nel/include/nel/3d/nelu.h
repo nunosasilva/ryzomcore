@@ -64,7 +64,11 @@ public:
 	 *
 	 * You can access the driver with CNELU::Driver.
 	 */
-	static bool		initDriver(uint w, uint h, uint bpp=32, bool windowed=true, nlWindow systemWindow=EmptyWindow, bool offscreen=false, bool direct3d=false);
+	/** \param gl3 ask for the OpenGL3 (shader-based) driver instead of the legacy
+	 * fixed-function one. createGl3Driver() returns NULL when the driver was not
+	 * built, in which case initDriver falls back to the legacy GL driver rather
+	 * than failing, so this is safe to ask for on every platform. */
+	static bool		initDriver(uint w, uint h, uint bpp=32, bool windowed=true, nlWindow systemWindow=EmptyWindow, bool offscreen=false, bool direct3d=false, bool gl3=false);
 
 	/** Init all that we need for a Scene.
 	 * - register scene basics models,
@@ -108,7 +112,7 @@ public:
 	 * - initScene();
 	 * - initEventServer();
 	 */
-	static bool		init(uint w, uint h, CViewport viewport=CViewport(), uint bpp=32, bool windowed=true, nlWindow systemWindow=EmptyWindow, bool offscreen = false, bool direct3d = false);
+	static bool		init(uint w, uint h, CViewport viewport=CViewport(), uint bpp=32, bool windowed=true, nlWindow systemWindow=EmptyWindow, bool offscreen = false, bool direct3d = false, bool gl3 = false);
 
 	/** Delete all:
 	 * - releaseEventServer();

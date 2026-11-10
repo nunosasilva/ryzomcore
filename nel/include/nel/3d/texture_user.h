@@ -64,61 +64,61 @@ public:
 		nlassert((uint)UTexture::MagFilterCount==(uint)ITexture::MagFilterCount);
 		nlassert((uint)UTexture::MinFilterCount==(uint)ITexture::MinFilterCount);
 	}
-	virtual ~CTextureUser()
+	virtual ~CTextureUser() NL_OVERRIDE
 	{
 		// texture auto deleted.
 	}
 	// @}
 
-	virtual	void			setWrapS(TWrapMode mode)
+	virtual	void			setWrapS(TWrapMode mode) NL_OVERRIDE
 	{
 		_Texture->setWrapS((ITexture::TWrapMode)(uint32)mode);
 	}
-	virtual	void			setWrapT(TWrapMode mode)
+	virtual	void			setWrapT(TWrapMode mode) NL_OVERRIDE
 	{
 		_Texture->setWrapT((ITexture::TWrapMode)(uint32)mode);
 	}
-	virtual	TWrapMode		getWrapS() const
+	virtual	TWrapMode		getWrapS() const NL_OVERRIDE
 	{
 		return (UTexture::TWrapMode)(uint32)_Texture->getWrapS();
 	}
-	virtual	TWrapMode		getWrapT() const
+	virtual	TWrapMode		getWrapT() const NL_OVERRIDE
 	{
 		return (UTexture::TWrapMode)(uint32)_Texture->getWrapT();
 	}
-	virtual	void			setUploadFormat(TUploadFormat pf)
+	virtual	void			setUploadFormat(TUploadFormat pf) NL_OVERRIDE
 	{
 		_Texture->setUploadFormat((ITexture::TUploadFormat)(uint32)pf);
 	}
-	virtual	TUploadFormat	getUploadFormat() const
+	virtual	TUploadFormat	getUploadFormat() const NL_OVERRIDE
 	{
 		return (UTexture::TUploadFormat)(uint32)_Texture->getUploadFormat();
 	}
-	virtual	void			setFilterMode(TMagFilter magf, TMinFilter minf)
+	virtual	void			setFilterMode(TMagFilter magf, TMinFilter minf) NL_OVERRIDE
 	{
 		_Texture->setFilterMode((ITexture::TMagFilter)(uint32)magf, (ITexture::TMinFilter)(uint32)minf);
 	}
-	virtual	TMagFilter		getMagFilter() const
+	virtual	TMagFilter		getMagFilter() const NL_OVERRIDE
 	{
 		return (UTexture::TMagFilter)(uint32)_Texture->getMagFilter();
 	}
-	virtual	TMinFilter		getMinFilter() const
+	virtual	TMinFilter		getMinFilter() const NL_OVERRIDE
 	{
 		return (UTexture::TMinFilter)(uint32)_Texture->getMinFilter();
 	}
-	virtual	bool			mipMapOff() const
+	virtual	bool			mipMapOff() const NL_OVERRIDE
 	{
 		return _Texture->mipMapOff();
 	}
-	virtual	bool			mipMapOn() const
+	virtual	bool			mipMapOn() const NL_OVERRIDE
 	{
 		return _Texture->mipMapOn();
 	}
-	virtual	NLMISC::CRGBA	getPixelColor(sint32 x, sint32 y) const
+	virtual	NLMISC::CRGBA	getPixelColor(sint32 x, sint32 y) const NL_OVERRIDE
 	{
 		return _Texture->getPixelColor(x,y);
 	}
-	virtual	void setReleasable(bool bReleasable)
+	virtual	void setReleasable(bool bReleasable) NL_OVERRIDE
 	{
 		_Texture->setReleasable(bReleasable);
 	}
@@ -130,15 +130,15 @@ public:
 	}
 
 	// generate this texture datas
-	virtual CBitmap			*generateDatas()
+	virtual CBitmap			*generateDatas() NL_OVERRIDE
 	{
-		if (_Texture->isTextureCube()) return NULL;
+		if (_Texture->isTextureCube()) return nullptr;
 		_Texture->generate();
 		return _Texture;
 	}
 
 	// release this texture datas
-	virtual void			releaseDatas()
+	virtual void			releaseDatas() NL_OVERRIDE
 	{
 		_Texture->release();
 	}
@@ -167,37 +167,41 @@ public:
 	{
 		((CTextureFile*)(ITexture*)_Texture)->setAllowDegradation(false);
 	}
-	virtual ~CTextureFileUser()
+	virtual ~CTextureFileUser() NL_OVERRIDE
 	{
 	}
 	// @}
 
 
-	virtual	void setFileName(std::string s)
+	virtual	void setFileName(std::string s) NL_OVERRIDE
 	{
 		((CTextureFile*)(ITexture*)_Texture)->setFileName(s);
 	}
 
-	virtual	std::string getFileName() const
+	virtual	std::string getFileName() const NL_OVERRIDE
 	{
 		return ((CTextureFile*)(ITexture*)_Texture)->getFileName();
 	}
 
-	virtual bool	allowDegradation() const
+	virtual bool	allowDegradation() const NL_OVERRIDE
 	{
 		return _Texture->allowDegradation();
 	}
-	virtual void	setAllowDegradation(bool allow)
+	virtual void	setAllowDegradation(bool allow) NL_OVERRIDE
 	{
 		((CTextureFile*)(ITexture*)_Texture)->setAllowDegradation(allow);
 	}
-	virtual void	setEnlargeCanvasNonPOW2Tex(bool dontStretch)
+	virtual void	setEnlargeCanvasNonPOW2Tex(bool dontStretch) NL_OVERRIDE
 	{
 		((CTextureFile*)(ITexture*)_Texture)->setEnlargeCanvasNonPOW2Tex(dontStretch);
 	}
-	virtual bool	getEnlargeCanvasNonPOW2Tex() const
+	virtual bool	getEnlargeCanvasNonPOW2Tex() const NL_OVERRIDE
 	{
 		return ((CTextureFile*)(ITexture*)_Texture)->getEnlargeCanvasNonPOW2Tex();
+	}
+	virtual void	setUntrustedMaxSize(uint32 maxSize) NL_OVERRIDE
+	{
+		((CTextureFile*)(ITexture*)_Texture)->setUntrustedMaxSize(maxSize);
 	}
 };
 
@@ -226,34 +230,36 @@ public:
 		else if (t == CBitmap::DXTC5)			bpp = 8;
 		else if (t == CBitmap::DsDt)			bpp = 16;
 
-		uint size = w*h*bpp/8;
+		// CDriverUser::createTextureMem refuses a size that does not fit in 32 bits (w*h*bpp wrapped from 2^27 RGBA
+		// pixels to a far smaller buffer)
+		uint size = (uint)((uint64)w * h * bpp / 8);
 		uint8 *data = new uint8[size];
 
 		CTextureMem *pTxMem = new CTextureMem(data, size, true, false, w, h, t);
 		_Texture = pTxMem;
 	}
 
-	uint8* getPointer() const
+	uint8* getPointer() const NL_OVERRIDE
 	{
 		return ((CTextureMem*)(ITexture*)_Texture)->getPointer();
 	}
 
-	void touch()
+	void touch() NL_OVERRIDE
 	{
 		((CTextureMem*)(ITexture*)_Texture)->touch();
 	}
 
-	void touchRect(const NLMISC::CRect& rect)
+	void touchRect(const NLMISC::CRect& rect) NL_OVERRIDE
 	{
 		((CTextureMem*)(ITexture*)_Texture)->touchRect(rect);
 	}
 
-	uint32 getImageWidth() const
+	uint32 getImageWidth() const NL_OVERRIDE
 	{
 		return ((CTextureMem*)(ITexture*)_Texture)->getImageWidth();
 	}
 
-	uint32 getImageHeight() const
+	uint32 getImageHeight() const NL_OVERRIDE
 	{
 		return ((CTextureMem*)(ITexture*)_Texture)->getImageHeight();
 	}

@@ -23,6 +23,7 @@
 #include "nel/3d/async_file_manager_3d.h"
 #include "nel/3d/mesh_base_instance.h"
 #include "nel/3d/driver.h"
+#include "nel/3d/lod_character_manager.h"
 
 
 using	namespace std;
@@ -62,10 +63,39 @@ void		CAsyncTextureManager::CTextureEntry::createCoarseBitmap()
 
 	// copy the bitmap.
 	CoarseBitmap= *Texture;
-	// remove all mipmaps, and convert to DXTC1 (if possible, ie if was DXTC5 or DXTC3 as example)
+	// Remove all mipmaps. The copy keeps whatever format the texture already has, on purpose:
+	//
+	// It used to call convertToType(CBitmap::DXTC1) here, under a TODO marker. That function has no
+	// DXTC1 case (it falls through to `return false`), and NeL has no DXTC *encoder* at all - only
+	// decompressDXT1/3/5 - so the call silently did nothing. Nothing needs it to succeed either:
+	// the only consumer, CLodCharacterTmpBitmap::build(), converts whatever it gets to RGBA and
+	// reads pixels generically (lod_character_manager.cpp:851-860). So the "conversion" was a
+	// memory optimisation that never happened, on a cold async path, for textures that ship as
+	// DDS (typically already DXTC3/5, i.e. at most 2x the memory of DXTC1).
+	//
+	// If that memory ever matters, the options are, in order of preference: a small encoder here
+	// next to the decoders (dependency-free), or vendoring stb_dxt.h (public domain, single header,
+	// C89). Do NOT pull squish into nel/misc: it is a tool-only dependency today
+	// (nel/tools/3d/s3tc_compressor_lib), and the runtime is deliberately dependency-free.
 	CoarseBitmap.releaseMipMaps();
-	// TODODO: conversion to DXTC1
-	CoarseBitmap.convertToType(CBitmap::DXTC1);
+
+	/* The CLod impostor texturing samples this copy with 8-bit shifts, so it must be at most
+		NL3D_CLOD_TMP_BITMAP_MAX_SIZE on each side. The mip levels skipped at load guarantee that for a
+		DXTC DDS with a full mip chain; a DDS exported without mipmaps, or a PNG/TGA, arrives at full size.
+		That is an asset error, not something to paper over with a resample every client would pay for:
+		refuse the copy (the impostor then uses the material color) and name the file.
+	*/
+	uint	coarseW= CoarseBitmap.getWidth();
+	uint	coarseH= CoarseBitmap.getHeight();
+	if(coarseW==0 || coarseH==0 || coarseW>NL3D_CLOD_TMP_BITMAP_MAX_SIZE || coarseH>NL3D_CLOD_TMP_BITMAP_MAX_SIZE)
+	{
+		nlwarning("ASSET ERROR: character texture '%s' is still %ux%u after the requested skip of %u mip level(s) (%u level(s) loaded):"
+			" a far-LOD coarse copy must be at most %ux%u, so export it as a DXTC DDS with a full mip chain."
+			" Impostors of entities using it get the material color instead.",
+			Texture->getFileName().c_str(), coarseW, coarseH, (uint)Texture->getMipMapSkipAtLoad(), Texture->getMipMapCount(),
+			(uint)NL3D_CLOD_TMP_BITMAP_MAX_SIZE, (uint)NL3D_CLOD_TMP_BITMAP_MAX_SIZE);
+		CoarseBitmap.reset();
+	}
 }
 
 
@@ -74,7 +104,7 @@ CAsyncTextureManager::CTextureLod::CTextureLod()
 {
 	IsTextureEntry= false;
 
-	TextureEntry= NULL;
+	TextureEntry = nullptr;
 	Weight= 0;
 	Level= 0;
 	Loaded= false;
@@ -105,13 +135,13 @@ CAsyncTextureManager::CAsyncTextureManager()
 	_MaxLodLevel= 1;
 	_MaxUploadPerFrame= 65536;
 	_MaxHLSColoringPerFrame= 20*1024;
-	_CurrentUploadTexture= NULL;
+	_CurrentUploadTexture = nullptr;
 	_MaxTotalTextureSize= 10*1024*1024;
 	_TotalTextureSizeAsked= 0;
 	_LastTextureSizeGot= 0;
 
 	// Do not share this texture, to force uploading of the lods.
-	_CurrentTextureLodLoaded= NULL;
+	_CurrentTextureLodLoaded = nullptr;
 
 	// For Texture profiling
 	_TextureCategory= new ITexture::CTextureCategory("ASYNC ENTITY MANAGER");
@@ -173,7 +203,7 @@ uint			CAsyncTextureManager::addTextureRef(const string &textNameNotLwr, CMeshBa
 		// resize if needed.
 		if(i>=_TextureEntries.size())
 		{
-			_TextureEntries.push_back(NULL);
+			_TextureEntries.push_back(nullptr);
 			_FreeTextureIds.reserve(_TextureEntries.capacity());
 		}
 
@@ -255,7 +285,7 @@ void			CAsyncTextureManager::deleteTexture(uint id)
 	// If it was the currently uploaded one, abort
 	if(_CurrentUploadTexture==text)
 	{
-		_CurrentUploadTexture= NULL;
+		_CurrentUploadTexture = nullptr;
 	}
 
 	// If not uploaded.
@@ -286,15 +316,15 @@ void			CAsyncTextureManager::deleteTexture(uint id)
 		// stop uploading if was me
 		if(_CurrentUploadTexture==textLod)
 		{
-			_CurrentUploadTexture= NULL;
+			_CurrentUploadTexture = nullptr;
 		}
 		// stop loading me.
-		_CurrentTextureLodLoaded= NULL;
+		_CurrentTextureLodLoaded = nullptr;
 	}
 
 	// At last delete texture entry.
 	delete text;
-	_TextureEntries[id]= NULL;
+	_TextureEntries[id] = nullptr;
 	// add a new free id.
 	_FreeTextureIds.push_back(id);
 }
@@ -345,14 +375,14 @@ bool			CAsyncTextureManager::isTextureUpLoaded(uint id) const
 const NLMISC::CBitmap	*CAsyncTextureManager::getCoarseBitmap(uint id) const
 {
 	if(id>=_TextureEntries.size())
-		return NULL;
+		return nullptr;
 	CTextureEntry	*textEntry= _TextureEntries[id];
 	if(!textEntry)
-		return NULL;
+		return nullptr;
 
 	// if the textEntry not uploaded, return NULL
 	if(!textEntry->UpLoaded)
-		return NULL;
+		return nullptr;
 
 	// ok return the CoarseBitmap
 	return &textEntry->CoarseBitmap;
@@ -366,7 +396,7 @@ void			CAsyncTextureManager::update(IDriver *pDriver)
 	uint	nTotalColored = 0;
 
 	// if no texture to upload, get the next one
-	if(_CurrentUploadTexture==NULL)
+	if(_CurrentUploadTexture == nullptr)
 		getNextTextureToUpLoad(nTotalColored, pDriver);
 
 	// while some texture to upload
@@ -432,14 +462,14 @@ void			CAsyncTextureManager::update(IDriver *pDriver)
 				// Flag the Lod.
 				textLod->UpLoaded= true;
 				// Ok, ended to completly load this textureLod.
-				_CurrentTextureLodLoaded= NULL;
+				_CurrentTextureLodLoaded = nullptr;
 			}
 
 			// finally uploaded in VRAM, can release the RAM texture memory
 			pText->release();
 
 			// if not break because can't upload all parts, get next texture to upload
-			_CurrentUploadTexture= NULL;
+			_CurrentUploadTexture = nullptr;
 			getNextTextureToUpLoad(nTotalColored, pDriver);
 		}
 		else
@@ -555,7 +585,7 @@ bool			CAsyncTextureManager::uploadTexturePart(ITexture *pText, IDriver *pDriver
 void			CAsyncTextureManager::getNextTextureToUpLoad(uint &nTotalColored, IDriver *pDriver)
 {
 	// Reset texture uploading
-	_CurrentUploadTexture= NULL;
+	_CurrentUploadTexture = nullptr;
 	_CurrentUploadTextureMipMap= 0;
 	_CurrentUploadTextureLine= 0;
 
@@ -609,7 +639,7 @@ void			CAsyncTextureManager::getNextTextureToUpLoad(uint &nTotalColored, IDriver
 		}
 
 		// if no Lod texture currently loading, try to load/unload one
-		if(_CurrentTextureLodLoaded == NULL)
+		if(_CurrentTextureLodLoaded == nullptr)
 		{
 			updateTextureLodSystem(pDriver);
 		}
@@ -732,7 +762,7 @@ void			CAsyncTextureManager::updateTextureLodSystem(IDriver *pDriver)
 
 
 	// if the loadedSize is inferior to the wanted size, we can load a new LOD
-	CTextureLodToSort	*textLod= NULL;
+	CTextureLodToSort	*textLod = nullptr;
 	bool			unload;
 	if(currentLoadedSize<currentWantedSize)
 	{
@@ -762,7 +792,7 @@ void			CAsyncTextureManager::updateTextureLodSystem(IDriver *pDriver)
 			}
 		}
 		// it is possible that not found here. It means that All is Ok!!
-		if(textLod==NULL)
+		if(textLod == nullptr)
 			// no-op.
 			return;
 	}
@@ -797,7 +827,7 @@ void			CAsyncTextureManager::updateTextureLodSystem(IDriver *pDriver)
 		textLod->Lod->UpLoaded= false;
 		textLod->Lod->Loaded= false;
 		// Release completly the texture in driver. (SmartPtr delete)
-		textLod->Lod->Texture= NULL;
+		textLod->Lod->Texture = nullptr;
 	}
 
 }

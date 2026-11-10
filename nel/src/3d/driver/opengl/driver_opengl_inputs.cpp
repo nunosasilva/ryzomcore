@@ -47,6 +47,11 @@ namespace NLDRIVERGL {
 #endif
 #endif
 
+#ifdef NL_OS_MAC
+// whether the cursor is shown, macOS keeps a hide count of its own (see showCursor)
+static bool s_CursorVisible = true;
+#endif
+
 // *************************************************************************************
 CDriverGL::CCursor::CCursor() : ColorDepth(CDriverGL::ColorDepth32),
 								OrigHeight(32),
@@ -60,7 +65,7 @@ CDriverGL::CCursor::CCursor() : ColorDepth(CDriverGL::ColorDepth32),
 								Rot(0)
 {
 #if defined(NL_OS_UNIX) && !defined(NL_OS_MAC)
-	Dpy = NULL;
+	Dpy = nullptr;
 #endif
 }
 
@@ -308,8 +313,8 @@ void CDriverGL::setCursor(const std::string &name, NLMISC::CRGBA col, uint8 rot,
 	{
 		// Update cursor if modified or not already built
 		CCursor &curs = it->second;
-		hotSpotX = (sint) (hotSpotX - curs.HotspotOffsetX);
-		hotSpotY = (sint) ((curs.OrigHeight - hotSpotY) - curs.HotspotOffsetY);
+		hotSpotX = (sint)(hotSpotX - curs.HotspotOffsetX);
+		hotSpotY = (sint)((curs.OrigHeight - hotSpotY) - curs.HotspotOffsetY);
 		if (curs.Cursor == EmptyCursor ||
 			curs.HotspotScale != _CursorScale ||
 			curs.HotSpotX != hotSpotX ||
@@ -369,18 +374,6 @@ nlCursor CDriverGL::buildCursor(const CBitmap &src, NLMISC::CRGBA col, uint8 rot
 {
 	nlassert(isAlphaBlendedCursorSupported());
 
-	// use size from mouse texture
-	uint mouseW = src.getWidth();
-	uint mouseH = src.getHeight();
-
-	if (_CursorScale != 1.f)
-	{
-		mouseW *= _CursorScale;
-		mouseH *= _CursorScale;
-		hotSpotX *= _CursorScale;
-		hotSpotY *= _CursorScale;
-	}
-
 	CBitmap rotSrc = src;
 	if (rot > 3) rot = 3; // mimic behavior of 'CViewRenderer::drawRotFlipBitmapTiled' (why not rot & 3 ??? ...)
 	switch(rot)
@@ -390,6 +383,23 @@ nlCursor CDriverGL::buildCursor(const CBitmap &src, NLMISC::CRGBA col, uint8 rot
 		case 2: rotSrc.rot90CW(); rotSrc.rot90CW(); break;
 		case 3: rotSrc.rot90CCW(); break;
 	}
+
+	// use size from mouse texture, as rotated: a cursor bitmap need not be square
+	uint mouseW = rotSrc.getWidth();
+	uint mouseH = rotSrc.getHeight();
+
+	if (_CursorScale != 1.f)
+	{
+		// a cursor keeps at least one pixel, whatever scale it is given
+		mouseW = (uint)std::max(mouseW * _CursorScale, 1.f);
+		mouseH = (uint)std::max(mouseH * _CursorScale, 1.f);
+		hotSpotX = (sint)(hotSpotX * _CursorScale);
+		hotSpotY = (sint)(hotSpotY * _CursorScale);
+	}
+
+	// the hotspot has to be in the cursor, X11 refuses it otherwise (it is not rotated with the bitmap)
+	clamp(hotSpotX, 0, (sint)mouseW - 1);
+	clamp(hotSpotY, 0, (sint)mouseH - 1);
 
 	// create a cursor from bitmap
 	nlCursor result = EmptyCursor;
@@ -450,21 +460,22 @@ void CDriverGL::showCursor(bool b)
 	// the cursor was hidden.
 
 	CGDisplayErr error  = kCGErrorSuccess;
-	static bool visible = true;
 
-	if(b && !visible)
+	if (b && !s_CursorVisible)
 	{
 		error = CGDisplayShowCursor(kCGDirectMainDisplay);
-		visible = true;
+		s_CursorVisible = true;
 	}
-	else if(!b && visible)
+	else if (!b && s_CursorVisible)
 	{
 		error = CGDisplayHideCursor(kCGDirectMainDisplay);
-		visible = false;
+		s_CursorVisible = false;
 	}
 
 	if(error != kCGErrorSuccess)
 		nlerror("cannot show / hide cursor");
+
+	updateMouseRelative();
 
 #elif defined (NL_OS_UNIX)
 
@@ -506,6 +517,12 @@ void CDriverGL::setMousePos(float x, float y)
 
 #elif defined(NL_OS_MAC)
 
+	_EventEmitter.setMousePos(x, y);
+
+	// a relative mouse has only NeL's position, the cursor stays where it is
+	if (_EventEmitter.isMouseRelative())
+		return;
+
 	// CG wants absolute coordinates related to first screen's top left
 
 	// get the first screen's (conaints menubar) rect (this is not mainScreen)
@@ -530,6 +547,9 @@ void CDriverGL::setMousePos(float x, float y)
 
 	if(error != kCGErrorSuccess)
 		nlerror("cannot set mouse position");
+
+	// after a warp, macOS keeps the cursor where it is for a moment, unless it is associated with the mouse again
+	CGAssociateMouseAndMouseCursorPosition(true);
 
 #elif defined (NL_OS_UNIX)
 
@@ -566,6 +586,8 @@ void CDriverGL::setCapture (bool b)
 	// no need to capture
 	_MouseCaptured = b;
 
+	updateMouseRelative();
+
 #elif defined (NL_OS_UNIX)
 
 	if(b /* && isSystemCursorInClientArea() && !isSystemCursorCaptured()*/) // capture the cursor.
@@ -583,6 +605,37 @@ void CDriverGL::setCapture (bool b)
 
 #endif // NL_OS_UNIX
 }
+
+#ifdef NL_OS_MAC
+// ***************************************************************************
+void CDriverGL::updateMouseRelative()
+{
+	// A captured hidden cursor belongs to NeL, as in the free look: the mouse moves NeL's own position and
+	// the cursor stays where it is. NeL then never warps it, as macOS keeps a cursor still for a moment
+	// after a warp, which stops the free look each time it centres the cursor.
+	// (only in a window the driver made: a view of another toolkit's window gets no focus changes)
+	bool relative = _MouseCaptured && !s_CursorVisible && _WindowFocus && _DestroyWindow;
+	if (relative == _EventEmitter.isMouseRelative())
+		return;
+
+	_EventEmitter.setMouseRelative(relative);
+
+	if (relative)
+	{
+		CGAssociateMouseAndMouseCursorPosition(false);
+	}
+	else
+	{
+		// the cursor comes back where NeL's position is (without the focus, setMousePos does not move it)
+		float x, y;
+		_EventEmitter.getMousePos(x, y);
+		clamp(x, 0.f, 1.f);
+		clamp(y, 0.f, 1.f);
+		setMousePos(x, y);
+		CGAssociateMouseAndMouseCursorPosition(true);
+	}
+}
+#endif
 
 // ***************************************************************************
 bool CDriverGL::isSystemCursorInClientArea()
@@ -784,7 +837,7 @@ bool CDriverGL::convertBitmapToCursor(const NLMISC::CBitmap &bitmap, nlCursor &c
 		}
 
 		// Create the icon graphic contest
-		GC gc = XCreateGC(_dpy, pixmap, 0, NULL);
+		GC gc = XCreateGC(_dpy, pixmap, 0, nullptr);
 
 		if (!gc)
 		{
@@ -807,7 +860,7 @@ bool CDriverGL::convertBitmapToCursor(const NLMISC::CBitmap &bitmap, nlCursor &c
 		if (image->data)
 		{
 			free(image->data);
-			image->data = NULL;
+			image->data = nullptr;
 		}
 
 		XDestroyImage(image);
@@ -820,7 +873,7 @@ bool CDriverGL::convertBitmapToCursor(const NLMISC::CBitmap &bitmap, nlCursor &c
 			return false;
 		}
 
-		Picture picture = XRenderCreatePicture(_dpy, pixmap, format, 0, 0);
+		Picture picture = XRenderCreatePicture(_dpy, pixmap, format, 0, nullptr);
 
 		if (!picture)
 		{

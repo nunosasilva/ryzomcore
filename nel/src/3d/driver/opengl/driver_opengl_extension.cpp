@@ -1,5 +1,5 @@
 // NeL - MMORPG Framework <http://dev.ryzom.com/projects/nel/>
-// Copyright (C) 2010-2020  Winch Gate Property Limited
+// Copyright (C) 2010-2017  Winch Gate Property Limited
 //
 // This source file has been modified by the following contributors:
 // Copyright (C) 2010  Robert TIMM (rti) <mail@rtti.de>
@@ -640,7 +640,7 @@ static bool setupEXTTextureEnvCombine(const char	*glext)
 #ifdef USE_OPENGLES
 	return true;
 #else
-	return (strstr(glext, "GL_EXT_texture_env_combine")!=NULL || strstr(glext, "GL_ARB_texture_env_combine")!=NULL);
+	return (strstr(glext, "GL_EXT_texture_env_combine") != nullptr || strstr(glext, "GL_ARB_texture_env_combine") != nullptr);
 #endif
 }
 
@@ -961,6 +961,14 @@ static bool	setupNVVertexProgram(const char	*glext)
 }
 
 // *********************************
+static bool	setupNVVertexProgram2Option(const char	*glext)
+{
+	H_AUTO_OGL(setupNVVertexProgram2Option);
+	CHECK_EXT("GL_NV_vertex_program2_option");
+	return true;
+}
+
+// *********************************
 static bool	setupEXTVertexShader(const char	*glext)
 {
 	H_AUTO_OGL(setupEXTVertexShader);
@@ -1170,7 +1178,7 @@ static bool	setupATIVertexArrayObject(const char *glext)
 	CHECK_ADDRESS(PFNGLGETARRAYOBJECTFVATIPROC, glGetArrayObjectfvATI);
 	CHECK_ADDRESS(PFNGLGETARRAYOBJECTIVATIPROC, glGetArrayObjectivATI);
 
-	if(strstr(glext, "GL_EXT_vertex_shader") != NULL)
+	if(strstr(glext, "GL_EXT_vertex_shader") != nullptr)
 	{
 		// the following exist only if ext vertex shader is present
 		CHECK_ADDRESS(PFNGLVARIANTARRAYOBJECTATIPROC, glVariantArrayObjectATI);
@@ -1275,7 +1283,7 @@ static bool	setupNVFragmentProgram2(const char *glext)
 {
 	H_AUTO_OGL(setupNVFragmentProgram2);
 	CHECK_EXT("GL_NV_fragment_program2");
-
+	
 	return true;
 }
 
@@ -1284,7 +1292,7 @@ static bool	setupARBFragmentShader(const char *glext)
 {
 	H_AUTO_OGL(setupNVFragmentProgram2);
 	CHECK_EXT("GL_ARB_fragment_shader");
-
+	
 	return true;
 }
 
@@ -1628,7 +1636,7 @@ void	registerGlExtensions(CGlExtensions &ext)
 		for(uint i = 0; i < exts.size(); i++)
 		{
 			if(i%5==0) DebugLog->displayRaw("3D:     ");
-			DebugLog->displayRaw(string(exts[i]+" ").c_str());
+			DebugLog->displayRaw("%s", string(exts[i]+" ").c_str());
 			if(i%5==4) DebugLog->displayRaw("\n");
 		}
 		DebugLog->displayRaw("\n");
@@ -1692,19 +1700,21 @@ void	registerGlExtensions(CGlExtensions &ext)
 		ext.NVVertexProgram = setupNVVertexProgram(glext);
 		ext.EXTVertexShader = setupEXTVertexShader(glext);
 		ext.ARBVertexProgram = setupARBVertexProgram(glext);
+		ext.NVVertexProgram2Option = setupNVVertexProgram2Option(glext);
 	}
 	else
 	{
 		ext.NVVertexProgram = false;
 		ext.EXTVertexShader = false;
 		ext.ARBVertexProgram = false;
+		ext.NVVertexProgram2Option = false;
 	}
-
+	
 	// Check pixel program
 	// Disable feature ???
 	if (!ext.DisableHardwarePixelProgram)
 	{
-		ext.ARBFragmentProgram = setupARBFragmentProgram(glext);
+		ext.ARBFragmentProgram = setupARBFragmentProgram(glext);	
 		ext.NVFragmentProgram2 = setupNVFragmentProgram2(glext);
 		ext.ARBFragmentShader = setupARBFragmentShader(glext);
 	}
@@ -1735,7 +1745,7 @@ void	registerGlExtensions(CGlExtensions &ext)
 
 	// For now, the only way to know if emulation, is to test some extension which exist only on GeForce3.
 	// if GL_NV_texture_shader is not here, then we are not on GeForce3.
-	ext.NVVertexProgramEmulated= ext.NVVertexProgram && (strstr(glext, "GL_NV_texture_shader")==NULL);
+	ext.NVVertexProgramEmulated= ext.NVVertexProgram && (strstr(glext, "GL_NV_texture_shader") == nullptr);
 
 	// Check EXTSecondaryColor
 	ext.EXTSecondaryColor= setupEXTSecondaryColor(glext);
@@ -1964,7 +1974,7 @@ bool registerEGlExtensions(CGlExtensions &ext, EGLDisplay dpy)
 		for(uint i = 0; i < exts.size(); i++)
 		{
 			if(i%5==0) DebugLog->displayRaw("3D:     ");
-			DebugLog->displayRaw(string(exts[i]+" ").c_str());
+			DebugLog->displayRaw("%s", string(exts[i]+" ").c_str());
 			if(i%5==4) DebugLog->displayRaw("\n");
 		}
 		DebugLog->displayRaw("\n");
@@ -1998,7 +2008,7 @@ bool registerWGlExtensions(CGlExtensions &ext, HDC hDC)
 		for(uint i = 0; i < exts.size(); i++)
 		{
 			if(i%5==0) DebugLog->displayRaw("3D:     ");
-			DebugLog->displayRaw(string(exts[i]+" ").c_str());
+			DebugLog->displayRaw("%s", string(exts[i]+" ").c_str());
 			if(i%5==4) DebugLog->displayRaw("\n");
 		}
 		DebugLog->displayRaw("\n");
@@ -2059,7 +2069,7 @@ bool registerGlXExtensions(CGlExtensions &ext, Display *dpy, sint screen)
 
 	// Get extension string
 	const char *glext = glXQueryExtensionsString(dpy, screen);
-	if (glext == NULL)
+	if (glext == nullptr)
 	{
 		nlwarning ("glXQueryExtensionsString failed");
 		return false;
@@ -2074,7 +2084,7 @@ bool registerGlXExtensions(CGlExtensions &ext, Display *dpy, sint screen)
 		for(uint i = 0; i < exts.size(); i++)
 		{
 			if(i%5==0) DebugLog->displayRaw("3D:     ");
-			DebugLog->displayRaw(string(exts[i]+" ").c_str());
+			DebugLog->displayRaw("%s", string(exts[i]+" ").c_str());
 			if(i%5==4) DebugLog->displayRaw("\n");
 		}
 		DebugLog->displayRaw("\n");

@@ -34,6 +34,7 @@ namespace NL3D
  */
 template<class T> class COrderingTable
 {
+	struct CNode;
 
 public:
 
@@ -102,6 +103,23 @@ public:
 	 */
 	void next();
 
+	/**
+	 * Opaque iterator for saving and restoring traversal position.
+	 */
+	struct CIterator
+	{
+		CIterator() : _Node(nullptr) {}
+	private:
+		friend class COrderingTable<T>;
+		CNode *_Node;
+	};
+
+	/// Save the current traversal position.
+	CIterator iterator() const { CIterator it; it._Node = _SelNode; return it; }
+
+	/// Restore a previously saved traversal position.
+	void setIterator(CIterator it) { _SelNode = it._Node; }
+
 // =================
 // =================
 // IMPLEMENTATION.
@@ -126,7 +144,7 @@ private:
 	public:
 		std::vector<CNode> NodePool;
 		CNode			   *CurAllocatedNode;
-		CAllocator() : CurAllocatedNode(NULL) {}
+		CAllocator() : CurAllocatedNode(nullptr) {}
 	};
 	// a raw allocator of node.
 	NLMISC::CSmartPtr<CAllocator>	_Allocator;
@@ -220,17 +238,17 @@ template<class T> void COrderingTable<T>::begin()
 // ***************************************************************************
 template<class T> T* COrderingTable<T>::get()
 {
-	if( _SelNode != NULL )
+	if( _SelNode != nullptr)
 		return _SelNode->val;
 	else
-		return NULL;
+		return nullptr;
 }
 
 // ***************************************************************************
 template<class T> void COrderingTable<T>::next()
 {
 	_SelNode = _SelNode->next;
-	while( ( _SelNode != NULL )&&( _SelNode->val == NULL ) )
+	while( ( _SelNode != nullptr) &&( _SelNode->val == NULL ) )
 		_SelNode = _SelNode->next;
 }
 

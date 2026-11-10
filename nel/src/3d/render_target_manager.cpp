@@ -33,7 +33,7 @@
 #include "nel/3d/u_camera.h"
 #include "nel/3d/u_driver.h"
 #include "nel/3d/material.h"
-#include "nel/3d/texture_bloom.h"
+#include "nel/3d/texture_offscreen.h"
 #include "nel/3d/texture_user.h"
 #include "nel/3d/driver_user.h"
 #include "nel/3d/u_texture.h"
@@ -55,7 +55,7 @@ public:
 	// Options
 	uint Width;
 	uint Height;
-	bool Mode2D;
+	bool NeedsDepthStencil;
 	UTexture::TUploadFormat Format;
 	
 	// Data
@@ -65,7 +65,7 @@ public:
 	bool Used;
 };
 
-CRenderTargetManager::CRenderTargetManager() : m_Driver(NULL)
+CRenderTargetManager::CRenderTargetManager() : m_Driver(nullptr)
 {
 	
 }
@@ -77,13 +77,13 @@ CRenderTargetManager::~CRenderTargetManager()
 	cleanup();
 }
 
-NL3D::CTextureUser *CRenderTargetManager::getRenderTarget(uint width, uint height, bool mode2D, UTexture::TUploadFormat format)
+NL3D::CTextureUser *CRenderTargetManager::getRenderTarget(uint width, uint height, bool needsDepthStencil, UTexture::TUploadFormat format)
 {
 	// Find or create a render target, short loop so no real optimization
 	for (std::vector<CRenderTargetDescInt *>::iterator it(m_RenderTargets.begin()), end(m_RenderTargets.end()); it != end; ++it)
 	{
 		CRenderTargetDescInt *desc = *it;
-		if (!desc->InUse && desc->Width == width && desc->Height == height && desc->Mode2D == mode2D && desc->Format == format)
+		if (!desc->InUse && desc->Width == width && desc->Height == height && desc->NeedsDepthStencil == needsDepthStencil && desc->Format == format)
 		{
 			desc->InUse = true;
 			desc->Used = true;
@@ -94,8 +94,8 @@ NL3D::CTextureUser *CRenderTargetManager::getRenderTarget(uint width, uint heigh
 	nldebug("3D: Create new render target (%u x %u)", width, height);
 	NL3D::IDriver *drvInternal = (static_cast<CDriverUser *>(m_Driver))->getDriver();
 	CRenderTargetDescInt *desc = new CRenderTargetDescInt();
-	CTextureBloom *tex = new CTextureBloom(); // LOL
-	tex->mode2D(mode2D);
+	CTextureOffscreen *tex = new CTextureOffscreen();
+	tex->setNeedsDepthStencil(needsDepthStencil);
 	desc->TextureInterface = tex;
 	desc->TextureInterface->setRenderTarget(true);
 	desc->TextureInterface->setReleasable(false);
@@ -109,7 +109,7 @@ NL3D::CTextureUser *CRenderTargetManager::getRenderTarget(uint width, uint heigh
 	nlassert(!drvInternal->isTextureRectangle(desc->TextureInterface)); // Not allowed, we only support NPOT for render targets now.
 	desc->Width = width;
 	desc->Height = height;
-	desc->Mode2D = mode2D;
+	desc->NeedsDepthStencil = needsDepthStencil;
 	desc->Format = format;
 	desc->Used = true;
 	desc->InUse = true;
@@ -144,8 +144,8 @@ void CRenderTargetManager::cleanup()
 				// No longer in use
 				nldebug("3D: Release render target (%u x %u)", desc->Width, desc->Height);
 				delete desc->TextureUser;
-				desc->TextureUser = NULL;
-				desc->TextureInterface = NULL; // CSmartPtr
+				desc->TextureUser = nullptr;
+				desc->TextureInterface = nullptr; // CSmartPtr
 				m_RenderTargets.erase(m_RenderTargets.begin() + i);
 				delete desc;
 				--i;

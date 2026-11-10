@@ -23,8 +23,10 @@
 #include "nel/3d/u_instance.h"
 #include "nel/3d/u_camera.h"
 #include "nel/3d/u_skeleton.h"
+#include "nel/3d/u_decal.h"
 #include "nel/3d/scene_user.h"
 #include "nel/3d/skeleton_model.h"
+#include "nel/3d/decal.h"
 #include "nel/3d/coarse_mesh_manager.h"
 #include "nel/3d/point_light_model.h"
 #include "nel/3d/lod_character_manager.h"
@@ -33,6 +35,7 @@
 #include "nel/misc/hierarchical_timer.h"
 #include "nel/3d/async_texture_manager.h"
 #include "nel/3d/water_env_map_user.h"
+#include "nel/3d/texture_user.h"
 
 
 using namespace NLMISC;
@@ -48,6 +51,7 @@ H_AUTO_DECL( NL3D_UI_Scene )
 H_AUTO_DECL( NL3D_Misc_Scene_CreateDel_Element )
 H_AUTO_DECL( NL3D_CreateOrLoad_Instance )
 H_AUTO_DECL( NL3D_CreateOrLoad_Skeleton )
+H_AUTO_DECL( NL3D_CreateOrLoad_Decal )
 H_AUTO_DECL( NL3D_Load_CLodOrCoarseMesh )
 H_AUTO_DECL( NL3D_Load_AsyncIG )
 
@@ -55,6 +59,7 @@ H_AUTO_DECL( NL3D_Load_AsyncIG )
 #define	NL3D_HAUTO_ELT_SCENE					H_AUTO_USE( NL3D_Misc_Scene_CreateDel_Element )
 #define	NL3D_HAUTO_CREATE_INSTANCE				H_AUTO_USE( NL3D_CreateOrLoad_Instance )
 #define	NL3D_HAUTO_CREATE_SKELETON				H_AUTO_USE( NL3D_CreateOrLoad_Skeleton )
+#define	NL3D_HAUTO_CREATE_DECAL					H_AUTO_USE( NL3D_CreateOrLoad_Decal )
 #define	NL3D_HAUTO_LOAD_LOD						H_AUTO_USE( NL3D_Load_CLodOrCoarseMesh )
 #define	NL3D_HAUTO_ASYNC_IG						H_AUTO_USE( NL3D_Load_AsyncIG )
 
@@ -311,8 +316,8 @@ UPointLight			CSceneUser::createPointLight()
 	{
 		CPointLightModel *pointLightModel= safe_cast<CPointLightModel*> (model);
 		// If not found, return NULL.
-		if(pointLightModel==NULL)
-			return NULL;
+		if(pointLightModel == nullptr)
+			return nullptr;
 
 		// The component is auto added/deleted to _Scene in ctor/dtor.
 		return UPointLight (pointLightModel);
@@ -329,6 +334,35 @@ void			CSceneUser::deletePointLight(UPointLight &light)
 	// The component is auto added/deleted to _Scene in ctor/dtor.
 	_Scene.deleteModel (light.getObjectPtr());
 	light.detach ();
+}
+
+// ***************************************************************************
+
+UDecal		CSceneUser::createDecal()
+{
+	NL3D_HAUTO_CREATE_DECAL;
+
+	CTransform *t = _Scene.createModel(DecalId);
+	if (t)
+	{
+		CDecal	*decal= safe_cast<CDecal*> (t);
+		return UDecal(decal);
+	}
+	else
+	{
+		return UDecal();
+	}
+}
+
+// ***************************************************************************
+
+void			CSceneUser::deleteDecal(UDecal &decal)
+{
+	NL3D_HAUTO_ELT_SCENE;
+
+	// The component is auto added/deleted to _Scene in ctor/dtor.
+	_Scene.deleteModel(decal.getObjectPtr());
+	decal.detach ();
 }
 
 
@@ -365,7 +399,7 @@ void CSceneUser::updateWaitingIG()
 	for(TWaitingIGList::iterator it = _WaitingIGs.begin(); it != _WaitingIGs.end();)
 	{
 		bool	erased= false;
-		if (it->IGToLoad != NULL) // ig loaded ?
+		if (it->IGToLoad != nullptr) // ig loaded ?
 		{
 			if (it->IGToLoad != (UInstanceGroup *) -1)
 			{
@@ -373,7 +407,7 @@ void CSceneUser::updateWaitingIG()
 				{
 					case UInstanceGroup::StateNotAdded:
 						// start loading
-						if (it->Callback != NULL)
+						if (it->Callback != nullptr)
 							it->Callback->InstanceGroupCreated(it->IGToLoad);
 						it->IGToLoad->addToSceneAsync(*this, _DriverUser, it->SelectedTexture);
 					break;
@@ -501,7 +535,7 @@ void			CSceneUser::render(bool updateWaitingInstancesFlag /*= true*/, bool resto
 	{
 		NL3D_HAUTO_RENDER_SCENE
 
-		if(_Scene.getCam() == NULL)
+		if(_Scene.getCam() == nullptr)
 			nlerror("render(): try to render with no camera linked (may have been deleted)");
 		_Scene.render(true);
 	}
@@ -531,7 +565,7 @@ void			CSceneUser::renderPart(TRenderPart rp, bool doHrcPass, bool doTrav, bool 
 	{
 		NL3D_HAUTO_RENDER_SCENE_PART
 
-		if(_Scene.getCam() == NULL)
+		if(_Scene.getCam() == nullptr)
 			nlerror("render(): try to render with no camera linked (may have been deleted)");
 		_Scene.renderPart(rp, doHrcPass, doTrav, keepTrav);
 	}
@@ -573,7 +607,7 @@ void CSceneUser::updateWaitingInstances()
 		std::map<UInstance*,CTransformShape*>::iterator it = _WaitingInstances.begin();
 		while( it != _WaitingInstances.end() )
 		{
-			if( it->second != NULL )
+			if( it->second != nullptr)
 			{
 				it->first->attach (it->second);
 				std::map<UInstance*,CTransformShape*>::iterator delIt = it;
@@ -648,7 +682,7 @@ UInstanceGroup	*CSceneUser::findCameraClusterSystemFromRay(UInstanceGroup *start
 	NL3D_HAUTO_UI_SCENE;
 
 	CInstanceGroupUser	*uig= dynamic_cast<CInstanceGroupUser*>(startClusterSystem);
-	CInstanceGroup		*pIg= NULL;
+	CInstanceGroup		*pIg = nullptr;
 	if(uig)
 		pIg= &uig->_InstanceGroup;
 
@@ -656,7 +690,7 @@ UInstanceGroup	*CSceneUser::findCameraClusterSystemFromRay(UInstanceGroup *start
 	if(resultIg)
 		return resultIg->getUserInterface();
 	else
-		return NULL;
+		return nullptr;
 }
 
 // ***************************************************************************
@@ -705,7 +739,7 @@ void CSceneUser::createInstanceAsync(const std::string &shapeName, UInstance *pp
 {
 	NL3D_HAUTO_CREATE_INSTANCE;
 
-	_WaitingInstances[ppInstance] = NULL;
+	_WaitingInstances[ppInstance] = nullptr;
 	_Scene.createInstanceAsync(shapeName,&_WaitingInstances[ppInstance], position, selectedTexture);
 //		CTransform	*model= _Scene.createInstance(shapeName);
 	// If not found, return NULL.
@@ -750,7 +784,7 @@ void CSceneUser::stopCreatingAndAddingIG(UInstanceGroup **pIG)
 		CWaitingIG &rWIG = *it;
 		if (rWIG.CallerPtr == pIG)
 		{
-			if (rWIG.IGToLoad == NULL)
+			if (rWIG.IGToLoad == nullptr)
 			{
 				UInstanceGroup::stopCreateInstanceGroupAsync(pIG);
 			}
@@ -917,7 +951,7 @@ void						CSceneUser::deleteVisualCollisionManager(UVisualCollisionManager *mgr)
 
 	// if it was the one used for shadow receiving in this scene, then set NULL
 	if(_Scene.getVisualCollisionManagerForShadow()==&vcmUser->getVCM())
-		_Scene.setVisualCollisionManagerForShadow(NULL);
+		_Scene.setVisualCollisionManagerForShadow(nullptr);
 
 	// and delete it
 	_VisualCollisionManagers.erase(vcmUser);
@@ -945,18 +979,21 @@ CSceneUser::CSceneUser(CDriverUser *drv, bool bSmallScene) : _Scene(bSmallScene)
 	// Create default camera, and active!!
 	setCam(createCamera());
 
-	_WaterEnvMap = NULL;
+	_WaterEnvMap = nullptr;
 }
 
 CSceneUser::~CSceneUser()
 {
+	for (uint i = 0; i < _WaterReflectionTextures.size(); ++i)
+		delete _WaterReflectionTextures[i];
+	_WaterReflectionTextures.clear();
 	_VisualCollisionManagers.clear();
 	_Landscapes.clear();
 	_CloudScapes.clear();
 	_Scene.release();
-	_Scene.setDriver(NULL);
-	_Scene.setCam(NULL);
-	_DriverUser= NULL;
+	_Scene.setDriver(nullptr);
+	_Scene.setCam(nullptr);
+	_DriverUser = nullptr;
 }
 
 // ***************************************************************************
@@ -1058,6 +1095,18 @@ bool			CSceneUser::getEnableShadowPolySmooth() const
 }
 
 // ***************************************************************************
+void			CSceneUser::enableGPUSkinning(bool enable)
+{
+	_Scene.enableGPUSkinning(enable);
+}
+
+// ***************************************************************************
+bool			CSceneUser::isGPUSkinningEnabled() const
+{
+	return _Scene.isGPUSkinningEnabled();
+}
+
+// ***************************************************************************
 void			CSceneUser::setShadowMapDistFadeStart(float dist)
 {
 	_Scene.setShadowMapDistFadeStart(dist);
@@ -1100,8 +1149,8 @@ uint			CSceneUser::getShadowMapMaxCasterAround() const
 // ***************************************************************************
 void			CSceneUser::setVisualCollisionManagerForShadow(UVisualCollisionManager *vcm)
 {
-	if(vcm==NULL)
-		_Scene.setVisualCollisionManagerForShadow(NULL);
+	if(vcm == nullptr)
+		_Scene.setVisualCollisionManagerForShadow(nullptr);
 	else
 	{
 		CVisualCollisionManagerUser	*vcmUser= static_cast<CVisualCollisionManagerUser*>(vcm);
@@ -1154,6 +1203,77 @@ void CSceneUser::setWaterEnvMap(UWaterEnvMap *waterEnvMap)
 void CSceneUser::updateWaterEnvMaps(TGlobalAnimationTime time)
 {
 	_Scene.updateWaterEnvMaps(time);
+}
+
+// ***************************************************************************
+void CSceneUser::fillWaterReflectionInfo(const CWaterReflectionManager::CActiveReflection &refl, UWaterReflectionInfo &info)
+{
+	// Maintain a U-level wrapper per render target texture (the same pass
+	// index maps to a different texture per view, so match by texture)
+	CTextureUser *wrapper = nullptr;
+	for (uint i = 0; i < _WaterReflectionTextures.size(); ++i)
+	{
+		if (_WaterReflectionTextures[i]->getITexture() == refl.Texture)
+		{
+			wrapper = _WaterReflectionTextures[i];
+			break;
+		}
+	}
+	if (!wrapper)
+	{
+		// Sweep wrappers whose render target was released (the wrapper's
+		// smart pointer is the last reference): keeps reallocated targets
+		// from being pinned in memory, without ever deleting a wrapper the
+		// caller may still hold (those textures stay referenced by the
+		// manager's slots until they are replaced)
+		if (_WaterReflectionTextures.size() >= 8)
+		{
+			std::vector<CTextureUser *> kept;
+			kept.reserve(_WaterReflectionTextures.size());
+			for (uint i = 0; i < _WaterReflectionTextures.size(); ++i)
+			{
+				if (_WaterReflectionTextures[i]->getITexture()->getRefCount() <= 1)
+					delete _WaterReflectionTextures[i];
+				else
+					kept.push_back(_WaterReflectionTextures[i]);
+			}
+			_WaterReflectionTextures.swap(kept);
+		}
+		wrapper = new CTextureUser(refl.Texture);
+		_WaterReflectionTextures.push_back(wrapper);
+	}
+
+	info.Texture = wrapper;
+	info.ReflViewMatrix = refl.ReflViewMatrix;
+	info.FrustumLeft = refl.ReflFrustum.Left;
+	info.FrustumRight = refl.ReflFrustum.Right;
+	info.FrustumBottom = refl.ReflFrustum.Bottom;
+	info.FrustumTop = refl.ReflFrustum.Top;
+	info.FrustumNear = refl.ReflFrustum.Near;
+	info.FrustumFar = refl.ReflFrustum.Far;
+	info.UScale = refl.UVScale.U;
+	info.VScale = refl.UVScale.V;
+	info.UBias = refl.UVBias.U;
+	info.VBias = refl.UVBias.V;
+	info.PlaneZ = refl.PlaneZ;
+}
+
+// ***************************************************************************
+void CSceneUser::beginWaterReflectionPass(uint pass, UWaterReflectionInfo &info)
+{
+	CWaterReflectionManager::CActiveReflection refl;
+	_Scene.getWaterReflectionManager().beginPass(pass, refl);
+	fillWaterReflectionInfo(refl, info);
+}
+
+// ***************************************************************************
+bool CSceneUser::getActiveWaterReflectionInfo(uint index, UWaterReflectionInfo &info)
+{
+	const CWaterReflectionManager::CActiveReflection *refl = _Scene.getWaterReflectionManager().getActiveReflectionByIndex(index);
+	if (!refl || !refl->Texture)
+		return false;
+	fillWaterReflectionInfo(*refl, info);
+	return true;
 }
 
 

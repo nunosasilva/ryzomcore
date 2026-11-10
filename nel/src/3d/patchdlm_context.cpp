@@ -165,9 +165,9 @@ void		CPatchDLMPointLight::compile(const CPointLight &pl, NLMISC::CRGBA landDiff
 // ***************************************************************************
 CPatchDLMContext::CPatchDLMContext()
 {
-	_Patch= NULL;
-	_DLMTexture= NULL;
-	_DLMContextList= NULL;
+	_Patch = nullptr;
+	_DLMTexture = nullptr;
+	_DLMContextList = nullptr;
 	OldPointLightCount= 0;
 	CurPointLightCount= 0;
 	// By default there is crash in textures
@@ -185,8 +185,8 @@ CPatchDLMContext::~CPatchDLMContext()
 		_DLMTexture->releaseLightMap(TextPosX, TextPosY);
 	}
 	// exit
-	_Patch= NULL;
-	_DLMTexture= NULL;
+	_Patch = nullptr;
+	_DLMTexture = nullptr;
 
 	// remove it from list.
 	if(_DLMContextList)
@@ -235,7 +235,7 @@ bool			CPatchDLMContext::generate(CPatch *patch, CTextureDLM *textureDLM, CPatch
 	{
 		// Mark as not allocated.
 		// NB: the context still work with NULL _DLMTexture, but do nothing (excpetionnal case)
-		_DLMTexture= NULL;
+		_DLMTexture = nullptr;
 	}
 
 	// If the lightmap is correclty allocated in the global texture, compute UVBias.
@@ -1018,6 +1018,16 @@ void			CPatchDLMContext::computeTextureFar()
 						bool	is256x256;
 						uint8	uvOff;
 						tileElm.getTile256Info(is256x256, uvOff);
+
+						// The far bank is read from a file: the tile must hold every pixel read below (2x2 at order1 for a
+						// 128x128 tile, four times more for a 256x256 one)
+						uint nbSourcePixels = is256x256 ? 16 : 4;
+						if (pTile->getSize(CTileFarBank::diffuse, CTileFarBank::order1) < nbSourcePixels)
+						{
+							nlwarning("ASSET ERROR: far bank tile %u is too small for a %s tile at order 1 (needs %u pixels)", (uint)tileId, is256x256 ? "256x256" : "128x128", nbSourcePixels);
+							// go to next tile.
+							break;
+						}
 
 						// compute src pixel
 						const CRGBA	*srcPixel= pTile->getPixels(CTileFarBank::diffuse, CTileFarBank::order1);

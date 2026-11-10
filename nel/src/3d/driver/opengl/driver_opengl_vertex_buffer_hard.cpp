@@ -103,13 +103,13 @@ IVertexBufferHardGL::~IVertexBufferHardGL()
 CVertexArrayRangeNVidia::CVertexArrayRangeNVidia(CDriverGL *drv) : IVertexArrayRange(drv)
 {
 	H_AUTO_OGL(CVertexArrayRangeNVidia_CVertexArrayRangeNVidia)
-	_VertexArrayPtr= NULL;
+	_VertexArrayPtr = nullptr;
 	_VertexArraySize= 0;
 }
 
 
 // ***************************************************************************
-bool			CVertexArrayRangeNVidia::allocate(uint32 size, CVertexBuffer::TPreferredMemory vbType)
+bool			CVertexArrayRangeNVidia::allocate(uint32 size, CVertexBuffer::TBufferUsage vbType)
 {
 	H_AUTO_OGL(CVertexArrayRangeNVidia_allocate)
 	nlassert(_VertexArrayPtr==NULL);
@@ -118,10 +118,11 @@ bool			CVertexArrayRangeNVidia::allocate(uint32 size, CVertexBuffer::TPreferredM
 	switch(vbType)
 	{
 #ifdef	NL_OS_WINDOWS
-	case CVertexBuffer::AGPPreferred:
+	case CVertexBuffer::FullRewrite:
+	case CVertexBuffer::PartialWrite:
 		_VertexArrayPtr= nwglAllocateMemoryNV(size, 0, 0, 0.5f);
 		break;
-	case CVertexBuffer::StaticPreferred:
+	case CVertexBuffer::Immutable:
 		if (_Driver->getStaticMemoryToVRAM())
 			_VertexArrayPtr= nwglAllocateMemoryNV(size, 0, 0, 1.0f);
 		else
@@ -130,10 +131,11 @@ bool			CVertexArrayRangeNVidia::allocate(uint32 size, CVertexBuffer::TPreferredM
 #elif defined(NL_OS_MAC)
 	// TODO: implement for Mac OS X
 #elif defined(NL_OS_UNIX)
-	case CVertexBuffer::AGPPreferred:
+	case CVertexBuffer::FullRewrite:
+	case CVertexBuffer::PartialWrite:
 		_VertexArrayPtr= nglXAllocateMemoryNV(size, 0, 0, 0.5f);
 		break;
-	case CVertexBuffer::StaticPreferred:
+	case CVertexBuffer::Immutable:
 		if (_Driver->getStaticMemoryToVRAM())
 			_VertexArrayPtr= nglXAllocateMemoryNV(size, 0, 0, 1.0f);
 		else
@@ -157,7 +159,7 @@ bool			CVertexArrayRangeNVidia::allocate(uint32 size, CVertexBuffer::TPreferredM
 	}
 
 
-	return _VertexArrayPtr!=NULL;
+	return _VertexArrayPtr != nullptr;
 }
 
 
@@ -188,7 +190,7 @@ void			CVertexArrayRangeNVidia::freeBlock()
 		nglXFreeMemoryNV(_VertexArrayPtr);
 #endif	// NL_OS_WINDOWS
 
-		_VertexArrayPtr= NULL;
+		_VertexArrayPtr = nullptr;
 		_VertexArraySize= 0;
 	}
 }
@@ -225,12 +227,12 @@ void			CVertexArrayRangeNVidia::disable()
 {
 	H_AUTO_OGL(CVertexArrayRangeNVidia_disable)
 	// if not already disabled.
-	if(_Driver->_CurrentVertexArrayRange!=NULL)
+	if(_Driver->_CurrentVertexArrayRange != nullptr)
 	{
 		// just disable the state, don't change VAR ptr setup.
 		// NB: flush is useless, so don't flush if extension is OK
 		glDisableClientState(_Driver->_Extensions.NVStateVARWithoutFlush);
-		_Driver->_CurrentVertexArrayRange= NULL;
+		_Driver->_CurrentVertexArrayRange = nullptr;
 	}
 }
 
@@ -259,7 +261,7 @@ IVertexBufferHardGL		*CVertexArrayRangeNVidia::createVBHardGL(uint size, CVertex
 	CVertexBufferHardGLNVidia	*newVbHard= new CVertexBufferHardGLNVidia(_Driver, vb);
 
 	// try to allocate
-	void	*vertexPtr = 0;
+	void	*vertexPtr = nullptr;
 	if( allocated() )
 	{
 		 vertexPtr= allocateVB(size);
@@ -270,7 +272,7 @@ IVertexBufferHardGL		*CVertexArrayRangeNVidia::createVBHardGL(uint size, CVertex
 	{
 		// just destroy this object (no free()).
 		delete newVbHard;
-		return NULL;
+		return nullptr;
 	}
 	else
 	{
@@ -290,8 +292,8 @@ IVertexBufferHardGL		*CVertexArrayRangeNVidia::createVBHardGL(uint size, CVertex
 CVertexBufferHardGLNVidia::CVertexBufferHardGLNVidia(CDriverGL *drv, CVertexBuffer *vb) : IVertexBufferHardGL(drv, vb)
 {
 	H_AUTO_OGL(CVertexBufferHardGLNVidia_CVertexBufferHardGLNVidia)
-	_VertexArrayRange= NULL;
-	_VertexPtr= NULL;
+	_VertexArrayRange = nullptr;
+	_VertexPtr = nullptr;
 
 	GPURenderingAfterFence= false;
 	_FenceSet= false;
@@ -318,8 +320,8 @@ CVertexBufferHardGLNVidia::~CVertexBufferHardGLNVidia()
 
 		// Then free the VAR.
 		_VertexArrayRange->freeVB(_VertexPtr);
-		_VertexPtr= NULL;
-		_VertexArrayRange= NULL;
+		_VertexPtr = nullptr;
+		_VertexArrayRange = nullptr;
 	}
 }
 
@@ -411,11 +413,11 @@ void			CVertexBufferHardGLNVidia::enable()
 void			CVertexBufferHardGLNVidia::disable()
 {
 	H_AUTO_OGL(CVertexBufferHardGLNVidia_disbale)
-	if(_Driver->_CurrentVertexBufferHard != NULL)
+	if(_Driver->_CurrentVertexBufferHard != nullptr)
 	{
 		nlassert(_VertexArrayRange);
 		_VertexArrayRange->disable();
-		_Driver->_CurrentVertexBufferHard= NULL;
+		_Driver->_CurrentVertexBufferHard = nullptr;
 	}
 }
 
@@ -498,7 +500,7 @@ CVertexArrayRangeATI::CVertexArrayRangeATI(CDriverGL *drv) : IVertexArrayRange(d
 	_VertexArraySize= 0;
 }
 // ***************************************************************************
-bool					CVertexArrayRangeATI::allocate(uint32 size, CVertexBuffer::TPreferredMemory vbType)
+bool					CVertexArrayRangeATI::allocate(uint32 size, CVertexBuffer::TBufferUsage vbType)
 {
 	H_AUTO_OGL(CVertexArrayRangeATI_allocate)
 	nlassert(!_Allocated);
@@ -506,14 +508,15 @@ bool					CVertexArrayRangeATI::allocate(uint32 size, CVertexBuffer::TPreferredMe
 	// try to allocate AGP (suppose mean ATI dynamic) or VRAM (suppose mean ATI static) data.
 	switch(vbType)
 	{
-	case CVertexBuffer::AGPPreferred:
-		_VertexObjectId= nglNewObjectBufferATI(size, NULL, GL_DYNAMIC_ATI);
+	case CVertexBuffer::FullRewrite:
+	case CVertexBuffer::PartialWrite:
+		_VertexObjectId= nglNewObjectBufferATI(size, nullptr, GL_DYNAMIC_ATI);
 		break;
-	case CVertexBuffer::StaticPreferred:
+	case CVertexBuffer::Immutable:
 		if (_Driver->getStaticMemoryToVRAM())
-			_VertexObjectId= nglNewObjectBufferATI(size, NULL, GL_STATIC_ATI);
+			_VertexObjectId= nglNewObjectBufferATI(size, nullptr, GL_STATIC_ATI);
 		else
-			_VertexObjectId= nglNewObjectBufferATI(size, NULL, GL_DYNAMIC_ATI);
+			_VertexObjectId= nglNewObjectBufferATI(size, nullptr, GL_DYNAMIC_ATI);
 		break;
     default:
         break;
@@ -572,7 +575,7 @@ IVertexBufferHardGL		*CVertexArrayRangeATI::createVBHardGL(uint size, CVertexBuf
 	CVertexBufferHardGLATI	*newVbHard= new CVertexBufferHardGLATI(_Driver, vb);
 
 	// try to allocate
-	void	*vertexPtr =NULL;
+	void	*vertexPtr = nullptr;
 	if( _Allocated )
 	{
 		 vertexPtr= allocateVB(size);
@@ -583,7 +586,7 @@ IVertexBufferHardGL		*CVertexArrayRangeATI::createVBHardGL(uint size, CVertexBuf
 	{
 		// just destroy this object (no free()).
 		delete newVbHard;
-		return NULL;
+		return nullptr;
 	}
 	else
 	{
@@ -598,7 +601,7 @@ IVertexBufferHardGL		*CVertexArrayRangeATI::createVBHardGL(uint size, CVertexBuf
 		{
 			// Discard the VB.
 			delete newVbHard;
-			return NULL;
+			return nullptr;
 		}
 	}
 }
@@ -614,7 +617,7 @@ void			CVertexArrayRangeATI::disable()
 {
 	H_AUTO_OGL(CVertexArrayRangeATI_disable)
 	// No-op for ATI !!!
-	_Driver->_CurrentVertexArrayRange= NULL;
+	_Driver->_CurrentVertexArrayRange = nullptr;
 }
 // ***************************************************************************
 void			*CVertexArrayRangeATI::allocateVB(uint32 size)
@@ -639,9 +642,9 @@ void			CVertexArrayRangeATI::freeVB(void	*ptr)
 CVertexBufferHardGLATI::CVertexBufferHardGLATI(CDriverGL *drv, CVertexBuffer *vb) : IVertexBufferHardGL(drv, vb)
 {
 	H_AUTO_OGL(CVertexBufferHardGLATI_CVertexBufferHardGLATI)
-	_VertexArrayRange= NULL;
-	_VertexPtr= NULL;
-	_RAMMirrorVertexPtr= NULL;
+	_VertexArrayRange = nullptr;
+	_VertexPtr = nullptr;
+	_RAMMirrorVertexPtr = nullptr;
 	_RAMMirrorVertexSize= 0;
 
 	// Flag our type
@@ -657,14 +660,14 @@ CVertexBufferHardGLATI::~CVertexBufferHardGLATI()
 	{
 		// free the VAR.
 		_VertexArrayRange->freeVB(_VertexPtr);
-		_VertexPtr= NULL;
-		_VertexArrayRange= NULL;
+		_VertexPtr = nullptr;
+		_VertexArrayRange = nullptr;
 	}
 
 	if(_RAMMirrorVertexPtr)
 	{
 		delete [] ((uint8*)_RAMMirrorVertexPtr);
-		_RAMMirrorVertexPtr= NULL;
+		_RAMMirrorVertexPtr = nullptr;
 		_RAMMirrorVertexSize= 0;
 	}
 }
@@ -678,7 +681,7 @@ bool		CVertexBufferHardGLATI::createRAMMirror(uint memSize)
 	if(_RAMMirrorVertexPtr)
 	{
 		free(_RAMMirrorVertexPtr);
-		_RAMMirrorVertexPtr= NULL;
+		_RAMMirrorVertexPtr = nullptr;
 		_RAMMirrorVertexSize= 0;
 	}
 	// create
@@ -772,11 +775,11 @@ void			CVertexBufferHardGLATI::enable()
 void			CVertexBufferHardGLATI::disable()
 {
 	H_AUTO_OGL(CVertexBufferHardGLATI_disbale)
-	if(_Driver->_CurrentVertexBufferHard != NULL)
+	if(_Driver->_CurrentVertexBufferHard != nullptr)
 	{
 		nlassert(_VertexArrayRange);
 		_VertexArrayRange->disable();
-		_Driver->_CurrentVertexBufferHard= NULL;
+		_Driver->_CurrentVertexBufferHard = nullptr;
 	}
 }
 
@@ -816,28 +819,29 @@ void CVertexBufferHardGLATI::setupVBInfos(CVertexBufferInfo &vb)
 
 // ***************************************************************************
 CVertexArrayRangeMapObjectATI::CVertexArrayRangeMapObjectATI(CDriverGL *drv) : IVertexArrayRange(drv),
-																			   _VBType(CVertexBuffer::AGPPreferred),
+																			   _VBType(CVertexBuffer::FullRewrite),
 																			   _SizeAllocated(0)
 {
 	H_AUTO_OGL(CVertexArrayRangeMapObjectATI_CVertexArrayRangeMapObjectATI)
 }
 
 // ***************************************************************************
-bool CVertexArrayRangeMapObjectATI::allocate(uint32 size, CVertexBuffer::TPreferredMemory vbType)
+bool CVertexArrayRangeMapObjectATI::allocate(uint32 size, CVertexBuffer::TBufferUsage vbType)
 {
 	H_AUTO_OGL(CVertexArrayRangeMapObjectATI_allocate)
 	// We don't manage memory ourselves, but test if there's enough room anyway
 	GLuint vertexObjectId;
 	switch(vbType)
 	{
-		case CVertexBuffer::AGPPreferred:
-			vertexObjectId = nglNewObjectBufferATI(size, NULL, GL_DYNAMIC_ATI);
+		case CVertexBuffer::FullRewrite:
+		case CVertexBuffer::PartialWrite:
+			vertexObjectId = nglNewObjectBufferATI(size, nullptr, GL_DYNAMIC_ATI);
 			break;
-		case CVertexBuffer::StaticPreferred:
+		case CVertexBuffer::Immutable:
 			if (_Driver->getStaticMemoryToVRAM())
-				vertexObjectId = nglNewObjectBufferATI(size, NULL, GL_STATIC_ATI);
+				vertexObjectId = nglNewObjectBufferATI(size, nullptr, GL_STATIC_ATI);
 			else
-				vertexObjectId = nglNewObjectBufferATI(size, NULL, GL_DYNAMIC_ATI);
+				vertexObjectId = nglNewObjectBufferATI(size, nullptr, GL_DYNAMIC_ATI);
 			break;
         default:
             vertexObjectId = 0;
@@ -872,14 +876,15 @@ IVertexBufferHardGL *CVertexArrayRangeMapObjectATI::createVBHardGL(uint size, CV
 	// just allocate a new buffer..
 	switch(_VBType)
 	{
-		case CVertexBuffer::AGPPreferred:
-			vertexObjectId = nglNewObjectBufferATI(size, NULL, GL_DYNAMIC_ATI);
+		case CVertexBuffer::FullRewrite:
+		case CVertexBuffer::PartialWrite:
+			vertexObjectId = nglNewObjectBufferATI(size, nullptr, GL_DYNAMIC_ATI);
 			break;
-		case CVertexBuffer::StaticPreferred:
+		case CVertexBuffer::Immutable:
 			if (_Driver->getStaticMemoryToVRAM())
-				vertexObjectId = nglNewObjectBufferATI(size, NULL, GL_STATIC_ATI);
+				vertexObjectId = nglNewObjectBufferATI(size, nullptr, GL_STATIC_ATI);
 			else
-				vertexObjectId = nglNewObjectBufferATI(size, NULL, GL_DYNAMIC_ATI);
+				vertexObjectId = nglNewObjectBufferATI(size, nullptr, GL_DYNAMIC_ATI);
 			break;
         default:
             vertexObjectId = 0;
@@ -894,7 +899,7 @@ IVertexBufferHardGL *CVertexArrayRangeMapObjectATI::createVBHardGL(uint size, CV
 	else
 	{
 		delete newVbHard;
-		return NULL;
+		return nullptr;
 	}
 }
 
@@ -918,8 +923,10 @@ void CVertexArrayRangeMapObjectATI::disable()
 
 // ***************************************************************************
 CVertexBufferHardGLMapObjectATI::CVertexBufferHardGLMapObjectATI(CDriverGL *drv, CVertexBuffer *vb) :  IVertexBufferHardGL(drv, vb),
-																					_VertexPtr(NULL),
-																					_VertexArrayRange(NULL),
+																					_VertexPtr(nullptr)
+    ,
+																					_VertexArrayRange(nullptr)
+    ,
 																					_VertexObjectId(0)
 {
 	H_AUTO_OGL(CVertexBufferHardGLMapObjectATI_CVertexBufferHardGLMapObjectATI)
@@ -968,14 +975,15 @@ void *CVertexBufferHardGLMapObjectATI::lock()
 		nlassert(!_VertexObjectId);
 		switch(_VertexArrayRange->getVBType())
 		{
-			case CVertexBuffer::AGPPreferred:
-				_VertexObjectId = nglNewObjectBufferATI(size, NULL, GL_DYNAMIC_ATI);
+			case CVertexBuffer::FullRewrite:
+			case CVertexBuffer::PartialWrite:
+				_VertexObjectId = nglNewObjectBufferATI(size, nullptr, GL_DYNAMIC_ATI);
 				break;
-			case CVertexBuffer::StaticPreferred:
+			case CVertexBuffer::Immutable:
 				if (_Driver->getStaticMemoryToVRAM())
-					_VertexObjectId = nglNewObjectBufferATI(size, NULL, GL_STATIC_ATI);
+					_VertexObjectId = nglNewObjectBufferATI(size, nullptr, GL_STATIC_ATI);
 				else
-					_VertexObjectId = nglNewObjectBufferATI(size, NULL, GL_DYNAMIC_ATI);
+					_VertexObjectId = nglNewObjectBufferATI(size, nullptr, GL_DYNAMIC_ATI);
 				break;
             default:
                 break;
@@ -992,7 +1000,7 @@ void *CVertexBufferHardGLMapObjectATI::lock()
 		_VertexArrayRange->_LostVBList.erase(_IteratorInLostVBList);
 		// continue to standard mapping code below ..
 	}
-	if (!_VertexObjectId) return NULL;
+	if (!_VertexObjectId) return nullptr;
 	_VertexPtr = nglMapObjectBufferATI(_VertexObjectId);
 	if (!_VertexPtr)
 	{
@@ -1035,7 +1043,7 @@ void CVertexBufferHardGLMapObjectATI::unlock()
 			_VertexArrayRange->_MappedVBList.erase(_IteratorInMappedVBList);
 		}
 	#endif
-	_VertexPtr = NULL;
+	_VertexPtr = nullptr;
 	if (_Invalid) return;
 	if (!_VertexObjectId) return;
 	#ifdef NL_DEBUG
@@ -1077,11 +1085,11 @@ void CVertexBufferHardGLMapObjectATI::enable()
 void CVertexBufferHardGLMapObjectATI::disable()
 {
 	H_AUTO_OGL(CVertexBufferHardGLMapObjectATI_disable)
-	if(_Driver->_CurrentVertexBufferHard != NULL)
+	if(_Driver->_CurrentVertexBufferHard != nullptr)
 	{
 		/* nlassert(_VertexArrayRange);
 		_VertexArrayRange->disable(); */
-		_Driver->_CurrentVertexBufferHard= NULL;
+		_Driver->_CurrentVertexBufferHard = nullptr;
 	}
 }
 
@@ -1161,14 +1169,14 @@ void CVertexArrayRangeMapObjectATI::updateLostBuffers()
 
 // ***************************************************************************
 CVertexArrayRangeARB::CVertexArrayRangeARB(CDriverGL *drv) : IVertexArrayRange(drv),
-															 _VBType(CVertexBuffer::AGPPreferred),
+															 _VBType(CVertexBuffer::FullRewrite),
 															 _SizeAllocated(0)
 {
 	H_AUTO_OGL(CVertexArrayRangeARB_CVertexArrayRangeARB)
 }
 
 // ***************************************************************************
-bool CVertexArrayRangeARB::allocate(uint32 size, CVertexBuffer::TPreferredMemory vbType)
+bool CVertexArrayRangeARB::allocate(uint32 size, CVertexBuffer::TBufferUsage vbType)
 {
 	H_AUTO_OGL(CVertexArrayRangeARB_allocate)
 	nlassert(_SizeAllocated == 0);
@@ -1181,13 +1189,13 @@ bool CVertexArrayRangeARB::allocate(uint32 size, CVertexBuffer::TPreferredMemory
 
 	switch(vbType)
 	{
-		case CVertexBuffer::AGPVolatile:
+		case CVertexBuffer::FullStream:
 			glBufferDataARB(GL_ARRAY_BUFFER_ARB, size, NULL, GL_STREAM_DRAW_ARB);
 		break;
-		case CVertexBuffer::AGPPreferred:
+		case CVertexBuffer::FullRewrite:
 			glBufferDataARB(GL_ARRAY_BUFFER_ARB, size, NULL, GL_DYNAMIC_DRAW_ARB);
 		break;
-		case CVertexBuffer::VRAMPreferred:
+		case CVertexBuffer::Immutable:
 			glBufferDataARB(GL_ARRAY_BUFFER_ARB, size, NULL, GL_STATIC_DRAW_ARB);
 		break;
 		default:
@@ -1218,19 +1226,19 @@ void CVertexArrayRangeARB::freeBlock()
 IVertexBufferHardGL *CVertexArrayRangeARB::createVBHardGL(uint size, CVertexBuffer *vb)
 {
 	H_AUTO_OGL(CVertexArrayRangeARB_createVBHardGL)
-	if (!_SizeAllocated) return NULL;
+	if (!_SizeAllocated) return nullptr;
 	// create a ARB VBHard
 	GLuint vertexBufferID;
 	glGetError();
 
 	nglGenBuffersARB(1, &vertexBufferID);
 
-	if (glGetError() != GL_NO_ERROR) return NULL;
+	if (glGetError() != GL_NO_ERROR) return nullptr;
 	_Driver->_DriverGLStates.forceBindARBVertexBuffer(vertexBufferID);
-	CVertexBuffer::TPreferredMemory preferred = vb->getPreferredMemory();
-	switch (preferred)
+	CVertexBuffer::TBufferUsage usage = vb->getBufferUsage();
+	switch (usage)
 	{
-		case CVertexBuffer::AGPVolatile:
+		case CVertexBuffer::FullStream:
 #ifdef USE_OPENGLES
 			// TODO: GL_STREAM_DRAW doesn't exist in OpenGL ES 1.x
 			glBufferData(GL_ARRAY_BUFFER, size, NULL, GL_DYNAMIC_DRAW);
@@ -1238,7 +1246,7 @@ IVertexBufferHardGL *CVertexArrayRangeARB::createVBHardGL(uint size, CVertexBuff
 			nglBufferDataARB(GL_ARRAY_BUFFER_ARB, size, NULL, GL_STREAM_DRAW_ARB);
 #endif
 			break;
-		case CVertexBuffer::StaticPreferred:
+		case CVertexBuffer::Immutable:
 			if (_Driver->getStaticMemoryToVRAM())
 #ifdef USE_OPENGLES
 				glBufferData(GL_ARRAY_BUFFER, size, NULL, GL_STATIC_DRAW);
@@ -1252,7 +1260,7 @@ IVertexBufferHardGL *CVertexArrayRangeARB::createVBHardGL(uint size, CVertexBuff
 				nglBufferDataARB(GL_ARRAY_BUFFER_ARB, size, NULL, GL_DYNAMIC_DRAW_ARB);
 #endif
 			break;
-		// case CVertexBuffer::AGPPreferred:
+		// case CVertexBuffer::FullRewrite:
 		default:
 #ifdef USE_OPENGLES
 			glBufferData(GL_ARRAY_BUFFER, size, NULL, GL_DYNAMIC_DRAW);
@@ -1265,10 +1273,10 @@ IVertexBufferHardGL *CVertexArrayRangeARB::createVBHardGL(uint size, CVertexBuff
 	{
 		nglDeleteBuffersARB(1, &vertexBufferID);
 
-		return NULL;
+		return nullptr;
 	}
 	CVertexBufferHardARB *newVbHard= new CVertexBufferHardARB(_Driver, vb);
-	newVbHard->initGL(vertexBufferID, this, preferred);
+	newVbHard->initGL(vertexBufferID, this, usage);
 	_Driver->_DriverGLStates.forceBindARBVertexBuffer(0);
 	return newVbHard;
 }
@@ -1287,9 +1295,9 @@ void CVertexArrayRangeARB::enable()
 void CVertexArrayRangeARB::disable()
 {
 	H_AUTO_OGL(CVertexArrayRangeARB_disbale)
-	if(_Driver->_CurrentVertexBufferHard != NULL)
+	if(_Driver->_CurrentVertexBufferHard != nullptr)
 	{
-		_Driver->_CurrentVertexBufferHard= NULL;
+		_Driver->_CurrentVertexBufferHard = nullptr;
 	}
 }
 
@@ -1325,14 +1333,15 @@ void CVertexArrayRangeARB::updateLostBuffers()
 
 // ***************************************************************************
 CVertexBufferHardARB::CVertexBufferHardARB(CDriverGL *drv, CVertexBuffer *vb) :  IVertexBufferHardGL(drv, vb),
-                                                                                 _VertexPtr(NULL),
+                                                                                 _VertexPtr(nullptr)
+    ,
 																				_VertexObjectId(0)
 
 {
 	H_AUTO_OGL(CVertexBufferHardARB_CVertexBufferHardARB)
 	// Flag our type
 	VBType = ARBVB;
-	_VertexArrayRange = NULL;
+	_VertexArrayRange = nullptr;
 	#ifdef NL_DEBUG
 		_Unmapping = false;
 	#endif
@@ -1415,7 +1424,7 @@ void *CVertexBufferHardARB::lock()
 		_Driver->_DriverGLStates.forceBindARBVertexBuffer(vertexBufferID);
 		switch(_MemType)
 		{
-			case CVertexBuffer::AGPVolatile:
+			case CVertexBuffer::FullStream:
 #ifdef USE_OPENGLES
 				// TODO: GL_STREAM_DRAW doesn't exist in OpenGL ES 1.x
 				glBufferData(GL_ARRAY_BUFFER, size, NULL, GL_DYNAMIC_DRAW);
@@ -1423,13 +1432,13 @@ void *CVertexBufferHardARB::lock()
 				nglBufferDataARB(GL_ARRAY_BUFFER_ARB, size, NULL, GL_STREAM_DRAW_ARB);
 #endif
 			break;
-			case CVertexBuffer::StaticPreferred:
+			case CVertexBuffer::Immutable:
 				if (_Driver->getStaticMemoryToVRAM())
 					nglBufferDataARB(GL_ARRAY_BUFFER_ARB, size, NULL, GL_STATIC_DRAW_ARB);
 				else
 					nglBufferDataARB(GL_ARRAY_BUFFER_ARB, size, NULL, GL_DYNAMIC_DRAW_ARB);
 			break;
-			// case CVertexBuffer::AGPPreferred:
+			// case CVertexBuffer::FullRewrite:
 			default:
 				nglBufferDataARB(GL_ARRAY_BUFFER_ARB, size, NULL, GL_DYNAMIC_DRAW_ARB);
 
@@ -1489,7 +1498,7 @@ void *CVertexBufferHardARB::lock()
 		_LastBufferSize = size;
 	}
 #else
-	if (_MemType == CVertexBuffer::AGPVolatile)
+	if (_MemType == CVertexBuffer::FullStream)
 	{
 		_VertexPtr = nglMapBufferRange(GL_ARRAY_BUFFER, 0, size, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
 	}
@@ -1526,7 +1535,7 @@ void CVertexBufferHardARB::unlock()
 {
 	H_AUTO_OGL(CVertexBufferHardARB_unlock);
 
-	_VertexPtr = NULL;
+	_VertexPtr = nullptr;
 	if (_Invalid) return;
 	if (!_VertexObjectId) return;
 	TTicks	beforeLock = 0;
@@ -1600,16 +1609,16 @@ void CVertexBufferHardARB::enable()
 void CVertexBufferHardARB::disable()
 {
 	H_AUTO_OGL(CVertexBufferHardARB_disable)
-	if(_Driver->_CurrentVertexBufferHard != NULL)
+	if(_Driver->_CurrentVertexBufferHard != nullptr)
 	{
 		/* nlassert(_VertexArrayRange);
 		_VertexArrayRange->disable(); */
-		_Driver->_CurrentVertexBufferHard= NULL;
+		_Driver->_CurrentVertexBufferHard = nullptr;
 	}
 }
 
 // ***************************************************************************
-void CVertexBufferHardARB::initGL(uint vertexObjectID, CVertexArrayRangeARB *var, CVertexBuffer::TPreferredMemory memType)
+void CVertexBufferHardARB::initGL(uint vertexObjectID, CVertexArrayRangeARB *var, CVertexBuffer::TBufferUsage memType)
 {
 	H_AUTO_OGL(CVertexBufferHardARB_initGL)
 	_VertexObjectId = vertexObjectID;
