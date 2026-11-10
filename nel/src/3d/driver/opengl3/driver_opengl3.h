@@ -1693,6 +1693,13 @@ private:
 
 	// Per-Object UBO (runtime state of currently bound program)
 	GLuint  _ObjectUBOId;           // Global GL buffer
+	/// Last contents written to _ObjectUBOId. The draw path re-stages this block for every draw,
+	/// but its inputs (matrices, lights, material fields, vertex format, uv routing, texgen) are
+	/// usually identical from one draw to the next - the vegetation scene issued 162 uploads per
+	/// frame. Comparing the staged struct avoids the buffer write without any dirty-flag
+	/// bookkeeping that could go stale. Cleared by release().
+	CObjectUBOData _LastObjectUBO;
+	bool          _LastObjectUBOValid;
 	sint    _ObjectUBOCapacity;     // Current GPU buffer capacity (bytes)
 	// GLuint  _OverrideMaterialUBOId; // Global buffer for per-pass material overrides (lightmap) — replaced by per-material UBO slots
 	void    uploadObjectUBO();

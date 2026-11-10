@@ -409,6 +409,7 @@ CDriverGL3::CDriverGL3()
 	memset(m_ProgramUsesMaterialUBO, 0, sizeof(m_ProgramUsesMaterialUBO));
 	m_NelvpActiveUB = nullptr;
 	_ObjectUBOId = 0;
+	_LastObjectUBOValid = false;
 	_ObjectUBOCapacity = 0;
 	// _OverrideMaterialUBOId = 0; // Replaced by per-material UBO slots
 	for (sint i = 0; i < UBBindingCount; ++i)
@@ -1129,6 +1130,10 @@ bool CDriverGL3::release()
 	// accumulates per frame, which is the part that matters. (The old FIXME asked whether they are
 	// "really all gone" at this point; this release path is not reached by zviewer, so that half
 	// stays unverified rather than assumed.)
+
+	// The object-UBO contents cache describes a buffer that is about to go away; a later context
+	// must upload unconditionally.
+	_LastObjectUBOValid = false;
 
 	// Delete default VAO
 	_DriverGLStates.release();

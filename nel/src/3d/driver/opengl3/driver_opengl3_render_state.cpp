@@ -579,7 +579,19 @@ void CDriverGL3::uploadObjectUBO()
 	data.fogEnabled = m_VPBuiltinCurrent.Fog ? 1 : 0;
 	data._pad[0] = 0;
 
-	// Upload
+	// Bind the base point first: the cache decides whether the *contents* need rewriting, never
+	// whether the buffer is bound. Today this is the only place that binds a buffer to the model
+	// point, so a skipped upload would leave the previous binding in place and still be correct -
+	// but making the binding unconditional means the skip cannot turn into "not bound" if another
+	// site ever rebinds this point.
+	_DriverGLStates.forceBindUniformBufferBase(NL_BUILTIN_MODEL_BINDING, _ObjectUBOId);
+
+	// Upload - only when the staged block actually differs from what is already in the buffer.
+	// Every input above feeds `data`, so comparing the staged struct cannot miss a change the way
+	// a hand-maintained dirty flag can.
+	if (_LastObjectUBOValid && memcmp(&_LastObjectUBO, &data, sizeof(CObjectUBOData)) == 0)
+		return;
+
 	const GLsizeiptr dataSize = sizeof(CObjectUBOData);
 	_DriverGLStates.forceBindUniformBuffer(_ObjectUBOId);
 
@@ -596,7 +608,9 @@ void CDriverGL3::uploadObjectUBO()
 	}
 
 	_DriverGLStates.forceBindUniformBuffer(0);
-	_DriverGLStates.forceBindUniformBufferBase(NL_BUILTIN_MODEL_BINDING, _ObjectUBOId);
+
+	_LastObjectUBO = data;
+	_LastObjectUBOValid = true;
 }
 
 // ***************************************************************************
