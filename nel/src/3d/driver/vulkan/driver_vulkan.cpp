@@ -153,6 +153,7 @@ CDriverVulkan::CDriverVulkan()
 	_MaterialAlphaRef = 0.f;
 	_MaterialTwoSided = false;
 	_MaterialShader = CMaterial::Normal;
+	_FogColorOverrideBlack = false;
 	_TexturesDirty = false;
 	_ClearColorMask = 0xF;
 	memset(_StageTextures, 0, sizeof(_StageTextures));
@@ -180,6 +181,18 @@ CDriverVulkan::CDriverVulkan()
 	_MegaUserBufferMemory = VK_NULL_HANDLE;
 	_MegaCameraDirty = true;
 	memset(&_MegaCameraData, 0, sizeof(_MegaCameraData));
+	_MegaMultiPassActive = false;
+	memset(_BaseStageTextures, 0, sizeof(_BaseStageTextures));
+	_NLightMaps = 0;
+	_NLightMapPerPass = 0;
+	_NLightMapPass = 0;
+	_MegaPassOverrideActive = false;
+	_MegaPassDiffuse = 1.f;
+	_MegaPassLightMapScale = 1.f;
+	memset(_MegaPassConstants, 0, sizeof(_MegaPassConstants));
+	memset(_MegaPassSelfIllumination, 0, sizeof(_MegaPassSelfIllumination));
+	_MegaPassZeroLightFactors = false;
+	_MegaPassFogBlack = false;
 	for (uint i = 0; i < 2; ++i)
 	{
 		_MegaLightTableBuffer[i] = VK_NULL_HANDLE;
