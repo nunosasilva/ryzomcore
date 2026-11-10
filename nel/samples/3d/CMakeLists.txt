@@ -10,6 +10,7 @@ ADD_SUBDIRECTORY(cluster_viewer)
 ADD_SUBDIRECTORY(shape_viewer)
 ADD_SUBDIRECTORY(landscape)
 ADD_SUBDIRECTORY(decal)
+ADD_SUBDIRECTORY(specular)
 
 IF(WITH_NEL_CEGUI)
   ADD_SUBDIRECTORY(cegui)
@@ -43,7 +44,7 @@ IF(WITH_DRIVER_OPENGL3 AND (WITH_NEL_TESTS OR WITH_TESTING))
   # with "Unable to execute" instead of skipping.
   FIND_PROGRAM(NL_BASH bash)
   IF(NL_HEADLESS_GL_TOOLS AND NL_BASH)
-    FOREACH(NL_GL3_SMOKE_SAMPLE clip_plane nelvp planar_reflection ppl water landscape decal)
+    FOREACH(NL_GL3_SMOKE_SAMPLE clip_plane nelvp planar_reflection ppl water landscape decal specular)
       IF(TARGET nl_sample_${NL_GL3_SMOKE_SAMPLE})
         ADD_TEST(NAME nel_gl3_smoke_${NL_GL3_SMOKE_SAMPLE}
                  COMMAND ${NL_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/headless_smoke.sh
