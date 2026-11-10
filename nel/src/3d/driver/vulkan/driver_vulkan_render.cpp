@@ -53,25 +53,50 @@ static const char *s_PushConstantGLSL =
 	"    uint texEnv1;\n"
 	"    uint texEnv2;\n"
 	"    uint texEnv3;\n"
+	"    uint uvRouting;\n"
 	"} pc;\n";
 
 static std::string buildVertexShader(uint32 flags)
 {
 	bool hasColor = (flags & CVertexBuffer::PrimaryColorFlag) != 0;
-	bool hasUV = (flags & CVertexBuffer::TexCoord0Flag) != 0;
 
 	std::string src;
 	src += "#version 450\n";
 	src += "layout(location = 0) in vec3 attrPosition;\n";
 	if (hasColor)
 		src += "layout(location = 3) in vec4 attrColor;\n";
-	if (hasUV)
-		src += "layout(location = 8) in vec2 attrTexCoord0;\n";
+	for (uint i = 0; i < 4; ++i)
+	{
+		if (flags & (CVertexBuffer::TexCoord0Flag << i))
+		{
+			char line[64];
+			snprintf(line, sizeof(line), "layout(location = %u) in vec2 attrTexCoord%u;\n", 8 + i, i);
+			src += line;
+		}
+	}
 	src += s_PushConstantGLSL;
-	src +=
-		"layout(location = 0) out vec4 vColor;\n"
-		"layout(location = 1) out vec2 vUv;\n"
-		"void main() {\n"
+	src += "layout(location = 0) out vec4 vColor;\n";
+	src += "layout(location = 1) out vec2 vUv0;\n";
+	src += "layout(location = 2) out vec2 vUv1;\n";
+	src += "layout(location = 3) out vec2 vUv2;\n";
+	src += "layout(location = 4) out vec2 vUv3;\n";
+	src += "vec2 selectUv(uint routing) {\n";
+	bool anyUv = false;
+	for (uint i = 0; i < 4; ++i)
+	{
+		if (flags & (CVertexBuffer::TexCoord0Flag << i))
+		{
+			char line[96];
+			snprintf(line, sizeof(line), "    if (routing == %u) return attrTexCoord%u;\n", i, i);
+			src += line;
+			anyUv = true;
+		}
+	}
+	if (!anyUv)
+		src += "    (void)routing;\n";
+	src += "    return vec2(0.0);\n";
+	src += "}\n";
+	src += "void main() {\n"
 		"    vec4 pos = pc.mvp * vec4(attrPosition, 1.0);\n"
 		"    pos.z = (pos.z + pos.w) * 0.5;\n"
 		"    gl_Position = pos;\n";
@@ -79,10 +104,12 @@ static std::string buildVertexShader(uint32 flags)
 		src += "    vColor = attrColor * pc.color;\n";
 	else
 		src += "    vColor = pc.color;\n";
-	if (hasUV)
-		src += "    vUv = attrTexCoord0;\n";
-	else
-		src += "    vUv = vec2(0.0);\n";
+	for (uint i = 0; i < 4; ++i)
+	{
+		char line[96];
+		snprintf(line, sizeof(line), "    vUv%u = selectUv((pc.uvRouting >> %u) & 0xFu);\n", i, i * 4);
+		src += line;
+	}
 	src += "}\n";
 	return src;
 }
@@ -92,7 +119,10 @@ static std::string buildVertexShader(uint32 flags)
 static const std::string s_FragmentShader =
 	std::string("#version 450\n") +
 	"layout(location = 0) in vec4 vColor;\n"
-	"layout(location = 1) in vec2 vUv;\n"
+	"layout(location = 1) in vec2 vUv0;\n"
+	"layout(location = 2) in vec2 vUv1;\n"
+	"layout(location = 3) in vec2 vUv2;\n"
+	"layout(location = 4) in vec2 vUv3;\n"
 	"layout(binding = 0) uniform sampler2D tex0;\n"
 	"layout(binding = 1) uniform sampler2D tex1;\n"
 	"layout(binding = 2) uniform sampler2D tex2;\n"
@@ -160,10 +190,10 @@ static const std::string s_FragmentShader =
 	"}\n"
 	"void main() {\n"
 	"    vec4 frag = vColor;\n"
-	"    if ((pc.flags & 1) != 0) frag = applyTexEnv(pc.texEnv0, texture(tex0, vUv), frag, vColor, vColor);\n"
-	"    if ((pc.flags & 2) != 0) frag = applyTexEnv(pc.texEnv1, texture(tex1, vUv), frag, vColor, vColor);\n"
-	"    if ((pc.flags & 4) != 0) frag = applyTexEnv(pc.texEnv2, texture(tex2, vUv), frag, vColor, vColor);\n"
-	"    if ((pc.flags & 8) != 0) frag = applyTexEnv(pc.texEnv3, texture(tex3, vUv), frag, vColor, vColor);\n"
+	"    if ((pc.flags & 1) != 0) frag = applyTexEnv(pc.texEnv0, texture(tex0, vUv0), frag, vColor, vColor);\n"
+	"    if ((pc.flags & 2) != 0) frag = applyTexEnv(pc.texEnv1, texture(tex1, vUv1), frag, vColor, vColor);\n"
+	"    if ((pc.flags & 4) != 0) frag = applyTexEnv(pc.texEnv2, texture(tex2, vUv2), frag, vColor, vColor);\n"
+	"    if ((pc.flags & 8) != 0) frag = applyTexEnv(pc.texEnv3, texture(tex3, vUv3), frag, vColor, vColor);\n"
 	"    if ((pc.flags & 16) != 0 && frag.a < pc.alphaRef) discard;\n"
 	"    fragColor = frag;\n"
 	"}\n";
@@ -175,6 +205,7 @@ struct SPushConstants
 	float	AlphaRef;
 	sint32	Flags;
 	uint32	TexEnv[4];
+	uint32	UvRouting;
 };
 
 // ---------------------------------------------------------------------------
@@ -830,6 +861,8 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 	_MaterialShader = mat.getShader();
 	_CurrentMaterial = &mat;
 
+	for (uint stage = 0; stage < 4; ++stage)
+		_MappedUV[stage] = 0xFF;
 	for (uint stage = 0; stage < IDRV_PROGRAM_MAXSAMPLERS; ++stage)
 	{
 		_StageTextures[stage] = NULL;
@@ -892,6 +925,15 @@ void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	push.TexEnv[1] = _TexEnv[1];
 	push.TexEnv[2] = _TexEnv[2];
 	push.TexEnv[3] = _TexEnv[3];
+	push.UvRouting = 0;
+	const uint8 *routing = vb.getUVRouting();
+	for (uint stage = 0; stage < 4; ++stage)
+	{
+		uint8 route = routing ? routing[stage] : (uint8)stage;
+		if (_MappedUV[stage] < 4)
+			route = _MappedUV[stage];
+		push.UvRouting |= ((uint32)(route & 0xF)) << (stage * 4);
+	}
 
 	int flags = 0;
 	for (uint stage = 0; stage < 4; ++stage)
@@ -1040,6 +1082,12 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	vkCmdDrawIndexed(cmd, count, 1, 0, 0, 0);
 	++_IndexedDrawCount;
 	return true;
+}
+
+void CDriverVulkan::mapTextureStageToUV(uint stage, uint uvId)
+{
+	if (stage < 4)
+		_MappedUV[stage] = (uint8)uvId;
 }
 
 bool CDriverVulkan::renderTriangles(CMaterial &mat, uint32 firstIndex, uint32 nlines)
