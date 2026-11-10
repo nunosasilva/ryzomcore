@@ -146,7 +146,7 @@ public:
 	enum TStencilFunc { never = 0, less, lessequal, equal, notequal, greaterequal, greater, always};
 
 	// Existing drivers
-	enum TDriver { Direct3d = 0, OpenGl, OpenGlEs, OpenGl3, OpenGlEs3 };
+	enum TDriver { Direct3d = 0, OpenGl, OpenGlEs, OpenGl3, OpenGlEs3, Vulkan };
 
 public:
 	/// The EventServer of this driver. Init after setDisplay()!!
