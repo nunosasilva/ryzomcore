@@ -928,7 +928,7 @@ void CDriverVulkan::endSpecularBatch()
 // Push constants and descriptor sets
 // ---------------------------------------------------------------------------
 
-void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer cmd, CVertexBuffer &vb)
+bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer cmd, CVertexBuffer &vb)
 {
 	SSimpleUniforms u;
 	memset(&u, 0, sizeof(u));
@@ -980,7 +980,7 @@ void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 		u.UvRouting |= ((uint32)(route & 0xF)) << (stage * 4);
 	}
 
-	// Resolve up to four lights for the object.
+	// Resolve up to four lights for this object (std140: separate vec4 arrays).
 	uint lightCount = 0;
 	if (_LightTableMode && _LightCount > 0)
 	{
@@ -991,16 +991,15 @@ void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 				continue;
 			const SLightState &light = _LightTable[index];
 			float factor = _LightFactors[i] / 255.f;
-			SSimpleLight &dst = u.Lights[lightCount++];
-			dst.DirOrPos[0] = light.DirOrPos.x;
-			dst.DirOrPos[1] = light.DirOrPos.y;
-			dst.DirOrPos[2] = light.DirOrPos.z;
-			dst.DirOrPos[3] = light.Mode == 0 ? 0.f : 1.f;
-			dst.Diffuse[0] = (light.Diffuse.R / 255.f) * factor;
-			dst.Diffuse[1] = (light.Diffuse.G / 255.f) * factor;
-			dst.Diffuse[2] = (light.Diffuse.B / 255.f) * factor;
-			dst.Diffuse[3] = 1.f;
-			dst.Mode = light.Mode;
+			u.LightDirOrPos[lightCount][0] = light.DirOrPos.x;
+			u.LightDirOrPos[lightCount][1] = light.DirOrPos.y;
+			u.LightDirOrPos[lightCount][2] = light.DirOrPos.z;
+			u.LightDirOrPos[lightCount][3] = light.Mode == 0 ? 0.f : 1.f;
+			u.LightDiffuse[lightCount][0] = (light.Diffuse.R / 255.f) * factor;
+			u.LightDiffuse[lightCount][1] = (light.Diffuse.G / 255.f) * factor;
+			u.LightDiffuse[lightCount][2] = (light.Diffuse.B / 255.f) * factor;
+			u.LightDiffuse[lightCount][3] = 1.f;
+			++lightCount;
 		}
 	}
 	else
@@ -1009,16 +1008,15 @@ void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 		{
 			if (!_Lights[i].Enabled)
 				continue;
-			SSimpleLight &dst = u.Lights[lightCount++];
-			dst.DirOrPos[0] = _Lights[i].DirOrPos.x;
-			dst.DirOrPos[1] = _Lights[i].DirOrPos.y;
-			dst.DirOrPos[2] = _Lights[i].DirOrPos.z;
-			dst.DirOrPos[3] = _Lights[i].Mode == 0 ? 0.f : 1.f;
-			dst.Diffuse[0] = _Lights[i].Diffuse.R / 255.f;
-			dst.Diffuse[1] = _Lights[i].Diffuse.G / 255.f;
-			dst.Diffuse[2] = _Lights[i].Diffuse.B / 255.f;
-			dst.Diffuse[3] = 1.f;
-			dst.Mode = _Lights[i].Mode;
+			u.LightDirOrPos[lightCount][0] = _Lights[i].DirOrPos.x;
+			u.LightDirOrPos[lightCount][1] = _Lights[i].DirOrPos.y;
+			u.LightDirOrPos[lightCount][2] = _Lights[i].DirOrPos.z;
+			u.LightDirOrPos[lightCount][3] = _Lights[i].Mode == 0 ? 0.f : 1.f;
+			u.LightDiffuse[lightCount][0] = _Lights[i].Diffuse.R / 255.f;
+			u.LightDiffuse[lightCount][1] = _Lights[i].Diffuse.G / 255.f;
+			u.LightDiffuse[lightCount][2] = _Lights[i].Diffuse.B / 255.f;
+			u.LightDiffuse[lightCount][3] = 1.f;
+			++lightCount;
 		}
 	}
 	u.LightCount = (int)lightCount;
@@ -1026,7 +1024,38 @@ void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	// Upload into the per-frame uniform ring.
 	const uint32 slot = 512;
 	if (_UniformRingOffset + slot > _UniformRingSize)
+	{
+		// Wrapping mid-frame would overwrite data already referenced by recorded
+		// commands; grow the ring instead.
+		vkDeviceWaitIdle(_Device);
+		if (_UniformRing)
+		{
+			vkDestroyBuffer(_Device, _UniformRing, NULL);
+			vkFreeMemory(_Device, _UniformRingMemory, NULL);
+		}
+		_UniformRingSize *= 2;
+		VkBufferCreateInfo bci;
+		memset(&bci, 0, sizeof(bci));
+		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bci.size = _UniformRingSize;
+		bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+		bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		if (vkCreateBuffer(_Device, &bci, NULL, &_UniformRing) != VK_SUCCESS)
+			return false;
+		VkMemoryRequirements req;
+		vkGetBufferMemoryRequirements(_Device, _UniformRing, &req);
+		VkMemoryAllocateInfo mai;
+		memset(&mai, 0, sizeof(mai));
+		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		mai.allocationSize = req.size;
+		mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		if (vkAllocateMemory(_Device, &mai, NULL, &_UniformRingMemory) != VK_SUCCESS)
+			return false;
+		vkBindBufferMemory(_Device, _UniformRing, _UniformRingMemory, 0);
+		vkMapMemory(_Device, _UniformRingMemory, 0, VK_WHOLE_SIZE, 0, &_UniformRingMapped);
 		_UniformRingOffset = 0;
+	}
 	uint8 *dst = (uint8 *)_UniformRingMapped + _UniformRingOffset;
 	memcpy(dst, &u, sizeof(u));
 
@@ -1044,7 +1073,7 @@ void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	dsai.descriptorSetCount = 1;
 	dsai.pSetLayouts = &_DescriptorSetLayout;
 	if (vkAllocateDescriptorSets(_Device, &dsai, &descriptorSet) != VK_SUCCESS)
-		return;
+		return false;
 
 	VkDescriptorImageInfo infos[4];
 	for (uint stage = 0; stage < 4; ++stage)
@@ -1073,6 +1102,7 @@ void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	writes[4].pBufferInfo = &bufferInfo;
 	vkUpdateDescriptorSets(_Device, 5, writes, 0, NULL);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _PipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,7 +1111,9 @@ void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 
 bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count, VkPrimitiveTopology topo)
 {
-	if (!_CurrentVB || count == 0 || !_FrameOpen)
+	if (!_CurrentVB || count == 0)
+		return false;
+	if (!_FrameOpen && !beginFrame())
 		return false;
 
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
@@ -1099,9 +1131,9 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	key.DepthTest = _DepthTestEnabled ? 1 : 0;
 	key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 	key.DepthCompare = _DepthFunc;
-	key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+	key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
 	key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-	key.ColorWriteMask = _ClearColorMask ? _ClearColorMask : 0xF;
+	key.ColorWriteMask = _ClearColorMask;
 	key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 	key.HasTexture0 = _StageTextures[0] ? 1 : 0;
 
@@ -1111,7 +1143,8 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 
 	VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-	commitPushConstants(key, cmd, *_CurrentVB);
+	if (!commitPushConstants(key, cmd, *_CurrentVB))
+		return false;
 
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &info->_VertexBuffer, &offset);
@@ -1122,7 +1155,9 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 
 bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count, VkPrimitiveTopology topo, uint32 indexStride)
 {
-	if (!_CurrentVB || !_IndexValues || count == 0 || !_FrameOpen)
+	if (!_CurrentVB || !_IndexValues || count == 0)
+		return false;
+	if (!_FrameOpen && !beginFrame())
 		return false;
 
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
@@ -1147,9 +1182,9 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	key.DepthTest = _DepthTestEnabled ? 1 : 0;
 	key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 	key.DepthCompare = _DepthFunc;
-	key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+	key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
 	key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-	key.ColorWriteMask = _ClearColorMask ? _ClearColorMask : 0xF;
+	key.ColorWriteMask = _ClearColorMask;
 	key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 	key.HasTexture0 = _StageTextures[0] ? 1 : 0;
 
@@ -1169,7 +1204,8 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 
 	VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-	commitPushConstants(key, cmd, *_CurrentVB);
+	if (!commitPushConstants(key, cmd, *_CurrentVB))
+		return false;
 
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &info->_VertexBuffer, &offset);
@@ -1251,7 +1287,9 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 		initialized = true;
 	}
 
-	if (!_CurrentVB || !_FrameOpen)
+	if (!_CurrentVB)
+		return false;
+	if (!_FrameOpen && !beginFrame())
 		return false;
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
 	if (!info || !info->_VertexBuffer)
@@ -1278,9 +1316,9 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 		key.DepthTest = _DepthTestEnabled ? 1 : 0;
 		key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 		key.DepthCompare = _DepthFunc;
-		key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+		key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
 		key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-		key.ColorWriteMask = _ClearColorMask ? _ClearColorMask : 0xF;
+		key.ColorWriteMask = _ClearColorMask;
 		key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 		key.HasTexture0 = _StageTextures[0] ? 1 : 0;
 
@@ -1290,13 +1328,14 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 
 		VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-		commitPushConstants(key, cmd, *_CurrentVB);
+		if (!commitPushConstants(key, cmd, *_CurrentVB))
+			return false;
 		VkDeviceSize offset = 0;
 		vkCmdBindVertexBuffers(cmd, 0, 1, &info->_VertexBuffer, &offset);
 		vkCmdBindIndexBuffer(cmd, indexBuffer, _IndexRingDrawOffset, VK_INDEX_TYPE_UINT16);
 
 		// The quad index pattern addresses vertices relative to the batch start.
-		sint32 firstVertex = (sint32)base;
+		sint32 firstVertex = (sint32)(startVertex + base);
 		vkCmdDrawIndexed(cmd, batch * 6, 1, 0, firstVertex, 0);
 		++_IndexedDrawCount;
 

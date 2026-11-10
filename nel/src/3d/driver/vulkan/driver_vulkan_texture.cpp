@@ -323,6 +323,7 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	out.Height = height;
 	out.Layers = 1;
 	out.HasAlpha = true;
+	out.SourceFormat = sourceFormat;
 
 	if (sourceFormat == CBitmap::DXTC1 || sourceFormat == CBitmap::DXTC1Alpha ||
 		sourceFormat == CBitmap::DXTC3 || sourceFormat == CBitmap::DXTC5)
@@ -335,10 +336,10 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 		return true;
 	}
 
-	return uploadTexturePixels(tex, out);
+	return uploadTexturePixels(tex, out, sourceFormat);
 }
 
-bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out)
+bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out, CBitmap::TType sourceFormat)
 {
 	uint width = out.Width;
 	uint height = out.Height;
@@ -349,8 +350,7 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out)
 	// Mip count is implied by the image; re-derive it from the texture.
 	if (tex.mipMapOn())
 		mipCount = max(1u, (uint)tex.getMipMapCount());
-	CBitmap::TType sourceFormat = tex.getPixelFormat();
-	if (sourceFormat != CBitmap::RGBA)
+	if (tex.getPixelFormat() != CBitmap::RGBA)
 		tex.convertToType(CBitmap::RGBA);
 
 	// Build the staging buffer and record all mip copies in one submit.
@@ -496,7 +496,7 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 	{
 		// Same size: update the pixels in place so that nothing is destroyed
 		// while commands reference it (animated textures hit this path a lot).
-		if (bUpload && !uploadTexturePixels(tex, it->second))
+		if (bUpload && !uploadTexturePixels(tex, it->second, it->second.SourceFormat))
 			return false;
 		tex.clearTouched();
 		bAllUploaded = bUpload;
