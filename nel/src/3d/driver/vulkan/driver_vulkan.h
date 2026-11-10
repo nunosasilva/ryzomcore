@@ -432,6 +432,7 @@ private:
 	bool					_ZWrite;
 	bool					_ZTest;
 	CMaterial				*_CurrentMaterial;
+	bool					_FogColorOverrideBlack; // additive blends get black fog (GL3 behaviour)
 
 	bool					_FogEnabled;
 	float					_FogStart;
@@ -499,6 +500,7 @@ private:
 	void					stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data);
 	void					stageMegaMaterialUBO(CMaterial &mat, CMaterialUBOData &data);
 	uint32					allocUniformBlock(const void *data, uint32 size);
+	void					computeLightMapInfos(const CMaterial &mat);
 
 	// --- Textures (driver_vulkan_texture.cpp) ---
 	CTextureVulkan			*getTextureVulkan(ITexture &tex);
@@ -533,6 +535,24 @@ private:
 	VkDeviceMemory				_MegaUserBufferMemory;
 	CCameraUBOData				_MegaCameraData;
 	bool						_MegaCameraDirty;
+
+	// --- Mega lightmap multi-pass staging ---
+	// Mirrors the GL3 driver: the engine draws a LightMap material once per
+	// pass, with stages 0..N-2 holding the pass' lightmaps and stage N-1 the
+	// material texture.
+	bool						_MegaMultiPassActive;
+	CTextureVulkan				*_BaseStageTextures[IDRV_PROGRAM_MAXSAMPLERS];
+	uint						_NLightMaps;
+	uint						_LightMapLUT[NL_VK_MAX_LIGHTMAP];
+	uint						_NLightMapPerPass;
+	uint						_NLightMapPass;
+	bool						_MegaPassOverrideActive;
+	float						_MegaPassDiffuse;
+	float						_MegaPassLightMapScale;
+	float						_MegaPassConstants[IDRV_PROGRAM_MAXSAMPLERS][4];
+	float						_MegaPassSelfIllumination[4];
+	bool						_MegaPassZeroLightFactors;
+	bool						_MegaPassFogBlack;
 
 	std::map<ITexture *, CTextureVulkan>	_TexturesVulkan;
 	std::vector<CTextureVulkan>				_PendingTextureDestroy;
