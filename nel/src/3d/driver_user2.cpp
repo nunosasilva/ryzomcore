@@ -112,6 +112,9 @@ void CDriverUser::beginDefaultRenderTarget(uint32 width, uint32 height)
 		getWindowSize(width, height);
 	_EffectRenderTarget = getRenderTargetManager().getRenderTarget(width, height);
 	setRenderTarget(*_EffectRenderTarget);
+	// A UI 3D scene can leave a sub-scissor behind; the scene target is the
+	// whole surface, so do not inherit it.
+	setScissor(CScissor());
 }
 
 // ***************************************************************************
@@ -136,6 +139,8 @@ void CDriverUser::endDefaultRenderTarget(UScene *scene)
 	setMatrixMode2D11();
 	bool fog = fogEnabled();
 	enableFog(false);
+	// Present over the whole window, not through a leftover UI sub-scissor.
+	setScissor(CScissor());
 	drawQuad(_RenderTargetQuad, _MatRenderTarget);
 	enableFog(fog);
 	setViewport(oldVp);
