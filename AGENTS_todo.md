@@ -41,8 +41,10 @@ Vulkan work: the GL3 mega shaders initialise and the client runs.
 - Validation layer clean. The only remaining message is gamescope's WSI
   `VkSwapchainPresentModeInfoKHR` warning, which comes from the gamescope
   layer, not from the driver.
-- A clean build tree (`build-verify`, from scratch) was built and run to check
-  the committed state.
+- A clean build tree (`build-verify`, from scratch) was built from commit
+  `6d39f3d7a` and run: the client reports version `#6d39f3d7a` and the login
+  screen renders with all text, validation-clean (evidence:
+  `/tmp/opencode/ryzomtest/finalverify.png`).
 
 ## Known gaps
 
