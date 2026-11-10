@@ -104,31 +104,27 @@ State after rebasing the branch onto the current main and merging it
 - Login screen with `NLVK_MEGA=1`: renders through the mega path (VP + PP
   compiled), pixel-identical to the simple path except the blinking caret
   (AE 319 px of 1,024,000); validation-clean.
-- In game with `NLVK_MEGA=1` (verified 2026-11-10 18:23, character `Megana`,
-  screenshot `/tmp/opencode/ryzomtest/megaworld.png`): the mega path is active
-  but the **world staging is wrong** — the ground renders magenta and the sky /
-  vegetation black, while some tree trunks show their textures. So the mega
-  path still needs the terrain/lightmap/fog staging finished before it can
-  replace the simple path.
+- In game with `NLVK_MEGA=1` (verified 2026-11-10 ~20:15, character `Megana`,
+  screenshots `/tmp/opencode/ryzomtest/lm-mega.png` and `lm-simple.png`): the
+  ground now matches the simple path pixel for pixel (ground band AE = 0). The
+  earlier magenta ground was the fog map's pink fog colour applied by the mega
+  shaders plus additive passes adding fog (fixed with the GL3 black-fog
+  override). Vegetation is still black (vertex programs).
 - Validation-clean for the mega path (the only warning remains gamescope's WSI
   present-mode one).
 
 Known gaps in the mega path (from the subagent that ported it):
-- `CMaterial::LightMap` materials still fall back to the simple path (lightmap
-  multi-pass staging is not implemented; reference: `beginLightMapMultiPass`,
-  `computeLightMapInfos`, `setupLightMapPass` in
-  `driver_opengl3_material.cpp`). This is almost certainly part of the magenta
-  ground.
+- `CMaterial::LightMap` multi-pass staging is ported (see the section below),
+  but no LightMap material was in view at the verification spot, so it still
+  needs an in-game check somewhere with lightmaps (town/interior).
 - Cubemaps on stages other than 1 fall back; cubemap upload is not implemented.
 - TexGen and EMBM are not staged (the VP generator supports the modes).
 - User vertex programs (bindings 4–6) are reserved but `supportVertexProgram()`
   is still false.
 
-Next step there: port the lightmap pass staging (passes = ceil(lightmaps /
-(maxSamplers-1)), stage 0 = material texture, stages 1..N = lightmap textures
-with their factors as TexEnv constants), and re-check the terrain with
-`NLVK_MEGA=1` in game. The magenta ground suggests the terrain material's
-texture stages/texenv are staged incorrectly too. **Done on branch
+Next step there: verify a LightMap material in game (town/interior), then
+re-enable fog in the mega object UBO once fog is also ported to the simple
+shader (it is currently forced off so both paths agree). **Done on branch
 `vulkan-lightmap`, see the section below.**
 
 ## Mega world staging: LightMap multi-pass (branch `vulkan-lightmap`)
