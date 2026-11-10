@@ -91,28 +91,44 @@ Vulkan work: the GL3 mega shaders initialise and the client runs.
   credentials out for the login screen only.
 - Driver debug env: `NLVK_VALIDATION=1`, `NLVK_SCREENSHOT[_SEQ]`,
   `NLVK_NOCULL=1`, `NLVK_FORCECLEAR=1`, `NLVK_TESTTRI=1`.
-## `vulkan-mega-shaders` branch (GL3 mega shaders, `NLVK_MEGA=1`)
+## GL3 mega shaders (`NLVK_MEGA=1`) — merged
 
-A subagent ported the GL3 mega vertex/pixel shaders and the four builtin UBOs
-into the Vulkan driver, gated behind `NLVK_MEGA=1` (the default path is
-untouched). It is pushed as branch **`vulkan-mega-shaders`**, commit
-**`71033c3b5`** (7 files, +2165/−41), based on `8729e8b2b`.
+The GL3 mega vertex/pixel shaders and the four builtin UBOs are now in the main
+branch (`driver_vulkan_mega.cpp`, `driver_vulkan_mega.h`,
+`driver_vulkan_mega_render.cpp`), selected with `NLVK_MEGA=1`. The default
+simple path is untouched and remains what runs without the variable.
 
-Evidence from that branch:
-- builds with the same flags, no warnings in the new files;
-- with `NLVK_MEGA=1` the login screen renders through the mega path (all draws),
-  pixel-identical to the simple path apart from the blinking caret;
-- validation reports no shader/descriptor/pipeline errors for the mega path.
+State after rebasing the branch onto the current main and merging it
+(merge commit `72aeb9c61`, mega commit `847eb3d74`):
 
-Not done there: `LightMap` materials and cubemaps still use the simple path,
-TexGen/EMBM are not staged, user VPs are still disabled.
+- Login screen with `NLVK_MEGA=1`: renders through the mega path (VP + PP
+  compiled), pixel-identical to the simple path except the blinking caret
+  (AE 319 px of 1,024,000); validation-clean.
+- In game with `NLVK_MEGA=1` (verified 2026-11-10 18:23, character `Megana`,
+  screenshot `/tmp/opencode/ryzomtest/megaworld.png`): the mega path is active
+  but the **world staging is wrong** — the ground renders magenta and the sky /
+  vegetation black, while some tree trunks show their textures. So the mega
+  path still needs the terrain/lightmap/fog staging finished before it can
+  replace the simple path.
+- Validation-clean for the mega path (the only warning remains gamescope's WSI
+  present-mode one).
 
-**Merging it needs a rebase**: it predates the later fixes (object lifetime,
-std140 layout, clear ordering, clip-space convention), so a plain merge of
-`main/atys-live-n-vulkan` conflicts in `driver_vulkan.cpp` and
-`driver_vulkan_render.cpp` (merge was attempted and aborted). Rebase
-`vulkan-mega-shaders` onto the current branch, resolve those two files, rebuild,
-then retest with `NLVK_MEGA=1` on the login screen and in game.
+Known gaps in the mega path (from the subagent that ported it):
+- `CMaterial::LightMap` materials still fall back to the simple path (lightmap
+  multi-pass staging is not implemented; reference: `beginLightMapMultiPass`,
+  `computeLightMapInfos`, `setupLightMapPass` in
+  `driver_opengl3_material.cpp`). This is almost certainly part of the magenta
+  ground.
+- Cubemaps on stages other than 1 fall back; cubemap upload is not implemented.
+- TexGen and EMBM are not staged (the VP generator supports the modes).
+- User vertex programs (bindings 4–6) are reserved but `supportVertexProgram()`
+  is still false.
+
+Next step there: port the lightmap pass staging (passes = ceil(lightmaps /
+(maxSamplers-1)), stage 0 = material texture, stages 1..N = lightmap textures
+with their factors as TexEnv constants), and re-check the terrain with
+`NLVK_MEGA=1` in game. The magenta ground suggests the terrain material's
+texture stages/texenv are staged incorrectly too.
 
 ## Build
 
