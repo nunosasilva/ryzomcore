@@ -193,10 +193,6 @@ uint32 CDriverVulkan::getAvailableVertexVRAMMemory()
 	return 0xFFFFFFFF;
 }
 
-void CDriverVulkan::mapTextureStageToUV(uint stage, uint uv)
-{
-}
-
 void CDriverVulkan::setSwapVBLInterval(uint interval)
 {
 }
