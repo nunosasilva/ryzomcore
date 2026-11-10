@@ -1144,7 +1144,15 @@ bool CDriverVulkan::swapBuffers()
 
 	vkCmdEndRenderPass(cmd);
 
-	bool wantScreenshot = getenv("NLVK_SCREENSHOT") && _SwapBufferCounter == (uint64)_ScreenshotFrame;
+	bool wantScreenshot = false;
+	const char *screenshotPath = getenv("NLVK_SCREENSHOT");
+	if (screenshotPath)
+	{
+		if (getenv("NLVK_SCREENSHOT_SEQ"))
+			wantScreenshot = _SwapBufferCounter >= (uint64)_ScreenshotFrame && (_SwapBufferCounter % 600) == 0;
+		else
+			wantScreenshot = _SwapBufferCounter == (uint64)_ScreenshotFrame;
+	}
 	if (wantScreenshot)
 		recordScreenshotCopy(cmd);
 
@@ -1168,7 +1176,16 @@ bool CDriverVulkan::swapBuffers()
 	if (wantScreenshot)
 	{
 		vkWaitForFences(_Device, 1, &_Fences[frame], VK_TRUE, UINT64_MAX);
-		writeScreenshot(getenv("NLVK_SCREENSHOT"));
+		if (getenv("NLVK_SCREENSHOT_SEQ"))
+		{
+			char path[512];
+			snprintf(path, sizeof(path), "%s.%llu.ppm", screenshotPath, (unsigned long long)_SwapBufferCounter);
+			writeScreenshot(path);
+		}
+		else
+		{
+			writeScreenshot(screenshotPath);
+		}
 	}
 
 	VkPresentInfoKHR pi;
