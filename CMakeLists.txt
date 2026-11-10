@@ -372,6 +372,13 @@ IF(WITH_NEL)
     ENDIF()
   ENDIF() #hunter
 
+  # Must precede ADD_SUBDIRECTORY(nel): enable_testing() only covers the
+  # directories added after it, and the samples register their GL3 smoke tests
+  # from nel/samples/3d.
+  IF(WITH_NEL_TESTS OR WITH_TESTING)
+    ENABLE_TESTING()
+  ENDIF()
+
   INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/nel/include)
   ADD_SUBDIRECTORY(nel)
 
@@ -415,7 +422,6 @@ IF(WITH_PERSONAL)
 ENDIF()
 
 IF(WITH_NEL_TESTS)
-  ENABLE_TESTING()
   ADD_TEST(nel_unit_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/nel_unit_test --html)
   IF(BUILD_DASHBOARD)
     INCLUDE(Dart)
