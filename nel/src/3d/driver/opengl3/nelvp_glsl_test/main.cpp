@@ -42,7 +42,6 @@
 #include "stdopengl3.h"
 #include "driver_opengl3.h"
 #include "driver_opengl3_program.h"
-#include "driver_opengl3_extension.h"
 
 #include <nel/3d/landscapevb_allocator.h>
 #include <nel/3d/program.h>
