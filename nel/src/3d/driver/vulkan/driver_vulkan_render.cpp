@@ -43,10 +43,12 @@ namespace NLVULKAN {
 // Shaders
 // ---------------------------------------------------------------------------
 
-static const char *s_PushConstantGLSL =
-	"layout(push_constant) uniform Push {\n"
+static const char *s_UniformBlockGLSL =
+	"layout(set = 0, binding = 4) uniform NlSimple {\n"
 	"    mat4 mvp;\n"
+	"    mat3 normalMatrix;\n"
 	"    vec4 color;\n"
+	"    vec4 ambient;\n"
 	"    float alphaRef;\n"
 	"    int flags;\n"
 	"    uint texEnv0;\n"
@@ -54,15 +56,21 @@ static const char *s_PushConstantGLSL =
 	"    uint texEnv2;\n"
 	"    uint texEnv3;\n"
 	"    uint uvRouting;\n"
-	"} pc;\n";
+	"    vec4 lightDirOrPos[4];\n"
+	"    vec4 lightDiffuse[4];\n"
+	"    int lightCount;\n"
+	"} nl;\n";
 
 static std::string buildVertexShader(uint32 flags)
 {
 	bool hasColor = (flags & CVertexBuffer::PrimaryColorFlag) != 0;
+	bool hasNormal = (flags & CVertexBuffer::NormalFlag) != 0;
 
 	std::string src;
 	src += "#version 450\n";
 	src += "layout(location = 0) in vec3 attrPosition;\n";
+	if (hasNormal)
+		src += "layout(location = 2) in vec3 attrNormal;\n";
 	if (hasColor)
 		src += "layout(location = 3) in vec4 attrColor;\n";
 	for (uint i = 0; i < 4; ++i)
@@ -74,7 +82,7 @@ static std::string buildVertexShader(uint32 flags)
 			src += line;
 		}
 	}
-	src += s_PushConstantGLSL;
+	src += s_UniformBlockGLSL;
 	src += "layout(location = 0) out vec4 vColor;\n";
 	src += "layout(location = 1) out vec2 vUv0;\n";
 	src += "layout(location = 2) out vec2 vUv1;\n";
@@ -97,28 +105,42 @@ static std::string buildVertexShader(uint32 flags)
 	src += "    return vec2(0.0);\n";
 	src += "}\n";
 	src += "void main() {\n"
-		"    vec4 pos = pc.mvp * vec4(attrPosition, 1.0);\n"
+		"    vec4 pos = nl.mvp * vec4(attrPosition, 1.0);\n"
 		"    pos.z = (pos.z + pos.w) * 0.5;\n"
-		"    gl_Position = pos;\n";
+		"    gl_Position = pos;\n"
+		"    vec4 vcol = nl.color;\n";
 	if (hasColor)
-		src += "    vColor = attrColor * pc.color;\n";
-	else
-		src += "    vColor = pc.color;\n";
+		src += "    vcol *= attrColor;\n";
+	if (hasNormal)
+		src +=
+		"    if ((nl.flags & 32) != 0) {\n"
+		"        vec3 n = normalize(nl.normalMatrix * attrNormal);\n"
+		"        vec3 lit = nl.ambient.rgb;\n"
+		"        for (int i = 0; i < nl.lightCount && i < 4; ++i) {\n"
+		"            if (nl.lightDirOrPos[i].w < 0.5) {\n"
+		"                vec3 ldir = normalize(-nl.lightDirOrPos[i].xyz);\n"
+		"                lit += nl.lightDiffuse[i].rgb * max(dot(n, ldir), 0.0);\n"
+		"            }\n"
+		"        }\n"
+		"        vcol.rgb *= lit;\n"
+		"    }\n";
+	src += "    vColor = vcol;\n";
 	for (uint i = 0; i < 4; ++i)
 	{
 		char line[96];
-		snprintf(line, sizeof(line), "    vUv%u = selectUv((pc.uvRouting >> %u) & 0xFu);\n", i, i * 4);
+		snprintf(line, sizeof(line), "    vUv%u = selectUv((nl.uvRouting >> %u) & 0xFu);\n", i, i * 4);
 		src += line;
 	}
 	src += "}\n";
 	return src;
 }
 
+
 /// TexEnv interpreter, the same packing as CMaterial::CTexEnv (see the GL3 mega
 /// pixel program for the reference implementation).
 static const std::string s_FragmentShader =
-	std::string("#version 450\n") +
-	"layout(location = 0) in vec4 vColor;\n"
+	std::string("#version 450\n")
+	+ "layout(location = 0) in vec4 vColor;\n"
 	"layout(location = 1) in vec2 vUv0;\n"
 	"layout(location = 2) in vec2 vUv1;\n"
 	"layout(location = 3) in vec2 vUv2;\n"
@@ -127,8 +149,8 @@ static const std::string s_FragmentShader =
 	"layout(binding = 1) uniform sampler2D tex1;\n"
 	"layout(binding = 2) uniform sampler2D tex2;\n"
 	"layout(binding = 3) uniform sampler2D tex3;\n"
-	+ std::string(s_PushConstantGLSL) +
-	"layout(location = 0) out vec4 fragColor;\n"
+	+ std::string(s_UniformBlockGLSL)
+	+ "layout(location = 0) out vec4 fragColor;\n"
 	"vec4 getTexEnvSrc(int src, vec4 texel, vec4 previous, vec4 diffuse, vec4 cnst) {\n"
 	"  return (src == 0) ? texel : (src == 1) ? previous : (src == 2) ? diffuse : cnst;\n"
 	"}\n"
@@ -190,11 +212,11 @@ static const std::string s_FragmentShader =
 	"}\n"
 	"void main() {\n"
 	"    vec4 frag = vColor;\n"
-	"    if ((pc.flags & 1) != 0) frag = applyTexEnv(pc.texEnv0, texture(tex0, vUv0), frag, vColor, vColor);\n"
-	"    if ((pc.flags & 2) != 0) frag = applyTexEnv(pc.texEnv1, texture(tex1, vUv1), frag, vColor, vColor);\n"
-	"    if ((pc.flags & 4) != 0) frag = applyTexEnv(pc.texEnv2, texture(tex2, vUv2), frag, vColor, vColor);\n"
-	"    if ((pc.flags & 8) != 0) frag = applyTexEnv(pc.texEnv3, texture(tex3, vUv3), frag, vColor, vColor);\n"
-	"    if ((pc.flags & 16) != 0 && frag.a < pc.alphaRef) discard;\n"
+	"    if ((nl.flags & 1) != 0) frag = applyTexEnv(nl.texEnv0, texture(tex0, vUv0), frag, vColor, vColor);\n"
+	"    if ((nl.flags & 2) != 0) frag = applyTexEnv(nl.texEnv1, texture(tex1, vUv1), frag, vColor, vColor);\n"
+	"    if ((nl.flags & 4) != 0) frag = applyTexEnv(nl.texEnv2, texture(tex2, vUv2), frag, vColor, vColor);\n"
+	"    if ((nl.flags & 8) != 0) frag = applyTexEnv(nl.texEnv3, texture(tex3, vUv3), frag, vColor, vColor);\n"
+	"    if ((nl.flags & 16) != 0 && frag.a < nl.alphaRef) discard;\n"
 	"    fragColor = frag;\n"
 	"}\n";
 
@@ -853,12 +875,18 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 	_DepthTestEnabled = true;
 	_DepthFunc = toVkCompare(mat.getZFunc());
 	_MaterialTwoSided = (mat.getFlags() & IDRV_MAT_DOUBLE_SIDED) != 0;
+	_MaterialLighting = (mat.getFlags() & IDRV_MAT_LIGHTING) != 0;
+	_MaterialLightedVertexColor = (mat.getFlags() & IDRV_MAT_LIGHTED_VERTEX_COLOR) != 0;
 	_MaterialAlphaTest = (mat.getFlags() & IDRV_MAT_ALPHA_TEST) != 0;
 	_MaterialAlphaRef = mat.getAlphaTestThreshold();
+	_MaterialShader = mat.getShader();
 	_MaterialColor = mat.getColor();
+	// Lightmapped and specular materials ignore the material colour: the
+	// result comes from the textures (and the lightmaps for LightMap).
+	if (_MaterialShader == CMaterial::LightMap || _MaterialShader == CMaterial::Specular)
+		_MaterialColor = CRGBA(255, 255, 255, _MaterialColor.A);
 	for (uint stage = 0; stage < 4; ++stage)
 		_TexEnv[stage] = mat.getTexEnvMode(stage);
-	_MaterialShader = mat.getShader();
 	_CurrentMaterial = &mat;
 
 	for (uint stage = 0; stage < 4; ++stage)
@@ -910,30 +938,30 @@ void CDriverVulkan::endSpecularBatch()
 
 void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer cmd, CVertexBuffer &vb)
 {
-	SPushConstants push;
-	memset(&push, 0, sizeof(push));
+	SSimpleUniforms u;
+	memset(&u, 0, sizeof(u));
 
 	CMatrix mvp = _GLProjMat * _ChangeBasis * _ModelViewMatrix;
-	mvp.get(push.MVP);
+	memcpy(u.MVP, mvp.get(), sizeof(u.MVP));
 
-	push.Color[0] = _MaterialColor.R / 255.f;
-	push.Color[1] = _MaterialColor.G / 255.f;
-	push.Color[2] = _MaterialColor.B / 255.f;
-	push.Color[3] = _MaterialColor.A / 255.f;
-	push.AlphaRef = _MaterialAlphaRef;
-	push.TexEnv[0] = _TexEnv[0];
-	push.TexEnv[1] = _TexEnv[1];
-	push.TexEnv[2] = _TexEnv[2];
-	push.TexEnv[3] = _TexEnv[3];
-	push.UvRouting = 0;
-	const uint8 *routing = vb.getUVRouting();
-	for (uint stage = 0; stage < 4; ++stage)
-	{
-		uint8 route = routing ? routing[stage] : (uint8)stage;
-		if (_MappedUV[stage] < 4)
-			route = _MappedUV[stage];
-		push.UvRouting |= ((uint32)(route & 0xF)) << (stage * 4);
-	}
+	const float *mv = _ModelViewMatrix.get();
+	u.NormalMatrix[0] = mv[0]; u.NormalMatrix[1] = mv[1]; u.NormalMatrix[2] = mv[2]; u.NormalMatrix[3] = 0.f;
+	u.NormalMatrix[4] = mv[4]; u.NormalMatrix[5] = mv[5]; u.NormalMatrix[6] = mv[6]; u.NormalMatrix[7] = 0.f;
+	u.NormalMatrix[8] = mv[8]; u.NormalMatrix[9] = mv[9]; u.NormalMatrix[10] = mv[10]; u.NormalMatrix[11] = 0.f;
+
+	u.Color[0] = _MaterialColor.R / 255.f;
+	u.Color[1] = _MaterialColor.G / 255.f;
+	u.Color[2] = _MaterialColor.B / 255.f;
+	u.Color[3] = _MaterialColor.A / 255.f;
+
+	CRGBA matAmbient = _CurrentMaterial ? _CurrentMaterial->getAmbient() : CRGBA(255, 255, 255, 255);
+	CRGBA ambient = (_ObjectAmbient.A || _ObjectAmbient.R || _ObjectAmbient.G || _ObjectAmbient.B) ? _ObjectAmbient : _AmbientColor;
+	u.Ambient[0] = (ambient.R / 255.f) * (matAmbient.R / 255.f);
+	u.Ambient[1] = (ambient.G / 255.f) * (matAmbient.G / 255.f);
+	u.Ambient[2] = (ambient.B / 255.f) * (matAmbient.B / 255.f);
+	u.Ambient[3] = 1.f;
+
+	u.AlphaRef = _MaterialAlphaRef;
 
 	int flags = 0;
 	for (uint stage = 0; stage < 4; ++stage)
@@ -941,19 +969,81 @@ void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 			flags |= (1 << stage);
 	if (_MaterialAlphaTest)
 		flags |= 16;
-	push.Flags = flags;
+	if (_MaterialLighting)
+		flags |= 32;
+	if (_MaterialLightedVertexColor)
+		flags |= 64;
+	u.Flags = flags;
 
-	vkCmdPushConstants(cmd, _PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+	for (uint stage = 0; stage < 4; ++stage)
+		u.TexEnv[stage] = _TexEnv[stage];
 
-	// Describe the 4 stage textures (unused stages get the white texture).
-	VkDescriptorImageInfo infos[4];
+	u.UvRouting = 0;
+	const uint8 *routing = vb.getUVRouting();
 	for (uint stage = 0; stage < 4; ++stage)
 	{
-		CTextureVulkan *tex = _StageTextures[stage];
-		infos[stage].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		infos[stage].imageView = tex ? tex->View : getWhiteTexture();
-		infos[stage].sampler = tex ? tex->Sampler : _WhiteTexture.Sampler;
+		uint8 route = routing ? routing[stage] : (uint8)stage;
+		if (_MappedUV[stage] < 4)
+			route = _MappedUV[stage];
+		u.UvRouting |= ((uint32)(route & 0xF)) << (stage * 4);
 	}
+
+	// Resolve up to four lights for the object.
+	uint lightCount = 0;
+	if (_LightTableMode && _LightCount > 0)
+	{
+		for (uint i = 0; i < _LightCount && lightCount < 4; ++i)
+		{
+			sint16 index = _LightIndices[i];
+			if (index < 0 || (uint)index >= _LightTableSize)
+				continue;
+			const SLightState &light = _LightTable[index];
+			float factor = _LightFactors[i] / 255.f;
+			SSimpleLight &dst = u.Lights[lightCount++];
+			dst.DirOrPos[0] = light.DirOrPos.x;
+			dst.DirOrPos[1] = light.DirOrPos.y;
+			dst.DirOrPos[2] = light.DirOrPos.z;
+			dst.DirOrPos[3] = light.Mode == 0 ? 0.f : 1.f;
+			dst.Diffuse[0] = (light.Diffuse.R / 255.f) * factor;
+			dst.Diffuse[1] = (light.Diffuse.G / 255.f) * factor;
+			dst.Diffuse[2] = (light.Diffuse.B / 255.f) * factor;
+			dst.Diffuse[3] = 1.f;
+			dst.Mode = light.Mode;
+		}
+	}
+	else
+	{
+		for (uint i = 0; i < 8 && lightCount < 4; ++i)
+		{
+			if (!_Lights[i].Enabled)
+				continue;
+			SSimpleLight &dst = u.Lights[lightCount++];
+			dst.DirOrPos[0] = _Lights[i].DirOrPos.x;
+			dst.DirOrPos[1] = _Lights[i].DirOrPos.y;
+			dst.DirOrPos[2] = _Lights[i].DirOrPos.z;
+			dst.DirOrPos[3] = _Lights[i].Mode == 0 ? 0.f : 1.f;
+			dst.Diffuse[0] = _Lights[i].Diffuse.R / 255.f;
+			dst.Diffuse[1] = _Lights[i].Diffuse.G / 255.f;
+			dst.Diffuse[2] = _Lights[i].Diffuse.B / 255.f;
+			dst.Diffuse[3] = 1.f;
+			dst.Mode = _Lights[i].Mode;
+		}
+	}
+	u.LightCount = (int)lightCount;
+
+	// Upload into the per-frame uniform ring.
+	const uint32 slot = 512;
+	if (_UniformRingOffset + slot > _UniformRingSize)
+		_UniformRingOffset = 0;
+	uint8 *dst = (uint8 *)_UniformRingMapped + _UniformRingOffset;
+	memcpy(dst, &u, sizeof(u));
+
+	VkDescriptorBufferInfo bufferInfo;
+	bufferInfo.buffer = _UniformRing;
+	bufferInfo.offset = _UniformRingOffset;
+	bufferInfo.range = sizeof(u);
+	_UniformRingOffset += slot;
+
 	VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 	VkDescriptorSetAllocateInfo dsai;
 	memset(&dsai, 0, sizeof(dsai));
@@ -964,7 +1054,15 @@ void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	if (vkAllocateDescriptorSets(_Device, &dsai, &descriptorSet) != VK_SUCCESS)
 		return;
 
-	VkWriteDescriptorSet writes[4];
+	VkDescriptorImageInfo infos[4];
+	for (uint stage = 0; stage < 4; ++stage)
+	{
+		CTextureVulkan *tex = _StageTextures[stage];
+		infos[stage].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		infos[stage].imageView = tex ? tex->View : getWhiteTexture();
+		infos[stage].sampler = tex ? tex->Sampler : _WhiteTexture.Sampler;
+	}
+	VkWriteDescriptorSet writes[5];
 	memset(writes, 0, sizeof(writes));
 	for (uint stage = 0; stage < 4; ++stage)
 	{
@@ -975,7 +1073,13 @@ void CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 		writes[stage].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		writes[stage].pImageInfo = &infos[stage];
 	}
-	vkUpdateDescriptorSets(_Device, 4, writes, 0, NULL);
+	writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[4].dstSet = descriptorSet;
+	writes[4].dstBinding = 4;
+	writes[4].descriptorCount = 1;
+	writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	writes[4].pBufferInfo = &bufferInfo;
+	vkUpdateDescriptorSets(_Device, 5, writes, 0, NULL);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _PipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 }
 
@@ -1248,6 +1352,74 @@ bool CDriverVulkan::renderLinesWithIndexOffset(CMaterial &mat, uint32 firstIndex
 bool CDriverVulkan::renderSimpleTrianglesWithIndexOffset(uint32 firstIndex, uint32 ntris, uint indexOffset)
 {
 	return drawIndexed(*_CurrentMaterial, firstIndex, ntris * 3, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, _IndexFormat / 8);
+}
+
+// ---------------------------------------------------------------------------
+// Lights
+// ---------------------------------------------------------------------------
+
+void CDriverVulkan::setLight(uint8 num, const CLight &light)
+{
+	if (num < 8)
+	{
+		_Lights[num].Mode = (uint8)light.getMode();
+		_Lights[num].DirOrPos = (_Lights[num].Mode == CLight::DirectionalLight) ? light.getDirection() : light.getPosition();
+		_Lights[num].Diffuse = light.getDiffuse();
+		_Lights[num].Ambient = light.getAmbiant();
+		_Lights[num].Enabled = true;
+	}
+}
+
+void CDriverVulkan::enableLight(uint8 num, bool enable)
+{
+	if (num < 8)
+		_Lights[num].Enabled = enable;
+}
+
+void CDriverVulkan::setAmbientColor(CRGBA color)
+{
+	_AmbientColor = color;
+}
+
+void CDriverVulkan::setPerPixelLightingLight(CRGBA diffuse, CRGBA specular, float shininess)
+{
+}
+
+void CDriverVulkan::setLightMapDynamicLight(bool enable, const CLight &light)
+{
+}
+
+void CDriverVulkan::enableLightTableMode(bool enable)
+{
+	_LightTableMode = enable;
+}
+
+void CDriverVulkan::setLightTableSize(uint count)
+{
+	_LightTableSize = std::min(count, 128u);
+}
+
+void CDriverVulkan::setLightTableEntry(uint index, const CLight &light)
+{
+	if (index < 128)
+	{
+		_LightTable[index].Mode = (uint8)light.getMode();
+		_LightTable[index].DirOrPos = (_LightTable[index].Mode == CLight::DirectionalLight) ? light.getDirection() : light.getPosition();
+		_LightTable[index].Diffuse = light.getDiffuse();
+		_LightTable[index].Ambient = light.getAmbiant();
+		_LightTable[index].Enabled = true;
+	}
+}
+
+void CDriverVulkan::setLights(const sint16 *tableIndices, const uint8 *factors, uint numLights, uint numPerPixelLights, CRGBA ambient)
+{
+	_LightCount = std::min(numLights, 8u);
+	for (uint i = 0; i < _LightCount; ++i)
+	{
+		_LightIndices[i] = tableIndices[i];
+		_LightFactors[i] = factors[i];
+	}
+	_ObjectAmbient = ambient;
 }
 
 // ---------------------------------------------------------------------------

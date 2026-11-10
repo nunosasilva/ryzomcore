@@ -324,6 +324,11 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	out.Layers = 1;
 	out.HasAlpha = true;
 
+	if (sourceFormat == CBitmap::DXTC1 || sourceFormat == CBitmap::DXTC1Alpha ||
+		sourceFormat == CBitmap::DXTC3 || sourceFormat == CBitmap::DXTC5)
+		nlinfo("Vulkan: compressed texture %ux%u format=%d (%s) decompressed on upload",
+			width, height, (int)sourceFormat, typeid(tex).name());
+
 	if (!upload)
 	{
 		out.Uploaded = true;

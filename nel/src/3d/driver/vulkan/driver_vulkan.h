@@ -507,6 +507,54 @@ private:
 	std::map<uint32, std::vector<VkVertexInputAttributeDescription> >	_VertexLayouts;
 
 	// Per-frame index upload ring.
+	// Per-draw uniform data (lighting + material + matrices).
+	struct SSimpleLight
+	{
+		float	DirOrPos[4];
+		float	Diffuse[4];
+		sint32	Mode;
+		sint32	Pad[3];
+	};
+	struct SSimpleUniforms
+	{
+		float	MVP[16];
+		float	NormalMatrix[12];
+		float	Color[4];
+		float	Ambient[4];
+		float	AlphaRef;
+		sint32	Flags;
+		uint32	TexEnv[4];
+		uint32	UvRouting;
+		SSimpleLight Lights[4];
+		sint32	LightCount;
+		sint32	Pad[3];
+	};
+
+	VkBuffer				_UniformRing;
+	VkDeviceMemory			_UniformRingMemory;
+	void					*_UniformRingMapped;
+	uint32					_UniformRingSize;
+	uint32					_UniformRingOffset;
+
+	// Light state tracked from the IDriver calls.
+	struct SLightState
+	{
+		CVector		DirOrPos;
+		CRGBA		Diffuse;
+		CRGBA		Ambient;
+		uint8		Mode;
+		bool		Enabled;
+	};
+	SLightState				_Lights[8];
+	SLightState				_LightTable[128];
+	uint32					_LightTableSize;
+	bool					_LightTableMode;
+	sint16					_LightIndices[8];
+	uint8					_LightFactors[8];
+	uint32					_LightCount;
+	CRGBA					_ObjectAmbient;
+	CRGBA					_AmbientColor;
+
 	VkBuffer				_IndexRing;
 	VkDeviceMemory			_IndexRingMemory;
 	void					*_IndexRingMapped;
@@ -534,6 +582,7 @@ private:
 	uint32					_TexEnv[4];
 	uint8					_MappedUV[4];
 	bool					_MaterialLighting;
+	bool					_MaterialLightedVertexColor;
 	bool					_MaterialAlphaTest;
 	float					_MaterialAlphaRef;
 	bool					_MaterialTwoSided;
