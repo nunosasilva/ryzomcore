@@ -63,6 +63,30 @@ IF(WITH_DRIVER_OPENGL3 AND (WITH_NEL_TESTS OR WITH_TESTING))
       ENDIF()
     ENDFOREACH()
 
+    # The water sample is only a *water* gate when the graphics assets are present: without them it
+    # renders its sky checker and its cube and nothing else, while still passing a non-blank check
+    # (that is what nel_gl3_smoke_water above has been doing). Register an extra test against the
+    # same binary when a ryzomcore_graphics subset is available - either the CMake cache variable
+    # that the sample itself uses, or the /tmp/rzgraphics tree assembled by mk-water-assets.sh.
+    IF(TARGET nl_sample_water)
+      SET(NL_WATER_ASSETS "${NL_GRAPHICS_DIR}")
+      IF(NOT EXISTS "${NL_WATER_ASSETS}/landscape/water")
+        SET(NL_WATER_ASSETS "/tmp/rzgraphics")
+      ENDIF()
+      IF(EXISTS "${NL_WATER_ASSETS}/landscape/water")
+        ADD_TEST(NAME nel_gl3_smoke_water_assets
+                 COMMAND ${NL_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/headless_smoke.sh
+                         16 $<TARGET_FILE:nl_sample_water>)
+        SET_TESTS_PROPERTIES(nel_gl3_smoke_water_assets
+                             PROPERTIES
+                             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+                             ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1;NL_GRAPHICS_DIR=${NL_WATER_ASSETS}"
+                             TIMEOUT 45)
+        MESSAGE(STATUS "nl_sample_water: assets found at ${NL_WATER_ASSETS}, water smoke test registered")
+      ENDIF()
+    ENDIF()
+
+
     # The Specular sample covers two generated texture-coordinate modes, and the second one is
     # only reachable through a cube-map stage: sphere map (default) and reflection map (--cube).
     # Both are registered, because a regression in the texgen mask reaches the pixel program only
