@@ -340,6 +340,13 @@ public:
 	 */
 	uint8	load(NLMISC::IStream &f, uint mipMapSkip=0);
 
+	/**
+	 * Like load(), but reject images whose width or height exceeds maxSize.
+	 * Used for files that do not come from the game data (user-supplied images).
+	 * \return true if the image was loaded and is within the size limit.
+	 */
+	bool	loadUntrusted(NLMISC::IStream &f, uint32 maxSize, uint mipMapSkip=0);
+
 
 	/**
 	 * Determinate the bitmap size from a bitmap(TGA or DDS) from an IStream. load just header of the file.

@@ -24,6 +24,7 @@
 #include "nel/misc/matrix.h"
 #include "nel/misc/plane.h"
 #include "nel/misc/mutex.h"
+#include "nel/misc/atomic.h"
 #include "nel/misc/bit_set.h"
 #include "nel/misc/pool_memory.h"
 #include "nel/misc/random.h"

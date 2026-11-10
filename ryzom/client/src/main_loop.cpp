@@ -1255,7 +1255,7 @@ bool mainLoop()
 			CInputHandlerManager::getInstance()->pumpEvents();
 
 			CLandscapePolyDrawer::getInstance().deletePolygons();
-			CDecalRenderList::getInstance().clearRenderList();
+			CLegacyDecalRenderList::getInstance().clearRenderList();
 
 
 			// Update the Interface Manager Events.

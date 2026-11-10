@@ -1,6 +1,10 @@
 FILE(GLOB SRC *.cpp *.h)
 FILE(GLOB HEADERS ../../include/nel/3d/*.h)
 
+# core4-only navigation helper. It needs CEventMouseWheel::Steps, which the
+# live event API does not have, and nothing in the live client uses it.
+LIST(FILTER SRC EXCLUDE REGEX "/nav_mouse_listener\\.cpp$")
+
 SOURCE_GROUP(Traversals FILES
         anim_detail_trav.cpp
         ../../include/nel/3d/anim_detail_trav.h
@@ -136,8 +140,6 @@ SOURCE_GROUP(Driver FILES
         ../../include/nel/3d/dru.h
         event_mouse_listener.cpp
         ../../include/nel/3d/event_mouse_listener.h
-        nav_mouse_listener.cpp
-        ../../include/nel/3d/nav_mouse_listener.h
         index_buffer.cpp
         ../../include/nel/3d/index_buffer.h
         init_3d.cpp
@@ -720,30 +722,18 @@ SOURCE_GROUP(Stereo FILES
 
 NL_TARGET_LIB(nel3d ${HEADERS} ${SRC})
 add_library(NeL::3d ALIAS nel3d)
+if(NOT TARGET NeL::misc)
+  add_library(NeL::misc ALIAS nelmisc)
+endif()
 set_target_properties(nel3d PROPERTIES EXPORT_NAME 3d)
 
-TARGET_LINK_LIBRARIES(nel3d
-        #PUBLIC
-        NeL::misc
-        #PRIVATE
-        ${LIBOVR_LIBRARIES}
-        ${LIBVR_LIBRARY}
-)
-TARGET_COMPILE_DEFINITIONS(nel3d
-        PRIVATE
-        ${LIBOVR_DEFINITIONS}
-        ${LIBVR_DEFINITIONS}
-)
-TARGET_INCLUDE_DIRECTORIES(nel3d
-        PRIVATE
-        ${LIBVR_INCLUDE_DIR}
-)
+INCLUDE_DIRECTORIES(${FREETYPE_INCLUDE_DIRS})
+INCLUDE_DIRECTORIES(${LIBVR_INCLUDE_DIR})
+
+TARGET_LINK_LIBRARIES(nel3d nelmisc ${FREETYPE_LIBRARIES} ${LIBOVR_LIBRARIES} ${LIBVR_LIBRARY})
+TARGET_COMPILE_DEFINITIONS(nel3d PRIVATE ${LIBOVR_DEFINITIONS} ${LIBVR_DEFINITIONS})
 
 IF(FREETYPE_FOUND)
-    TARGET_LINK_LIBRARIES(nel3d
-            #PRIVATE
-            Freetype::Freetype
-    )
     TARGET_COMPILE_DEFINITIONS(nel3d PRIVATE HAVE_FREETYPE)
 ELSE()
     TARGET_COMPILE_DEFINITIONS(nel3d PRIVATE NL_DONT_USE_EXTERNAL_CODE)
@@ -761,8 +751,8 @@ ENDIF()
 
 NL_GEN_PC(nel-3d.pc)
 
-IF(WITH_INSTALL_LIBRARIES OR NOT WITH_STATIC)
-  INSTALL(TARGETS nel3d EXPORT "${project_export_name}" LIBRARY DESTINATION ${NL_LIB_PREFIX} ARCHIVE DESTINATION ${NL_LIB_PREFIX} COMPONENT libraries)
+IF((WITH_INSTALL_LIBRARIES AND WITH_STATIC) OR NOT WITH_STATIC)
+  INSTALL(TARGETS nel3d LIBRARY DESTINATION ${NL_LIB_PREFIX} ARCHIVE DESTINATION ${NL_LIB_PREFIX} COMPONENT libraries)
 ENDIF()
 
 ADD_SUBDIRECTORY(driver)

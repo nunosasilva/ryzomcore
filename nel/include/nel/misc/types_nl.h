@@ -188,6 +188,13 @@
 #	define NL_CPP14
 #endif
 
+// 'register' was removed in C++17; keep the hint only where it is valid.
+#ifdef NL_CPP17
+#	define NL_REGISTER
+#else
+#	define NL_REGISTER register
+#endif
+
 #if defined(NL_COMP_VC) && (NL_COMP_VC_VERSION >= 140)
 #define nlmove(v) std::move(v)
 #else

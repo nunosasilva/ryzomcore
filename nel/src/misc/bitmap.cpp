@@ -215,6 +215,34 @@ uint8 CBitmap::load(NLMISC::IStream &f, uint mipMapSkip)
 #endif // NEL_ALL_BITMAP_WHITE
 }
 
+/*-------------------------------------------------------------------*\
+								loadUntrusted
+\*-------------------------------------------------------------------*/
+bool CBitmap::loadUntrusted(NLMISC::IStream &f, uint32 maxSize, uint mipMapSkip)
+{
+	uint8 depth = 0;
+	try
+	{
+		depth = load(f, mipMapSkip);
+	}
+	catch (const std::exception &e)
+	{
+		nlwarning("The image '%s' could not be read: %s", f.getStreamName().c_str(), e.what());
+		depth = 0;
+	}
+
+	if (depth == 0 || getWidth() == 0 || getHeight() == 0)
+		return false;
+
+	if (getWidth() > maxSize || getHeight() > maxSize)
+	{
+		nlwarning("The image '%s' is too large (%ux%u, max %u)", f.getStreamName().c_str(), getWidth(), getHeight(), maxSize);
+		return false;
+	}
+
+	return true;
+}
+
 
 /*-------------------------------------------------------------------*\
 								makeDummy
