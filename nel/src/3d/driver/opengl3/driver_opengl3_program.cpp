@@ -1189,114 +1189,14 @@ void CDriverGL3::setUniformFog(TProgram program, uint index)
 	nglProgramUniform4f(id, index, -v[ 2 ], -v[ 6 ], -v[ 10 ], -v[ 4 ]);
 }
 
-/*
-void CDriverGL3::generateShaderDesc(CShaderDesc &desc, CMaterial &mat)
-{
-	desc.setShaderType(mat.getShader());
-	uint16 vbFlags = _CurrentVertexBufferGL->VB->getVertexFormat();
-	for (sint i = 0; i < IDRV_MAT_MAXTEXTURES; ++i)
-	{
-		if (m_VPBuiltinCurrent.TexGenMode[i] >= 0)
-		{
-			//nldebug("texgen hack for keeping pp simpler, stage %i, tex %s valid", i, mat.getTexture(i) ? "IS" : "NOT");
-			vbFlags |= g_VertexFlags[TexCoord0 + i];
-		}
-	}
-	desc.setVBFlags(vbFlags);
-	
-	if (mat.getShader() == CMaterial::LightMap)
-		desc.setNLightMaps(mat._LightMaps.size());
-	
-	//int i = 0;
-
-	if (mat.getShader() == CMaterial::Normal
-		|| mat.getShader() == CMaterial::UserColor
-		|| mat.getShader() == CMaterial::Specular)
-	{
-		bool useTextures = false;
-
-		int maxTextures = std::min(int(IDRV_MAT_MAXTEXTURES), int(IDRV_MAT_MAXTEXTURES));
-
-		if (mat.getShader() == CMaterial::Normal)
-		{
-			for (int i = 0; i < maxTextures; i++)
-			{
-				desc.setTexEnvMode(i, mat.getTexEnvMode(i));
-			} // todo specular env mode..
-		}
-
-		for (int i = 0; i < maxTextures; i++)
-		{
-			// GL3 TEX COORD
-			if (mat.getTexture(i) != NULL 
-				&& (desc.hasVBFlags(g_VertexFlags[TexCoord0]) || desc.hasVBFlags(g_VertexFlags[TexCoord0 + i]))
-				)
-			{
-				//nldebug("use stage %i", i);
-
-				desc.setUseTexStage(i, true);
-				useTextures = true;
-
-				desc.textureSamplerMode[i] = mat.getTexture(i)->isTextureCube() ? SamplerCube : Sampler2D; // Driver state
-			}
-			else
-			{
-				/*nldebug("stage fail %i, tex %s, tc0 %s, tci, %s", i, mat.getTexture(i) ? "VALID" : "NO", 
-					desc.hasVBFlags(g_VertexFlags[TexCoord0]) ? "YES" : "NO",
-					desc.hasVBFlags(g_VertexFlags[TexCoord0 + i]) ? "YES" : "NO");* /
-			}
-		}
-
-		if (!useTextures)
-		{
-			desc.setNoTextures(true);
-		}
-	}
-
-	if (mat.getAlphaTest())
-	{
-		desc.setAlphaTest(true);
-		desc.setAlphaTestThreshold(mat.getAlphaTestThreshold());
-	}
-
-	if (m_VPBuiltinCurrent.Fog) // Driver state
-	{
-		desc.setFog(true);
-		desc.setFogMode(CShaderDesc::Linear);
-	}
-
-	//bool enableLights = false;
-	for (int i = 0; i < MaxLight; i++)
-	{
-		if (!_LightEnable[i])
-		{
-			desc.setLight(i, CShaderDesc::Nolight);
-			continue;
-		}
-		//if (!_LightEnable[ i ])
-		//	continue;
-
-		//enableLights = true;
-		
-		switch(_LightMode[ i ])
-		{
-		case CLight::DirectionalLight:
-			desc.setLight(i, CShaderDesc::Directional);
-			break;
-		
-		case CLight::PointLight:
-			desc.setLight(i, CShaderDesc::Point);
-			break;
-		
-		case CLight::SpotLight:
-			desc.setLight(i, CShaderDesc::Spot);
-			break;
-		}
-	
-	}
-
-	desc.setLighting(/*enableLights && mat.isLighted() &&* / m_VPBuiltinCurrent.Lighting);			
-}*/
+// Developer note: the old generateShaderDesc() lived here, commented out. It was the pre-mega
+// path that derived a CShaderDesc from a CMaterial one tex-env mode at a time, and it carried
+// the "todo specular env mode" marker: CMaterial::Specular's second stage was never translated.
+// The live driver does not need it - setupMaterial() pushes the material state into the material
+// UBO and the mega pixel program applies it (driver_opengl3_material.cpp), including the Specular
+// two-stage setup with its generated stage-1 coordinates. nl_sample_specular is what now proves
+// that path renders, so the dead descriptor builder is gone rather than tempting a future reader
+// to "fix" a function nothing calls.
 
 bool CDriverGL3::setupBuiltinPrograms()
 {

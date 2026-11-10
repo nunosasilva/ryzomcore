@@ -558,7 +558,21 @@ void CDriverGL3::uploadObjectUBO()
 	// Scalar state
 	data.lighting = m_VPBuiltinCurrent.Lighting ? 1 : 0;
 	data.vertexColorLighted = m_VPBuiltinCurrent.VertexColorLighted ? 1 : 0;
-	data.vertexFormat = (sint32)m_VPBuiltinCurrent.VertexFormat;
+	// nlVertexFormat is read by BOTH stages: the vertex program uses it to guard attribute
+	// usage, the pixel program uses it to pick which texture coordinate to sample for a stage.
+	// That second use needs the stages whose coordinates are *generated* by the vertex program
+	// (texgen: sphere map, reflection map, eye linear), because those have no vertex attribute
+	// of their own - without these bits the pixel program falls back to texCoord0 and the
+	// generated coordinate is computed and then never sampled. That was the state of the
+	// Specular shader in this driver: measured with nl_sample_specular, disabling the specular
+	// texgen changed the frame by 0 px, i.e. it was already unused. Adding the bits is harmless
+	// for the vertex program, which decides per stage from its own descriptor and only consults
+	// this mask for normals/colours/skinning.
+	uint16 vertexFormat = m_VPBuiltinCurrent.VertexFormat;
+	for (sint stage = 0; stage < IDRV_MAT_MAXTEXTURES; ++stage)
+		if (m_VPBuiltinCurrent.TexGenMode[stage] >= 0)
+			vertexFormat |= g_VertexFlags[TexCoord0 + stage];
+	data.vertexFormat = (sint32)vertexFormat;
 	data.worldSpaceNormal = m_VPNormalOutput ? 1 : 0;
 	data.worldSpacePosition = m_VPWorldSpacePositionOutput ? 1 : 0;
 	data.numPerPixelLights = (sint32)m_VPBuiltinCurrent.NumPerPixelLights;
