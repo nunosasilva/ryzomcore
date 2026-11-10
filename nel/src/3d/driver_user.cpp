@@ -1978,6 +1978,9 @@ bool CDriverUser::stretchRect(UScene * scene, class UTexture & srcUText, NLMISC:
 	if(!_Driver->stretchRect(srcText, srcRect, destText, destRect))
 	{
 		setRenderTarget(destUText, 0, 0, destRect.Width, destRect.Height);
+		// A render target is stretched over its whole surface; the previous
+		// sub-viewport must not leak into the destination.
+		setViewport(CViewport());
 
 		// init quad
 		NLMISC::CQuadUV		quad;

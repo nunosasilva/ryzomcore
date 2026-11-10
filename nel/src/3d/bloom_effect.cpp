@@ -28,6 +28,8 @@
 #include "nel/3d/driver_user.h"
 #include "nel/3d/texture_offscreen.h"
 #include "nel/3d/texture_user.h"
+#include "nel/3d/viewport.h"
+#include "nel/3d/scissor.h"
 
 #include "nel/3d/bloom_effect.h"
 #include "nel/3d/vertex_program.h"
@@ -354,6 +356,9 @@ void CBloomEffect::init()
 	matObjectFinal->texEnvArg1RGB(1, CMaterial::Previous, CMaterial::SrcColor);
 
 	// initialize quads
+	// The bloom vertex program writes gl_Position straight from these
+	// coordinates (clip space, w = posW.w), so -1..1 is full screen. A 0..1
+	// quad covers only the top-right quadrant of clip space.
 	_BlurQuad.V0 = CVector(-1.f, -1.f,	0.5f);
 	_BlurQuad.V1 = CVector(1.f,	 -1.f,	0.5f);
 	_BlurQuad.V2 = CVector(1.f,	 1.f,	0.5f);
@@ -424,6 +429,12 @@ void CBloomEffect::applyBloom()
 	CTextureUser texNull;
 	dru->setRenderTarget(texNull);
 
+	// The blur passes must cover the whole target. setRenderTarget() restores
+	// the last user viewport/scissor, which can be a scene sub-rectangle (the
+	// minimap / IG renders into one), so force the full target rect.
+	_Driver->setViewport(CViewport());
+	_Driver->setScissor(CScissor());
+
 	// Stretch original render target into blur texture
 	CTextureUser txt1(renderTarget);
 	CTextureUser txt2(_BlurFinalTex->getITexture());
@@ -440,6 +451,8 @@ void CBloomEffect::applyBloom()
 
 	// apply blur with a blend operation
 	drv->setRenderTarget(renderTarget);
+	_Driver->setViewport(CViewport());
+	_Driver->setScissor(CScissor());
 	_Driver->setMatrixMode2D11();
 	applyBlur();
 
@@ -543,6 +556,9 @@ void CBloomEffect::doBlur(bool horizontalBlur)
 		nlwarning("setRenderTarget return false with blur texture for bloom effect\n");
 		return;
 	}
+	// Full blur-target viewport/scissor; see applyBloom().
+	_Driver->setViewport(CViewport());
+	_Driver->setScissor(CScissor());
 	_Driver->setMatrixMode2D11();
 
 	// initialize vertex program
