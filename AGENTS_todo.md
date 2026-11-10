@@ -351,3 +351,18 @@ requested without querying, and the per-frame rings being single-buffered.
 - Driver selection: `ryzom/client/src/init.cpp:1064`, `nel/src/3d/dru.cpp`
   (`CDRU::createVkDriver`), `ryzom/client/src/client_cfg.cpp`.
 - GL3 attribute locations: `driver_opengl3_vertex.cpp` `GLVertexAttribIndex`.
+
+## Vertex programs — merged
+
+`driver_vulkan_vp.cpp` ports `convertNelvpToGLSL`; `NlNelvpConstants` is at
+binding 4; `supportVertexProgram`/`compileVertexProgram`/`activeVertexProgram`
+work for nelvp and glsl330v. In game, 24 user programs compile (wind tree UBO +
+16 nelvp variants, 4 landscape, 3 vegetable) and draw; evidence
+`/tmp/opencode/ryzomtest/vp/` (`g7`, `final2` = UBO path, `noubo` = nelvp path,
+`g5` = old behaviour with `NLVK_NOVP=1`). Debug env: `NLVK_NOVP=1`,
+`NLVK_NOUBO=1`, `NLVK_VP_DUMP=<dir>`.
+
+Not supported: glsl3vi insert programs (GPU skinning/MRM geomorph) — rejected
+so the engine keeps CPU skinning; the avatar is still a black silhouette.
+Next: splice the insert snippet into the mega VP, declare `NlMorph` (binding 4)
+and `NlSkeleton` (binding 6), then accept `glsl3vi`.
