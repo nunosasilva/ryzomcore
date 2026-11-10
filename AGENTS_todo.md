@@ -128,7 +128,46 @@ Next step there: port the lightmap pass staging (passes = ceil(lightmaps /
 (maxSamplers-1)), stage 0 = material texture, stages 1..N = lightmap textures
 with their factors as TexEnv constants), and re-check the terrain with
 `NLVK_MEGA=1` in game. The magenta ground suggests the terrain material's
-texture stages/texenv are staged incorrectly too.
+texture stages/texenv are staged incorrectly too. **Done on branch
+`vulkan-lightmap`, see the section below.**
+
+## Mega world staging: LightMap multi-pass (branch `vulkan-lightmap`)
+
+The mega path now draws `CMaterial::LightMap` through the GL3-style
+multi-pass staging, ported from `driver_opengl3_material.cpp`
+(`computeLightMapInfos`, `beginLightMapMultiPass`, `setupLightMapPass`):
+
+- `beginMaterialMultiPass()` computes the lightmap LUT/pass count, saves the
+  base stage textures and returns the pass count (still `1` on the simple
+  path, so the simple path is unchanged);
+- `setupMaterialPass()` stages stages 0..N-2 with the pass' lightmap textures
+  (factor in `constant[stage]`, LMC ambient added to self-illumination) and
+  stage N-1 with the material texture, exactly like GL3;
+- the per-pass material UBO overrides (white/half diffuse, zero specular,
+  `nlLightMapScale`, zero constants/no-lightmap case, identity texture
+  matrices), object UBO overrides (LMC self-illumination, zero light factors
+  on additive passes) and the black fog on additive blends/passes mirror GL3;
+- `renderTriangles`/`renderLines`/raw/quad draws loop over the pass count like
+  the GL3 driver; `renderSimpleTriangles` (landscape) stays single-pass.
+- `canUseMegaPath()` now accepts `CMaterial::LightMap`.
+
+What actually made the ground magenta under `NLVK_MEGA=1`: **scene fog**, not
+the staging. The moor is foggy and the fog map gave a pink
+`FogColor` (201,144,133) at the test time; the mega shaders apply it to the
+far landscape backdrop, while the simple path has no fog at all and shows the
+backdrop's flat green texture. The additive landscape passes additionally
+added the fog colour on top (GL3 overrides the fog colour with black for
+additive blends; the Vulkan driver now does that too). Since the simple path
+has no fog yet, the mega object UBO now keeps `fogEnabled = 0` so both paths
+agree; the generated fog code is still there. Re-enable it when the simple
+path grows fog (or when the mega path replaces it).
+
+After the fix, at the same spot (`lm-simple.png` / `lm-mega.png` in
+`/tmp/opencode/ryzomtest/`) both paths show the same green backdrop
+(97,122,44 at the sampled pixel); the mega path adds its lighting/texenv
+shading on top. Still untested in game: a `LightMap` material was not in view
+at the test spot, so the new lightmap staging needs a check on a
+static-lightmapped object. Cubemap/mega and TexGen staging are unchanged.
 
 ## Build
 
@@ -159,16 +198,18 @@ texture stages/texenv are staged incorrectly too.
 
 ## Next steps (in order of value)
 
-1. Fix the mega path's world staging (`NLVK_MEGA=1` renders the ground magenta
-   in game): port the LightMap multi-pass staging (`computeLightMapInfos`,
-   `beginLightMapMultiPass`, `setupLightMapPass` in
-   `driver_opengl3_material.cpp`) and check the terrain material's texture
-   stages/TexEnv against what the mega PP expects. Then re-verify in game.
-2. Vertex programs: reuse `convertNelvpToGLSL` and the `NlNelvpConstants` UBO;
+1. Fog parity: the mega shaders implement fog but it is currently disabled
+   (`stageMegaObjectUBO`) because the simple path has none. Port fog to the
+   simple shader (or make the mega path the default) and re-enable
+   `data.fogEnabled`; GL3's black-fog overrides for additive blends and
+   LightMap passes > 0 are already in place.
+2. Verify the new LightMap multi-pass staging in game on a static-lightmapped
+   object (no LightMap material was in view at the test spot).
+3. Vertex programs: reuse `convertNelvpToGLSL` and the `NlNelvpConstants` UBO;
    then GPU skinning and the wind-tree VP can compile.
-3. Render targets + bloom/FXAA/water reflection.
-4. Texture eviction via an `ITextureDrvInfos` implementation.
-5. Partial texture uploads, BC textures, cubemaps.
+4. Render targets + bloom/FXAA/water reflection.
+5. Texture eviction via an `ITextureDrvInfos` implementation.
+6. Partial texture uploads, BC textures, cubemaps.
 
 ## Review findings already fixed
 

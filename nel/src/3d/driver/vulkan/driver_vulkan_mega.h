@@ -54,6 +54,8 @@ const uint NL_VK_MEGA_BINDING_USER_SKELETON = 6;
 const uint NL_VK_MEGA_BINDING_SAMPLER_BASE = 8;
 const uint NL_VK_MEGA_SAMPLER_COUNT = NL3D::IDRV_PROGRAM_MAXSAMPLERS; // 8
 const uint NL_VK_MEGA_MAX_LIGHT_TABLE = 128;
+// Same upper bound as the GL3 driver's NL3D_DRV_MAX_LIGHTMAP.
+const uint NL_VK_MAX_LIGHTMAP = 256;
 
 // ***************************************************************************
 // Camera UBO data layout (std140, 352 bytes, matches GLSL NlCamera block)
