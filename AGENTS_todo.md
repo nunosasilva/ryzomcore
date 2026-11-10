@@ -249,7 +249,16 @@ Also fixed while testing: the simple vertex shader emitted `(void)routing;`
 every such pipeline fail and spam the log; the index ring is now 4-byte
 aligned (16- and 32-bit draws share it) and vertex buffer deletion always
 defers to a frame boundary (destroying one between frames invalidated a frame
-still in flight and crashed RADV).
+still in flight and crashed RADV). The per-draw uniform ring and the index ring
+no longer wrap or destroy themselves mid-frame either: dense vegetation reaches
+tens of thousands of draws per frame, so both are sized generously up front
+(128 MiB and 64 MiB) and any growth allocates a new buffer while the old one
+stays alive until the next frame boundary. With those fixes the in-game
+validation log after 21:33 contains no driver errors (the only messages are
+gamescope's WSI ones, the pre-existing missing `VK_EXT_surface_maintenance1`
+extension warning, and benign "vertex attribute at location N not consumed"
+warnings for user VP pipelines, which supply the full 16-slot vertex input).
+Final screenshot: `/tmp/opencode/ryzomtest/vp/final2/f.ppm.8400.png`.
 
 
     cd ~/Projects/ryzom/github/atys-live/ryzomcore
@@ -316,6 +325,11 @@ still in flight and crashed RADV).
 - The index ring mixed 16- and 32-bit entries without aligning the offsets, so
   every UINT32 draw after a UINT16 draw had a misaligned
   `vkCmdBindIndexBuffer` offset.
+- The uniform and index rings wrapped mid-frame, overwriting data referenced by
+  draws already recorded in the command buffer, and grew by destroying the
+  buffer that the recording command buffer still referenced. Both now grow by
+  switching to a larger buffer and deferring the old one to the next frame
+  boundary; the uniforms start at 128 MiB and indices at 64 MiB.
 - Vertex buffer deletion used to destroy the VkBuffer immediately when no frame
   was open; a previous frame still in flight could then reference a destroyed
   buffer (validation errors, RADV SIGSEGV during zone-in). All deletion now

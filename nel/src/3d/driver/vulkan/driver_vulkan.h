@@ -540,6 +540,9 @@ private:
 	void					stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data);
 	void					stageMegaMaterialUBO(CMaterial &mat, CMaterialUBOData &data);
 	uint32					allocUniformBlock(const void *data, uint32 size);
+	/// Make room for one more per-draw uniform block, growing the ring without
+	/// invalidating blocks a frame in flight may still reference.
+	bool					growUniformRing(uint32 required);
 	void					computeLightMapInfos(const CMaterial &mat);
 
 	// --- User vertex programs (driver_vulkan_vp.cpp) ---
