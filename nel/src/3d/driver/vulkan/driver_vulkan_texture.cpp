@@ -245,8 +245,18 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	if (width == 0 || height == 0)
 		return false;
 
-	if (tex.getPixelFormat() != CBitmap::RGBA)
+	CBitmap::TType sourceFormat = tex.getPixelFormat();
+	if (sourceFormat != CBitmap::RGBA)
 		tex.convertToType(CBitmap::RGBA);
+
+	if (sourceFormat == CBitmap::Alpha)
+	{
+		uint32 nonZero = 0;
+		const uint8 *px = (const uint8 *)tex.getPixels(0).getPtr();
+		for (uint p = 0; p < width * height; ++p)
+			if (px[p * 4 + 3] != 0) ++nonZero;
+		nlinfo("Vulkan: alpha texture %ux%u, %u non-transparent pixels (%s)", width, height, nonZero, typeid(tex).name());
+	}
 
 	uint mipCount = 1;
 	if (tex.mipMapOn())
@@ -334,7 +344,8 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out)
 	// Mip count is implied by the image; re-derive it from the texture.
 	if (tex.mipMapOn())
 		mipCount = max(1u, (uint)tex.getMipMapCount());
-	if (tex.getPixelFormat() != CBitmap::RGBA)
+	CBitmap::TType sourceFormat = tex.getPixelFormat();
+	if (sourceFormat != CBitmap::RGBA)
 		tex.convertToType(CBitmap::RGBA);
 
 	// Build the staging buffer and record all mip copies in one submit.
@@ -363,7 +374,23 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out)
 		uint h = tex.getHeight(i);
 		const uint8 *pixels = (const uint8 *)tex.getPixels(i).getPtr();
 		VkDeviceSize size = (VkDeviceSize)w * h * 4;
-		memcpy((uint8 *)mapped + offset, pixels, size);
+		if (sourceFormat == CBitmap::Alpha)
+		{
+			// Alpha-only textures (font glyphs) are a coverage mask: the colour
+			// comes from the material/vertex colour.
+			uint8 *dst = (uint8 *)mapped + offset;
+			for (VkDeviceSize p = 0; p < (VkDeviceSize)w * h; ++p)
+			{
+				dst[p * 4 + 0] = 255;
+				dst[p * 4 + 1] = 255;
+				dst[p * 4 + 2] = 255;
+				dst[p * 4 + 3] = pixels[p * 4 + 3];
+			}
+		}
+		else
+		{
+			memcpy((uint8 *)mapped + offset, pixels, size);
+		}
 		regions[regionCount].bufferOffset = offset;
 		regions[regionCount].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		regions[regionCount].imageSubresource.mipLevel = i;

@@ -531,6 +531,7 @@ private:
 	CRGBA					_BlendConstantColor;
 	CTextureVulkan			*_StageTextures[IDRV_PROGRAM_MAXSAMPLERS];
 	CRGBA					_MaterialColor;
+	uint32					_TexEnv[4];
 	bool					_MaterialLighting;
 	bool					_MaterialAlphaTest;
 	float					_MaterialAlphaRef;
