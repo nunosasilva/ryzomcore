@@ -105,6 +105,7 @@ CDriverVulkan::CDriverVulkan()
 	, _FogEnabled(false)
 	, _FogStart(0.f)
 	, _FogEnd(1.f)
+	, _FogColor(0, 0, 0, 0)
 	, _FogMode(FogLinear)
 	, _FogDensity(1.f)
 	, _DepthRangeNear(0.f)
@@ -155,6 +156,36 @@ CDriverVulkan::CDriverVulkan()
 	_TexturesDirty = false;
 	_ClearColorMask = 0xF;
 	memset(_StageTextures, 0, sizeof(_StageTextures));
+
+	// Light and ambient state, matching the GL3 driver's initial values.
+	_LightTableSize = 0;
+	_LightTableMode = false;
+	_LightCount = 0;
+	_NumPerPixelLights = 0;
+	memset(_Lights, 0, sizeof(_Lights));
+	memset(_LightTable, 0, sizeof(_LightTable));
+	for (uint i = 0; i < 128; ++i)
+		_LightTable[i].Entry.mode = -1;
+	memset(_LightIndices, 0xFF, sizeof(_LightIndices));
+	memset(_LightFactors, 0, sizeof(_LightFactors));
+	_ObjectAmbient = CRGBA(0, 0, 0, 255);
+	_AmbientColor = CRGBA(51, 51, 51);
+
+	_MegaEnabled = getenv("NLVK_MEGA") != NULL;
+	_MegaDescriptorSetLayout = VK_NULL_HANDLE;
+	_MegaPipelineLayout = VK_NULL_HANDLE;
+	_MegaVertexShader = VK_NULL_HANDLE;
+	_MegaLightTableStaged = false;
+	_MegaUserBuffer = VK_NULL_HANDLE;
+	_MegaUserBufferMemory = VK_NULL_HANDLE;
+	_MegaCameraDirty = true;
+	memset(&_MegaCameraData, 0, sizeof(_MegaCameraData));
+	for (uint i = 0; i < 2; ++i)
+	{
+		_MegaLightTableBuffer[i] = VK_NULL_HANDLE;
+		_MegaLightTableMemory[i] = VK_NULL_HANDLE;
+		_MegaLightTableMapped[i] = NULL;
+	}
 
 
 	// X right, Y into the screen, Z up (NeL) -> X right, Y up, Z back (graphics eye space).
@@ -721,9 +752,9 @@ bool CDriverVulkan::initVulkan()
 
 		VkDescriptorPoolSize poolSize[2];
 		poolSize[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		poolSize[0].descriptorCount = 16384;
+		poolSize[0].descriptorCount = 65536;
 		poolSize[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		poolSize[1].descriptorCount = 4096;
+		poolSize[1].descriptorCount = 32768;
 		VkDescriptorPoolCreateInfo dpci;
 		memset(&dpci, 0, sizeof(dpci));
 		dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -744,7 +775,9 @@ bool CDriverVulkan::initVulkan()
 	}
 
 	// Uniform ring: per-draw uniform slots, host visible, reset each frame.
-	_UniformRingSize = 2 * 1024 * 1024;
+	// The mega path writes camera, object and material blocks per draw, so it
+	// needs more room than the single simple-path block per draw.
+	_UniformRingSize = 8 * 1024 * 1024;
 	{
 		VkBufferCreateInfo bci;
 		memset(&bci, 0, sizeof(bci));
@@ -767,6 +800,12 @@ bool CDriverVulkan::initVulkan()
 		vkBindBufferMemory(_Device, _UniformRing, _UniformRingMemory, 0);
 		vkMapMemory(_Device, _UniformRingMemory, 0, VK_WHOLE_SIZE, 0, &_UniformRingMapped);
 		_UniformRingOffset = 0;
+	}
+
+	if (_MegaEnabled && !initMega())
+	{
+		nlwarning("Vulkan: mega shader resources unavailable, keeping the simple shader path");
+		_MegaEnabled = false;
 	}
 
 	// Put the depth buffer in the layout the render pass expects once.
@@ -881,6 +920,7 @@ void CDriverVulkan::shutdownVulkan()
 			vkDestroyShaderModule(_Device, it->second, NULL);
 		_VertexShaderVariants.clear();
 		if (_FragmentShader) { vkDestroyShaderModule(_Device, _FragmentShader, NULL); _FragmentShader = VK_NULL_HANDLE; }
+		shutdownMega();
 
 		// Ring and debug buffers.
 		if (_UniformRing) { vkDestroyBuffer(_Device, _UniformRing, NULL); _UniformRing = VK_NULL_HANDLE; }
@@ -1219,6 +1259,7 @@ bool CDriverVulkan::beginFrame()
 	_FrameOpen = true;
 	_IndexRingOffset = 0;
 	_UniformRingOffset = 0;
+	_MegaLightTableStaged = false;
 	if (_SwapBufferCounter == 0)
 	{
 		const char *dumpFrame = getenv("NLVK_SCREENSHOT_FRAME");
