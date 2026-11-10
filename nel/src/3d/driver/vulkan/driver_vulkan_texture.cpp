@@ -255,7 +255,7 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 		const uint8 *px = (const uint8 *)tex.getPixels(0).getPtr();
 		for (uint p = 0; p < width * height; ++p)
 			if (px[p * 4 + 3] != 0) ++nonZero;
-		nlinfo("Vulkan: alpha texture %ux%u, %u non-transparent pixels (%s)", width, height, nonZero, typeid(tex).name());
+		nldebug("Vulkan: alpha texture %ux%u, %u non-transparent pixels (%s)", width, height, nonZero, typeid(tex).name());
 	}
 
 	uint mipCount = 1;
@@ -326,7 +326,7 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 
 	if (sourceFormat == CBitmap::DXTC1 || sourceFormat == CBitmap::DXTC1Alpha ||
 		sourceFormat == CBitmap::DXTC3 || sourceFormat == CBitmap::DXTC5)
-		nlinfo("Vulkan: compressed texture %ux%u format=%d (%s) decompressed on upload",
+		nldebug("Vulkan: compressed texture %ux%u format=%d (%s) decompressed on upload",
 			width, height, (int)sourceFormat, typeid(tex).name());
 
 	if (!upload)

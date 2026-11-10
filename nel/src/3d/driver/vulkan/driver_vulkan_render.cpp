@@ -1240,27 +1240,6 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 		return true;
 	if (!setupMaterial(mat))
 		return false;
-	if (_IndexedDrawCount == 0 && _ArrayDrawCount == 0)
-	{
-		nlinfo("Vulkan: first quad draw: %u quads, vb=%p, stride=%u, vformat=0x%x, mat flags=0x%x, diffuse=(%u,%u,%u,%u), tex0=%p",
-			numQuads, (void *)_CurrentVB, _CurrentVB ? _CurrentVB->getVertexSize() : 0,
-			_CurrentVB ? _CurrentVB->getVertexFormat() : 0,
-			mat.getFlags(), mat.getDiffuse().R, mat.getDiffuse().G, mat.getDiffuse().B, mat.getDiffuse().A,
-			(void *)mat.getTexture(0));
-		CMatrix mvp = _GLProjMat * _ChangeBasis * _ModelViewMatrix;
-		const float *m = mvp.get();
-		nlinfo("Vulkan: mvp = [%f %f %f %f] [%f %f %f %f]", m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7]);
-		nlinfo("Vulkan: mat color=(%u,%u,%u,%u) posOff=%u posType=%d uvOff=%u uvType=%d",
-			mat.getColor().R, mat.getColor().G, mat.getColor().B, mat.getColor().A,
-			_CurrentVB->getValueOffEx(CVertexBuffer::Position), (int)_CurrentVB->getValueType(CVertexBuffer::Position),
-			_CurrentVB->getValueOffEx(CVertexBuffer::TexCoord0), (int)_CurrentVB->getValueType(CVertexBuffer::TexCoord0));
-		CVBDrvInfosVulkan *dbgInfo = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
-		if (dbgInfo && dbgInfo->_Mapped)
-		{
-			const float *v = (const float *)dbgInfo->_Mapped;
-			nlinfo("Vulkan: vertex0 = %f %f %f, vertex1 = %f %f %f", v[0], v[1], v[2], v[8], v[9], v[10]);
-		}
-	}
 
 	// Same quad index pattern as the GL3 driver: (0,1,2) and (0,2,3).
 	const uint32 QUAD_BATCH_SIZE = 2048;
