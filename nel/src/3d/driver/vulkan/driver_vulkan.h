@@ -72,7 +72,7 @@ struct CTextureVulkan
 {
 	CTextureVulkan()
 		: Image(VK_NULL_HANDLE), Memory(VK_NULL_HANDLE), View(VK_NULL_HANDLE), Sampler(VK_NULL_HANDLE)
-		, Width(0), Height(0), Layers(1), HasAlpha(false), Uploaded(false) {}
+		, Width(0), Height(0), Layers(1), HasAlpha(false), Uploaded(false), SourceFormat(CBitmap::DonTKnow) {}
 
 	VkImage			Image;
 	VkDeviceMemory	Memory;
@@ -83,6 +83,7 @@ struct CTextureVulkan
 	uint32			Layers;
 	bool			HasAlpha;
 	bool			Uploaded;
+	CBitmap::TType	SourceFormat;
 };
 
 /// Pipeline state key: everything that changes the created VkPipeline.
@@ -479,7 +480,7 @@ private:
 	bool					drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count, VkPrimitiveTopology topo);
 	VkBuffer				getIndexUploadBuffer(const void *data, uint32 size, uint32 stride);
 	void					drawTestTriangle(VkCommandBuffer cmd);
-	void					commitPushConstants(const CPipelineKey &key, VkCommandBuffer cmd, CVertexBuffer &vb);
+	bool					commitPushConstants(const CPipelineKey &key, VkCommandBuffer cmd, CVertexBuffer &vb);
 
 	// --- Textures (driver_vulkan_texture.cpp) ---
 	CTextureVulkan			*getTextureVulkan(ITexture &tex);
@@ -503,32 +504,29 @@ private:
 	std::map<ITexture *, CTextureVulkan>	_TexturesVulkan;
 	std::vector<CTextureVulkan>				_PendingTextureDestroy;
 	std::vector<std::pair<VkBuffer, VkDeviceMemory> >	_PendingBufferDestroy;
-	bool					uploadTexturePixels(ITexture &tex, CTextureVulkan &out);
+	bool					uploadTexturePixels(ITexture &tex, CTextureVulkan &out, CBitmap::TType sourceFormat);
 	std::map<uint32, std::vector<VkVertexInputAttributeDescription> >	_VertexLayouts;
 
 	// Per-frame index upload ring.
 	// Per-draw uniform data (lighting + material + matrices).
-	struct SSimpleLight
-	{
-		float	DirOrPos[4];
-		float	Diffuse[4];
-		sint32	Mode;
-		sint32	Pad[3];
-	};
+	// This layout must match the std140 NlSimple block in the shaders exactly.
 	struct SSimpleUniforms
 	{
-		float	MVP[16];
-		float	NormalMatrix[12];
-		float	Color[4];
-		float	Ambient[4];
-		float	AlphaRef;
-		sint32	Flags;
-		uint32	TexEnv[4];
-		uint32	UvRouting;
-		SSimpleLight Lights[4];
-		sint32	LightCount;
-		sint32	Pad[3];
+		float	MVP[16];				// 0
+		float	NormalMatrix[12];		// 64
+		float	Color[4];				// 112
+		float	Ambient[4];				// 128
+		float	AlphaRef;				// 144
+		sint32	Flags;					// 148
+		uint32	TexEnv[4];				// 152
+		uint32	UvRouting;				// 168
+		uint32	Pad0;					// 172
+		float	LightDirOrPos[4][4];	// 176
+		float	LightDiffuse[4][4];		// 240
+		sint32	LightCount;				// 304
+		sint32	Pad1[3];				// 308
 	};
+	static_assert(sizeof(SSimpleUniforms) == 320, "SSimpleUniforms must match the std140 NlSimple block");
 
 	VkBuffer				_UniformRing;
 	VkDeviceMemory			_UniformRingMemory;
