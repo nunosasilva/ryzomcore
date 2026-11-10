@@ -159,12 +159,11 @@ texture stages/texenv are staged incorrectly too.
 
 ## Next steps (in order of value)
 
-1. Merge/review the mega-shader work from the worktree, or port
-   `megaVPGenerate`/`megaPPGenerate` + the four builtin UBOs yourself
-   (`NlCamera` 0, `NlLightTable` 1, `NlModel` 2, `NlMaterial` 3; staging code in
-   `driver_opengl3_render_state.cpp` and `driver_opengl3_light.cpp`). Inject
-   `layout(binding=N)` by string substitution on the block names, samplers at
-   bindings 8-15.
+1. Fix the mega path's world staging (`NLVK_MEGA=1` renders the ground magenta
+   in game): port the LightMap multi-pass staging (`computeLightMapInfos`,
+   `beginLightMapMultiPass`, `setupLightMapPass` in
+   `driver_opengl3_material.cpp`) and check the terrain material's texture
+   stages/TexEnv against what the mega PP expects. Then re-verify in game.
 2. Vertex programs: reuse `convertNelvpToGLSL` and the `NlNelvpConstants` UBO;
    then GPU skinning and the wind-tree VP can compile.
 3. Render targets + bloom/FXAA/water reflection.
