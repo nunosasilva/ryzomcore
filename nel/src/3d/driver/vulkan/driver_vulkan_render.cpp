@@ -103,7 +103,7 @@ static std::string buildVertexShader(uint32 flags)
 		}
 	}
 	if (!anyUv)
-		src += "    (void)routing;\n";
+		src += "    // no vertex buffer texture coordinates: always the white fallback\n";
 	src += "    return vec2(0.0);\n";
 	src += "}\n";
 	src += "void main() {\n"
@@ -255,6 +255,15 @@ bool CDriverVulkan::compileShader(const char *glsl, VkShaderModule *outModule, b
 	if (!shader.parse(GetDefaultResources(), 450, false, EShMsgDefault))
 	{
 		nlwarning("Vulkan: shader compile failed: %s", shader.getInfoLog());
+		// Temporary developer aid: keep the rejected source for inspection.
+		if (getenv("NLVK_VP_DUMP"))
+		{
+			static int dumpCount = 0;
+			char path[256];
+			snprintf(path, sizeof(path), "%s/fail%d.glsl", getenv("NLVK_VP_DUMP"), dumpCount++);
+			FILE *f = fopen(path, "wb");
+			if (f) { fwrite(glsl, 1, strlen(glsl), f); fclose(f); }
+		}
 		return false;
 	}
 
@@ -417,8 +426,21 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	VkPipelineLayout pipelineLayout = _PipelineLayout;
 	if (key.Mega)
 	{
-		vertexShader = getMegaVertexShader();
-		fragmentShader = getMegaPixelShader(key.MegaCube != 0, true);
+		if (key.UserVP != 0)
+		{
+			std::map<uint32, VkShaderModule>::iterator vpIt = _UserVPShaders.find(key.UserVP);
+			vertexShader = vpIt != _UserVPShaders.end() ? vpIt->second : VK_NULL_HANDLE;
+			if (vertexShader == VK_NULL_HANDLE)
+			{
+				nlwarning("Vulkan: user vertex program %u is no longer compiled", key.UserVP);
+				return VK_NULL_HANDLE;
+			}
+		}
+		else
+		{
+			vertexShader = getMegaVertexShader();
+		}
+		fragmentShader = getMegaPixelShader(key.MegaCube != 0, key.MegaSpecular != 0);
 		pipelineLayout = _MegaPipelineLayout;
 	}
 	else
@@ -596,7 +618,7 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	if (res != VK_SUCCESS)
 	{
 		nlwarning("Vulkan: vkCreateGraphicsPipelines failed (%d)", (int)res);
-		if (key.Mega)
+		if (key.Mega && key.UserVP == 0)
 			_MegaEnabled = false;
 		return VK_NULL_HANDLE;
 	}
@@ -760,14 +782,9 @@ void CVBDrvInfosVulkan::ensureCapacity(uint32 size)
 	VkDevice device = driver->getDevice();
 	if (_VertexBuffer)
 	{
-		if (driver->isFrameOpen())
-			driver->deferDestroyBuffer(_VertexBuffer, _Memory);
-		else
-		{
-			vkDestroyBuffer(device, _VertexBuffer, NULL);
-			if (_Memory)
-				vkFreeMemory(device, _Memory, NULL);
-		}
+		// The buffer may still be referenced by a recorded or in-flight frame:
+		// destroy it at the next frame boundary, never immediately.
+		driver->deferDestroyBuffer(_VertexBuffer, _Memory);
 		_VertexBuffer = VK_NULL_HANDLE;
 		_Memory = VK_NULL_HANDLE;
 	}
@@ -892,9 +909,12 @@ VkBuffer CDriverVulkan::getIndexUploadBuffer(const void *data, uint32 size, uint
 	}
 	if (_IndexRingOffset + size > _IndexRingSize)
 		_IndexRingOffset = 0; // simple wrap; frame is small enough that this is fine for now
+	// Always 4-byte align: 16- and 32-bit index draws share this ring, and
+	// vkCmdBindIndexBuffer needs the offset to be a multiple of the index size.
+	_IndexRingOffset = (_IndexRingOffset + 3) & ~3u;
 	memcpy((uint8 *)_IndexRingMapped + _IndexRingOffset, data, size);
 	_IndexRingDrawOffset = _IndexRingOffset;
-	_IndexRingOffset += (size + stride - 1) / stride * stride;
+	_IndexRingOffset += (size + 3) & ~3u;
 	return _IndexRing;
 }
 
@@ -1319,7 +1339,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 	if (key.Mega)
 	{
-		if (!bindMegaDescriptors(cmd, *_CurrentVB, key.MegaCube != 0, true))
+		if (!bindMegaDescriptors(cmd, *_CurrentVB))
 			return false;
 	}
 	else
@@ -1389,7 +1409,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 	if (key.Mega)
 	{
-		if (!bindMegaDescriptors(cmd, *_CurrentVB, key.MegaCube != 0, true))
+		if (!bindMegaDescriptors(cmd, *_CurrentVB))
 			return false;
 	}
 	else
@@ -1593,7 +1613,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 			if (key.Mega)
 			{
-				if (!bindMegaDescriptors(cmd, *_CurrentVB, key.MegaCube != 0, true))
+				if (!bindMegaDescriptors(cmd, *_CurrentVB))
 				{
 					ok = false;
 					break;

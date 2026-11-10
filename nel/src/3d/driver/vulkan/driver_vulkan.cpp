@@ -173,6 +173,12 @@ CDriverVulkan::CDriverVulkan()
 	_AmbientColor = CRGBA(51, 51, 51);
 
 	_MegaEnabled = getenv("NLVK_MEGA") != NULL;
+	_MegaResourcesReady = false;
+	_ActiveUserVP = NULL;
+	_NelvpActiveUB = NULL;
+	memset(_BoundUserUB, 0, sizeof(_BoundUserUB));
+	_VPSpecularOutput = true;
+	_NextUserVPId = 0;
 	_MegaDescriptorSetLayout = VK_NULL_HANDLE;
 	_MegaPipelineLayout = VK_NULL_HANDLE;
 	_MegaVertexShader = VK_NULL_HANDLE;
@@ -815,10 +821,11 @@ bool CDriverVulkan::initVulkan()
 		_UniformRingOffset = 0;
 	}
 
-	if (_MegaEnabled && !initMega())
+	if (!initMega())
 	{
 		nlwarning("Vulkan: mega shader resources unavailable, keeping the simple shader path");
 		_MegaEnabled = false;
+		_MegaResourcesReady = false;
 	}
 
 	// Put the depth buffer in the layout the render pass expects once.
