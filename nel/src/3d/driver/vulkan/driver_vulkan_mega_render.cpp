@@ -68,7 +68,7 @@ static CMaterial::TShader getSupportedShader(CMaterial::TShader shader)
 bool CDriverVulkan::canUseMegaPath(bool &cube)
 {
 	cube = false;
-	if (!_MegaEnabled || !_CurrentMaterial)
+	if (!_MegaResourcesReady || !_CurrentMaterial)
 		return false;
 	switch (_CurrentMaterial->getShader())
 	{
@@ -103,15 +103,24 @@ bool CDriverVulkan::canUseMegaPath(bool &cube)
 void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 {
 	bool cube = false;
-	if (canUseMegaPath(cube))
+	const bool materialOk = canUseMegaPath(cube);
+	// The mega path is used for every draw when NLVK_MEGA=1 selects it, and
+	// for the draws of an active user vertex program otherwise. The latter
+	// reuses the same descriptor layout and pixel stage (see driver.h).
+	const bool userVP = hasActiveUserVPS();
+	if (materialOk && (_MegaEnabled || userVP))
 	{
 		key.Mega = 1;
 		key.MegaCube = cube ? 1 : 0;
+		key.UserVP = userVP ? _ActiveUserVP->Id : 0;
+		key.MegaSpecular = _VPSpecularOutput ? 1 : 0;
 	}
 	else
 	{
 		key.Mega = 0;
 		key.MegaCube = 0;
+		key.UserVP = 0;
+		key.MegaSpecular = 0;
 	}
 }
 
@@ -235,13 +244,30 @@ bool CDriverVulkan::initMega()
 	}
 
 	_MegaCameraDirty = true;
+	_MegaResourcesReady = true;
+	nlinfo("Vulkan: mega shader resources ready; user vertex programs enabled");
 	return true;
 }
 
 void CDriverVulkan::shutdownMega()
 {
+	_ActiveUserVP = NULL;
+	_NelvpActiveUB = NULL;
+	for (uint i = 0; i < UBBindingCount; ++i)
+		_BoundUserUB[i] = NULL;
+	_MegaResourcesReady = false;
 	if (!_Device)
+	{
+		_UserVPShaders.clear();
 		return;
+	}
+	// Program driver infos may outlive the device; clearing the map before the
+	// device dies keeps their destructors from touching destroyed modules.
+	for (std::map<uint32, VkShaderModule>::iterator it = _UserVPShaders.begin(); it != _UserVPShaders.end(); ++it)
+		if (it->second)
+			vkDestroyShaderModule(_Device, it->second, NULL);
+	_UserVPShaders.clear();
+
 	for (map<uint32, VkShaderModule>::iterator it = _MegaPixelShaderVariants.begin(); it != _MegaPixelShaderVariants.end(); ++it)
 		if (it->second)
 			vkDestroyShaderModule(_Device, it->second, NULL);
@@ -618,7 +644,7 @@ uint32 CDriverVulkan::allocUniformBlock(const void *data, uint32 size)
 // Per-draw descriptor set
 // ---------------------------------------------------------------------------
 
-bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb, bool cube, bool specular)
+bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 {
 	if (!_CurrentMaterial)
 		return false;
@@ -666,6 +692,19 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb, 
 		bufferInfos[i].buffer = _MegaUserBuffer;
 		bufferInfos[i].offset = 0;
 		bufferInfos[i].range = 256;
+	}
+	// The user vertex program reads its own block at binding 4: the
+	// NlNelvpConstants registers for a converted nelvp program, or the UBO the
+	// engine bound for a GLSL program. The skeleton block (6) stays a
+	// placeholder until the glsl3vi insert programs are supported.
+	if (_ActiveUserVP && !stageUserVPUB(bufferInfos[4]))
+		return false;
+	if (_ActiveUserVP && !_ActiveUserVP->FirstDrawLogged)
+	{
+		_ActiveUserVP->FirstDrawLogged = true;
+		nlinfo("Vulkan: first draw with user vertex program '%s' (vb format 0x%x, shader %d, texture0 %p)",
+			_ActiveUserVP->DisplayName.c_str(), vb.getVertexFormat(),
+			(int)_CurrentMaterial->getShader(), (void *)_StageTextures[0]);
 	}
 
 	VkDescriptorImageInfo imageInfos[NL_VK_MEGA_SAMPLER_COUNT];

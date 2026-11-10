@@ -1,18 +1,21 @@
 # Port Ryzom to Vulkan — handoff
 
-_Last updated: 2026-11-10, end of the unattended session_
+_Last updated: 2026-11-10, vertex programs (branch `vulkan-nelvp`)_
 
 ## Status in one line
 
 **`nel_drv_vulkan` runs the live client on Vulkan: the login screen (all text),
-the in-game UI, the sky and the landscape render, validation-clean.** Lighting,
-lightmaps, vertex programs and post effects are still missing; the world
-therefore looks flat and some meshes (vegetation) are black.
+the in-game UI, the sky, the landscape and the vegetation render, validation-clean.**
+User vertex programs (nelvp assembly and the engine's GLSL/UBO programs) compile
+and draw; lighting, lightmaps and post effects are still partial, so the world is
+flat and the player avatar is still black (CPU skinning path, no vertex program).
 
 ## Branch
 
 `main/atys-live-n-vulkan` = `main/atys-live` + OpenGL3 renderer (fast-forward
 from `origin/atys-n-gl3`, `88e72dc35`) + the Vulkan driver, pushed to `origin`.
+The vertex-program work is on local branch `vulkan-nelvp` (not pushed), based on
+`de3bc1253`.
 
 The GL2 and GL3 drivers are kept. `Driver3D="OpenGL3"` was re-tested after the
 Vulkan work: the GL3 mega shaders initialise and the client runs.
@@ -48,14 +51,13 @@ Vulkan work: the GL3 mega shaders initialise and the client runs.
 
 ## Known gaps
 
-1. **Lightmaps / shader types.** Only the TexEnv path exists. GL3's mega
-   shaders implement `CMaterial::LightMap`, `Specular`, PPL, water and fog;
-   porting them (`megaVPGenerate`/`megaPPGenerate` are pure GLSL text builders,
-   `convertNelvpToGLSL` too) is the main remaining rendering work. This is why
-   vegetation and lightmapped meshes look black.
-2. **Vertex programs.** `supportVertexProgram()`/`compileVertexProgram()` return
-   false, so NelVP skinning, GPU skinning and the wind-tree VP never run
-   (characters/vegetation are wrong or missing).
+1. **Lightmaps / shader types.** The mega shaders implement `CMaterial::LightMap`,
+   `Specular` and the TexEnv path, but not PPL, water and fog (fog is generated
+   but disabled). Lighting on many meshes is still flat; this is the main
+   remaining rendering work.
+2. **Vertex programs.** Implemented on branch `vulkan-nelvp` (see the section
+   below). Still missing: the `glsl3vi` insert profile (GPU skinning / MRM
+   geomorph), so the engine stays on CPU skinning and the avatar renders black.
 3. **Render targets.** `setRenderTarget`/`copyTargetToTexture` are stubs, so
    bloom, FXAA, water reflection and shadow maps are disabled.
 4. **Textures are never evicted** from `_TexturesVulkan` (no `ITextureDrvInfos`
@@ -90,7 +92,10 @@ Vulkan work: the GL3 mega shaders initialise and the client runs.
   between runs. Log in with `mats007 passDOSma slot 1 --nopatch 1`, or leave the
   credentials out for the login screen only.
 - Driver debug env: `NLVK_VALIDATION=1`, `NLVK_SCREENSHOT[_SEQ]`,
-  `NLVK_NOCULL=1`, `NLVK_FORCECLEAR=1`, `NLVK_TESTTRI=1`.
+  `NLVK_NOCULL=1`, `NLVK_FORCECLEAR=1`, `NLVK_TESTTRI=1`, `NLVK_NOVP=1` (no
+  user vertex programs), `NLVK_NOUBO=1` (force the nelvp/constant path),
+  `NLVK_VP_DUMP=<dir>` (GLSL of shaders that fail to compile), `NLVK_MEGA=1`
+  (mega path for every draw).
 ## GL3 mega shaders (`NLVK_MEGA=1`) — merged
 
 The GL3 mega vertex/pixel shaders and the four builtin UBOs are now in the main
@@ -119,8 +124,8 @@ Known gaps in the mega path (from the subagent that ported it):
   needs an in-game check somewhere with lightmaps (town/interior).
 - Cubemaps on stages other than 1 fall back; cubemap upload is not implemented.
 - TexGen and EMBM are not staged (the VP generator supports the modes).
-- User vertex programs (bindings 4–6) are reserved but `supportVertexProgram()`
-  is still false.
+- User vertex programs are implemented (see the `vulkan-nelvp` section below);
+  the `glsl3vi` insert profile (GPU skinning) is not.
 
 Next step there: verify a LightMap material in game (town/interior), then
 re-enable fog in the mega object UBO once fog is also ported to the simple
@@ -165,7 +170,87 @@ shading on top. Still untested in game: a `LightMap` material was not in view
 at the test spot, so the new lightmap staging needs a check on a
 static-lightmapped object. Cubemap/mega and TexGen staging are unchanged.
 
-## Build
+## Vertex programs (branch `vulkan-nelvp`)
+
+User vertex programs now compile and draw. Implemented in
+`nel/src/3d/driver/vulkan/driver_vulkan_vp.cpp` (plus small changes in the
+header, the mega resource setup and the draw path):
+
+- `convertNelvpToGLSL()` is a port of the GL3 converter. It parses nelvp with
+  `CVPParser`, emits `#version 450` GLSL with the used vertex inputs at their
+  Vulkan locations, declares **all 16 generic varyings** the mega pixel program
+  may read (Vulkan requires a matching vertex output; GL SSO did not), the
+  `NlNelvpConstants` `vec4 c[N]` block at binding 4, and the same instruction
+  set as GL3 (MOV/ARL/ADD/MUL/MAD/DP3/DP4/DST/LIT/MIN/MAX/SLT/SGE/RCP/RSQ/
+  EXPP/LOG). The epilogue rebuilds `ecPos` from `inverseProjectionBasis *
+  gl_Position` (before the z remap) for fog, always synthesizes PPL `worldPos`,
+  adds a world-space `normal` when the program reads v2, and remaps
+  `gl_Position.z` from the GL clip range to `[0, w]`.
+- Engine GLSL vertex programs (profile `glsl330v`: the wind tree, vegetable and
+  landscape UBO twins) are accepted as-is: the builtin UBO blocks and the
+  blocks described by `CSource::UniformBufferFormats` are injected at bindings
+  0-3 and 4-6, missing generic outputs are appended, and `main()` is wrapped to
+  remap the clip-depth z the same way. glsl3vi (GPU-skinning snippets) is
+  rejected: `supportVertexProgram(glsl3vi)` stays false, so the engine keeps
+  its CPU skinning path.
+- `compileVertexProgram()`/`activeVertexProgram()` compile to a VkShaderModule
+  and create a pipeline per (program, vertex layout, render state); the pipeline
+  reuses the mega descriptor set layout and mega pixel stage, and the vertex
+  stage is replaced by the user program. `CPipelineKey` gained `UserVP` and
+  `MegaSpecular`, so `m_VPSpecularOutput` (GL3 semantics) picks the pixel
+  stage variant that adds `specularColor`.
+- `setUniform1f..4ui`, the `CVector`/`CRGBAF` overloads, `setUniform4x4f`,
+  `setUniform4fv/4iv/4uiv`, `setUniformMatrix` and `setUniformFog` write into
+  the active program's `NlNelvpConstants` UBO (same register layout and matrix
+  transposes as GL3's `getNelvpUB` path). `bindUniformBuffer()` stores the
+  engine UBO for binding 4 (e.g. `NlVegetable`, `NlWindTree`, `NlLandscape`);
+  the draw uploads the right block into the per-frame uniform ring. The
+  binding is driver state, exactly like GL3: the landscape binds its shared
+  block once per frame and calls `activeVertexProgram()` again before every
+  draw, so clearing the binding on activation makes the block read zeros.
+- `supportBuiltinUBO()` stays true (landscape/wind tree/vegetable prefer their
+  GLSL UBO twins). `NLVK_NOUBO=1` forces the nelvp path for A/B testing and is
+  how the converter was verified end to end. `NLVK_NOVP=1` restores the old
+  behaviour (no user vertex programs at all). `NLVK_VP_DUMP=<dir>` writes the
+  GLSL of shaders that fail to compile.
+- `initMega()` now always runs (it only allocates the mega descriptor layout,
+  pipeline layout and light-table buffers); the mega path is still only used
+  for all draws with `NLVK_MEGA=1`, and for user-VP draws otherwise.
+
+Verified in game (character `Megana`, run dir
+`~/Projects/ryzom/ryzom_live_vk2_mega`, 1280x800, screenshots in
+`/tmp/opencode/ryzomtest/vp/`):
+
+- 24 user programs compile: the wind-tree UBO GLSL program, all 16 nelvp wind
+  tree variants, the four landscape UBO programs (including the LightMap twin)
+  and the three vegetable unlit GLSL programs (`grep "compiled user vertex"`).
+  No "failed to compile" lines.
+- UBO path (`g7/f.ppm.8400.png`): the moor now renders a textured green ground
+  with dense grass/flowers instead of the flat green backdrop, and the first
+  draw log confirms the wind-tree/landscape/vegetable programs are active.
+- nelvp path (`NLVK_NOUBO=1`, `noubo/f.ppm.9000.png`): the landscape, lit
+  vegetable and wind-tree nelvp variants all draw through
+  `NlNelvpConstants`; the ground and vegetation look the same as the UBO path.
+- `NLVK_NOVP=1` (`g5/f.ppm.11400.png`) is pixel-identical to the old flat
+  green backdrop with no vegetation, confirming the change is isolated.
+- Login screen with `NLVK_MEGA=1 NLVK_VALIDATION=1`
+  (`login_mega/f.png`): renders correctly; the only validation messages are
+  gamescope's `VkSwapchainPresentModeInfoKHR` warnings.
+
+Not fixed / out of scope here: the player avatar is still a black silhouette
+(the live client uses CPU skinning, which does not use a vertex program, and the
+simple-path material/lighting for that mesh is still wrong); background tree
+foliage and the sky are still black/white from the missing sky material and
+lighting. The `glsl3vi` insert profile (GPU skinning and MRM geomorph) is the
+next step if animated characters matter more than the remaining material work.
+
+Also fixed while testing: the simple vertex shader emitted `(void)routing;`
+(not valid GLSL) for vertex formats without texture coordinates, which made
+every such pipeline fail and spam the log; the index ring is now 4-byte
+aligned (16- and 32-bit draws share it) and vertex buffer deletion always
+defers to a frame boundary (destroying one between frames invalidated a frame
+still in flight and crashed RADV).
+
 
     cd ~/Projects/ryzom/github/atys-live/ryzomcore
     CXXFLAGS="-D__STDCPP_DEFAULT_NEW_ALIGNMENT__=16" \
@@ -201,8 +286,9 @@ static-lightmapped object. Cubemap/mega and TexGen staging are unchanged.
    LightMap passes > 0 are already in place.
 2. Verify the new LightMap multi-pass staging in game on a static-lightmapped
    object (no LightMap material was in view at the test spot).
-3. Vertex programs: reuse `convertNelvpToGLSL` and the `NlNelvpConstants` UBO;
-   then GPU skinning and the wind-tree VP can compile.
+3. Vertex programs: DONE on `vulkan-nelvp` for nelvp + glsl330v. Next is the
+   `glsl3vi` insert profile so GPU skinning and MRM geomorph can run, then the
+   avatar's CPU-skinning material/lighting path.
 4. Render targets + bloom/FXAA/water reflection.
 5. Texture eviction via an `ITextureDrvInfos` implementation.
 6. Partial texture uploads, BC textures, cubemaps.
@@ -224,6 +310,20 @@ static-lightmapped object. Cubemap/mega and TexGen staging are unchanged.
 - Shutdown now releases pipelines, layouts, pools, shaders, textures, rings and
   the debug messenger; the copied event emitter is renamed
   `CVulkanEventEmitter` to avoid duplicate symbols in static builds.
+- `(void)routing;` was emitted by the simple vertex shader for vertex formats
+  without texture coordinates; `(void)` is not valid GLSL, so every such
+  pipeline failed, spamming the log and skipping those draws.
+- The index ring mixed 16- and 32-bit entries without aligning the offsets, so
+  every UINT32 draw after a UINT16 draw had a misaligned
+  `vkCmdBindIndexBuffer` offset.
+- Vertex buffer deletion used to destroy the VkBuffer immediately when no frame
+  was open; a previous frame still in flight could then reference a destroyed
+  buffer (validation errors, RADV SIGSEGV during zone-in). All deletion now
+  goes through the deferred (frame-boundary) path.
+- `activeVertexProgram()` must not clear the bound user UBO: the landscape
+  binds its shared `NlLandscape` block once per frame and re-activates the
+  program before every draw, so clearing it made the shader read zeros (the
+  ground rendered white instead of textured).
 
 Still open from the review: texture eviction (gap 4), `getZBuffer`/`getBufferPart`,
 `supportBlendConstantColor` returns true without setting blend constants,
