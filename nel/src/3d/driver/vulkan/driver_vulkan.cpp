@@ -794,9 +794,11 @@ bool CDriverVulkan::initVulkan()
 	}
 
 	// Uniform ring: per-draw uniform slots, host visible, reset each frame.
-	// The mega path writes camera, object and material blocks per draw, so it
-	// needs more room than the single simple-path block per draw.
-	_UniformRingSize = 8 * 1024 * 1024;
+	// The mega path writes camera, object and material blocks per draw, and a
+	// user vertex program adds its own block; dense vegetation can reach tens
+	// of thousands of draws per frame, so size it generously up front and grow
+	// it without destroying a buffer a frame may still reference.
+	_UniformRingSize = 128 * 1024 * 1024;
 	{
 		VkBufferCreateInfo bci;
 		memset(&bci, 0, sizeof(bci));
