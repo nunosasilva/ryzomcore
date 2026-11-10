@@ -1,10 +1,6 @@
 FILE(GLOB SRC *.cpp *.h)
 FILE(GLOB HEADERS ../../include/nel/3d/*.h)
 
-# core4-only navigation helper. It needs CEventMouseWheel::Steps, which the
-# live event API does not have, and nothing in the live client uses it.
-LIST(FILTER SRC EXCLUDE REGEX "/nav_mouse_listener\\.cpp$")
-
 SOURCE_GROUP(Traversals FILES
         anim_detail_trav.cpp
         ../../include/nel/3d/anim_detail_trav.h
