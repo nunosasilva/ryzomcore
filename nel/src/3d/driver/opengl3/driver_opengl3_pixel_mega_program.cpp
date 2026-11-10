@@ -892,7 +892,12 @@ bool CDriverGL3::initMegaPixelPrograms()
 										{
 											nlwarning("GL3: Mega PP compilation failed (%s)", src->DisplayName.c_str());
 											delete pp;
-											return false;
+											// Same rule as the vertex loop: while testing every
+											// variant, an unbuildable combination is reported and
+											// skipped; for selectable variants it fails the init.
+											if (!m_BuildUnusedPrograms)
+												return false;
+											continue;
 										}
 #ifdef __EMSCRIPTEN__
 										EM_ASM({ window.nlStepTask('Compiling pixel shaders'); });

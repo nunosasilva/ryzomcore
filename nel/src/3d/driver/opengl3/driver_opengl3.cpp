@@ -387,9 +387,9 @@ CDriverGL3::CDriverGL3()
 	// is refused as well".
 
 #if !FINAL_VERSION && defined(NL_DEBUG)
-	m_BuildUnusedPrograms = false; // set to test compilation of all possible mega shader variants
+	m_BuildUnusedPrograms = false; // set true to test every expressible mega variant
 #else
-	m_BuildUnusedPrograms = false;
+	m_BuildUnusedPrograms = false; // set true to test every expressible mega variant (see the skip in initMegaVertexPrograms)
 #endif
 	m_UseMegaShaders = true;
 	m_UseMegaLightTableUBO = true;  // implied by m_UseMegaObjectUBO

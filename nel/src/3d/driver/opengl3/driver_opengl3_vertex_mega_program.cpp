@@ -648,6 +648,19 @@ bool CDriverGL3::initMegaVertexPrograms()
 								if (objectUBO && (!tableUBO || !cameraUBO))
 									continue;
 
+								// A linked program may not have non-UBO uniforms - compileProgram()
+								// rejects it - and the model-view-projection matrix this vertex
+								// program needs is only in the object UBO, so a linked variant
+								// without it is not "unused" but impossible. This check is
+								// deliberately outside the m_BuildUnusedPrograms branch: with that
+								// debug switch on, building those variants made
+								// initMegaVertexPrograms() fail and the driver silently drop to
+								// per-material shaders (measured 2026-11-10: 16 unbuildable
+								// variants, every one of them linked=1,obj=0), which defeats the
+								// point of a switch meant to test every variant's compilation.
+								if (linked && !objectUBO)
+									continue;
+
 								// Skip variants that won't be selected at runtime
 								if (!m_BuildUnusedPrograms)
 								{
@@ -688,7 +701,14 @@ bool CDriverGL3::initMegaVertexPrograms()
 								{
 									nlwarning("GL3: Mega VP compilation failed (%s)", src->DisplayName.c_str());
 									delete vp;
-									return false;
+									// When testing every variant, a combination the driver cannot
+									// select must not take the whole driver down: report it and
+									// continue. When building only selectable variants, a failure
+									// is fatal for the mega path and the caller falls back to
+									// per-material shaders.
+									if (!m_BuildUnusedPrograms)
+										return false;
+									continue;
 								}
 #ifdef __EMSCRIPTEN__
 								EM_ASM({ window.nlStepTask('Compiling vertex shaders'); });
