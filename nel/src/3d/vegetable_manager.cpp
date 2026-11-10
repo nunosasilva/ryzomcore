@@ -685,6 +685,47 @@ static const char* VegetableVPCodeGLSL_Body =
 	"\tecPos = inverseProjectionBasis * gl_Position;\n"
 	"}\n";
 
+// ***************************************************************************
+/** The nelvp source of a vegetation vertex program, for one render pass.
+
+	Split out of CVertexProgramVeget's constructor so nelvp_glsl_test converts the *same*
+	strings the manager ships: these programs are the fallback path for drivers without
+	builtin-UBO support (and for the lit passes everywhere), and a converter regression in
+	them would silently remove that fallback.
+*/
+void	buildVegetableNelvpSource(uint vpType, bool fogEnabled, std::string &vpgram)
+{
+	// start always with Bend.
+	if( vpType==NL3D_VEGETABLE_RDRPASS_LIGHTED || vpType==NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED )
+		vpgram= NL3D_BendProgram;
+	else
+		vpgram= NL3D_FastBendProgram;
+
+	// combine the VP according to Type
+	switch(vpType)
+	{
+	case NL3D_VEGETABLE_RDRPASS_LIGHTED:
+	case NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED:
+		vpgram+= string(NL3D_LightedStartVegetableProgram);
+		break;
+	case NL3D_VEGETABLE_RDRPASS_UNLIT:
+	case NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED:
+		vpgram+= string(NL3D_UnlitVegetableProgram);
+		break;
+	case NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED_ZSORT:
+		vpgram+= string(NL3D_UnlitAlphaBlendVegetableProgram);
+		break;
+	}
+
+	// common end of VP
+	vpgram+= string(NL3D_CommonEndVegetableProgram);
+
+	if (fogEnabled)
+		vpgram+= string(NL3D_VegetableProgramFog);
+
+	vpgram+="\nEND\n";
+}
+
 class CVertexProgramVeget : public CVertexProgram
 {
 public:
@@ -730,47 +771,19 @@ public:
 			
 			// Init the Vertex Program.
 			string	vpgram;
-			// start always with Bend.
-			if( vpType==NL3D_VEGETABLE_RDRPASS_LIGHTED || vpType==NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED )
-			{
-				source->DisplayName += "/Bend";
-				vpgram= NL3D_BendProgram;
-			}
-			else
-			{
-				source->DisplayName += "/FastBend";
-				vpgram= NL3D_FastBendProgram;
-			}
-
-			// combine the VP according to Type
+			buildVegetableNelvpSource(vpType, fogEnabled, vpgram);
+			source->DisplayName += (vpType==NL3D_VEGETABLE_RDRPASS_LIGHTED ||
+				vpType==NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED) ? "/Bend" : "/FastBend";
 			switch(vpType)
 			{
 			case NL3D_VEGETABLE_RDRPASS_LIGHTED:
-			case NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED:
-				source->DisplayName += "/Lighted";
-				vpgram+= string(NL3D_LightedStartVegetableProgram);
-				break;
+			case NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED:		source->DisplayName += "/Lighted"; break;
 			case NL3D_VEGETABLE_RDRPASS_UNLIT:
-			case NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED:
-				source->DisplayName += "/Unlit";
-				vpgram+= string(NL3D_UnlitVegetableProgram);
-				break;
-			case NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED_ZSORT:
-				source->DisplayName += "/UnlitAlphaBlend";
-				vpgram+= string(NL3D_UnlitAlphaBlendVegetableProgram);
-				break;
+			case NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED:		source->DisplayName += "/Unlit"; break;
+			case NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED_ZSORT:	source->DisplayName += "/UnlitAlphaBlend"; break;
 			}
-
-			// common end of VP
-			vpgram+= string(NL3D_CommonEndVegetableProgram);
-
 			if (fogEnabled)
-			{
 				source->DisplayName += "/Fog";
-				vpgram+= string(NL3D_VegetableProgramFog);
-			}
-
-			vpgram+="\nEND\n";
 
 			source->setSource(vpgram);
 

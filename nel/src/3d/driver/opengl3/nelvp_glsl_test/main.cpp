@@ -47,6 +47,7 @@
 #include <nel/3d/program.h>
 #include <nel/3d/uniform_buffer_format.h>
 #include <nel/3d/vertex_program.h>
+#include <nel/3d/vegetable_def.h>
 
 using namespace NL3D;
 
@@ -501,6 +502,69 @@ static void testUnsupportedOutput()
 	checkHas(glsl, "_nelvpDroppedOut = v0;", "unsupported output: the write is redirected, not deleted");
 }
 
+
+// ----------------------------------------------------------------------------
+// The vegetation programs (the fallback for drivers without builtin UBOs, and the
+// only path for the lit passes). Same rule as the landscape cases: convert the real
+// shipped source, not a mock, so a converter regression cannot silently remove the
+// fallback. The composition comes from buildVegetableNelvpSource() - the function the
+// manager itself calls - so this cannot drift from what the engine ships.
+// ----------------------------------------------------------------------------
+namespace NL3D { void buildVegetableNelvpSource(uint vpType, bool fogEnabled, std::string &vpgram); }
+
+static void testVegetableProgram(uint vpType, bool fogEnabled, const std::string &tag)
+{
+	NL3D::CVertexProgram vp;
+	IProgram::CSource *nelvpSrc = new IProgram::CSource();
+	nelvpSrc->Profile = IProgram::nelvp;
+	nelvpSrc->DisplayName = "nelvp/Veget";
+	std::string body;
+	NL3D::buildVegetableNelvpSource(vpType, fogEnabled, body);
+	nelvpSrc->setSource(body);
+	vp.addSource(nelvpSrc);
+
+	check(vp.getSourceNb() == 1, tag + ": program starts with one nelvp source");
+
+	IProgram::CSource *src = convertAndFetch(vp, true, false);
+	if (src == nullptr)
+	{
+		std::cout << "  (no source generated for " << tag << ", remaining checks skipped)" << std::endl;
+		return;
+	}
+
+	const std::string glsl(src->SourcePtr, src->SourceLen);
+	dumpIfAsked(tag, glsl);
+
+	// --- what the driver needs to link it with the mega PP --------------------
+	check(src->Profile == IProgram::glsl300esv, tag + ": linked profile");
+	check(src->Features.UsesCameraUBO, tag + ": fog epilogue reads inverseProjectionBasis");
+	check(src->Features.VPVertexFormat != 0, tag + ": input attributes described");
+
+	// --- the two behaviours the hand-written twin had to reproduce -------------
+	// (1) RSQ is emitted as inversesqrt(abs(x)) - the bend normalisation depends on it.
+	check(glsl.find("inversesqrt") != std::string::npos, tag + ": RSQ -> inversesqrt");
+	// (2) VP1.0 colour outputs are clamped; without this the z-sort fade alpha
+	//     exceeds 1 and extra alpha-tested geometry passes (measured: 11385 px).
+	check(glsl.find("clamp(diffuseColor") != std::string::npos,
+		tag + ": colour outputs must stay clamped");
+	// (3) the unlit passes read the wind LUT through a dynamic constant-register index
+	//     (ARL/A0); the lit passes use the quaternion bend instead and have no LUT.
+	const bool lit = (vpType == NL3D_VEGETABLE_RDRPASS_LIGHTED ||
+	                  vpType == NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED);
+	if (!lit)
+		check(glsl.find("A0x") != std::string::npos, tag + ": LUT index goes through ARL/A0");
+	else
+		check(glsl.find("A0x") == std::string::npos, tag + ": the lit bend has no LUT index");
+
+	if (vpType == NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED_ZSORT)
+		check(glsl.find("c[11].x") != std::string::npos,
+			tag + ": the z-sort pass must fade on distance (c[11].x)");
+	// o[FOGC] is deliberately dropped by the converter: the mega pixel program computes fog
+	// per fragment from ecPos. Asserting its absence pins that behaviour (it is what makes
+	// the hand-written twin and the nelvp path agree).
+	check(glsl.find("FOGC") == std::string::npos, tag + ": converter drops the nelvp fog coordinate");
+}
+
 static void testRefusals()
 {
 	// A program with no nelvp source: nothing to convert, must say so and add nothing.
@@ -550,6 +614,16 @@ static void testRefusals()
 // ----------------------------------------------------------------------------
 sint main(sint argc, char *argv[])
 {
+
+	// Track D.2: the vegetation nelvp programs are the fallback for drivers without
+	// builtin UBO support - convert all shipped variants.
+	testVegetableProgram(NL3D_VEGETABLE_RDRPASS_UNLIT, false, "veg/unlit");
+	testVegetableProgram(NL3D_VEGETABLE_RDRPASS_UNLIT, true, "veg/unlit+fog");
+	testVegetableProgram(NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED, false, "veg/unlit2s");
+	testVegetableProgram(NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED_ZSORT, false, "veg/unlitzsort");
+	testVegetableProgram(NL3D_VEGETABLE_RDRPASS_UNLIT_2SIDED_ZSORT, true, "veg/unlitzsort+fog");
+	testVegetableProgram(NL3D_VEGETABLE_RDRPASS_LIGHTED, false, "veg/lighted");
+	testVegetableProgram(NL3D_VEGETABLE_RDRPASS_LIGHTED_2SIDED, true, "veg/lighted2s+fog");
 	gDump = (argc > 1 && std::string(argv[1]) == "--dump");
 
 	std::cout << "nelvp -> GLSL converter test" << std::endl;
