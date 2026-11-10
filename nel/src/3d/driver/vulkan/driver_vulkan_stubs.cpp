@@ -146,7 +146,9 @@ bool CDriverVulkan::supportWorldSpacePPL() const
 
 float CDriverVulkan::getClipSpaceZMin() const
 {
-	return 0.f;
+	// Matrices from CMatrix::frustum()/ortho() are GL-style (z in [-1, 1]); the
+	// vertex shader converts them to Vulkan's [0, 1] clip space.
+	return -1.f;
 }
 
 void CDriverVulkan::forceNormalize(bool normalize)
