@@ -103,7 +103,7 @@ static std::string buildVertexShader(uint32 flags)
 		}
 	}
 	if (!anyUv)
-		src += "    (void)routing;\n";
+		src += "    // no vertex buffer texture coordinates: always the white fallback\n";
 	src += "    return vec2(0.0);\n";
 	src += "}\n";
 	src += "void main() {\n"
@@ -255,6 +255,15 @@ bool CDriverVulkan::compileShader(const char *glsl, VkShaderModule *outModule, b
 	if (!shader.parse(GetDefaultResources(), 450, false, EShMsgDefault))
 	{
 		nlwarning("Vulkan: shader compile failed: %s", shader.getInfoLog());
+		// Temporary developer aid: keep the rejected source for inspection.
+		if (getenv("NLVK_VP_DUMP"))
+		{
+			static int dumpCount = 0;
+			char path[256];
+			snprintf(path, sizeof(path), "%s/fail%d.glsl", getenv("NLVK_VP_DUMP"), dumpCount++);
+			FILE *f = fopen(path, "wb");
+			if (f) { fwrite(glsl, 1, strlen(glsl), f); fclose(f); }
+		}
 		return false;
 	}
 
@@ -417,8 +426,21 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	VkPipelineLayout pipelineLayout = _PipelineLayout;
 	if (key.Mega)
 	{
-		vertexShader = getMegaVertexShader();
-		fragmentShader = getMegaPixelShader(key.MegaCube != 0, true);
+		if (key.UserVP != 0)
+		{
+			std::map<uint32, VkShaderModule>::iterator vpIt = _UserVPShaders.find(key.UserVP);
+			vertexShader = vpIt != _UserVPShaders.end() ? vpIt->second : VK_NULL_HANDLE;
+			if (vertexShader == VK_NULL_HANDLE)
+			{
+				nlwarning("Vulkan: user vertex program %u is no longer compiled", key.UserVP);
+				return VK_NULL_HANDLE;
+			}
+		}
+		else
+		{
+			vertexShader = getMegaVertexShader();
+		}
+		fragmentShader = getMegaPixelShader(key.MegaCube != 0, key.MegaSpecular != 0);
 		pipelineLayout = _MegaPipelineLayout;
 	}
 	else
@@ -596,7 +618,7 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	if (res != VK_SUCCESS)
 	{
 		nlwarning("Vulkan: vkCreateGraphicsPipelines failed (%d)", (int)res);
-		if (key.Mega)
+		if (key.Mega && key.UserVP == 0)
 			_MegaEnabled = false;
 		return VK_NULL_HANDLE;
 	}
@@ -760,14 +782,9 @@ void CVBDrvInfosVulkan::ensureCapacity(uint32 size)
 	VkDevice device = driver->getDevice();
 	if (_VertexBuffer)
 	{
-		if (driver->isFrameOpen())
-			driver->deferDestroyBuffer(_VertexBuffer, _Memory);
-		else
-		{
-			vkDestroyBuffer(device, _VertexBuffer, NULL);
-			if (_Memory)
-				vkFreeMemory(device, _Memory, NULL);
-		}
+		// The buffer may still be referenced by a recorded or in-flight frame:
+		// destroy it at the next frame boundary, never immediately.
+		driver->deferDestroyBuffer(_VertexBuffer, _Memory);
 		_VertexBuffer = VK_NULL_HANDLE;
 		_Memory = VK_NULL_HANDLE;
 	}
@@ -862,39 +879,62 @@ bool CDriverVulkan::activeIndexBuffer(CIndexBuffer &ib)
 
 VkBuffer CDriverVulkan::getIndexUploadBuffer(const void *data, uint32 size, uint32 stride)
 {
-	if (_IndexRing == VK_NULL_HANDLE)
+	(void)stride;
+	const uint32 required = _IndexRingOffset + size;
+	if (_IndexRing == VK_NULL_HANDLE || required > _IndexRingSize)
 	{
-		if (_IndexRing)
-		{
-			vkDestroyBuffer(_Device, _IndexRing, NULL);
-			vkFreeMemory(_Device, _IndexRingMemory, NULL);
-		}
-		_IndexRingSize = 16 * 1024 * 1024u;
+		uint32 newSize = _IndexRingSize ? _IndexRingSize : 64 * 1024 * 1024u;
+		while (newSize < size || newSize < required)
+			newSize *= 2;
 		VkBufferCreateInfo bci;
 		memset(&bci, 0, sizeof(bci));
 		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-		bci.size = _IndexRingSize;
+		bci.size = newSize;
 		bci.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 		bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		vkCreateBuffer(_Device, &bci, NULL, &_IndexRing);
+		VkBuffer buffer = VK_NULL_HANDLE;
+		if (vkCreateBuffer(_Device, &bci, NULL, &buffer) != VK_SUCCESS)
+			return VK_NULL_HANDLE;
 		VkMemoryRequirements req;
-		vkGetBufferMemoryRequirements(_Device, _IndexRing, &req);
+		vkGetBufferMemoryRequirements(_Device, buffer, &req);
 		VkMemoryAllocateInfo mai;
 		memset(&mai, 0, sizeof(mai));
 		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		mai.allocationSize = req.size;
 		mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		vkAllocateMemory(_Device, &mai, NULL, &_IndexRingMemory);
-		vkBindBufferMemory(_Device, _IndexRing, _IndexRingMemory, 0);
-		vkMapMemory(_Device, _IndexRingMemory, 0, VK_WHOLE_SIZE, 0, &_IndexRingMapped);
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		if (vkAllocateMemory(_Device, &mai, NULL, &memory) != VK_SUCCESS)
+		{
+			vkDestroyBuffer(_Device, buffer, NULL);
+			return VK_NULL_HANDLE;
+		}
+		vkBindBufferMemory(_Device, buffer, memory, 0);
+		void *mapped = NULL;
+		if (vkMapMemory(_Device, memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS)
+		{
+			vkDestroyBuffer(_Device, buffer, NULL);
+			vkFreeMemory(_Device, memory, NULL);
+			return VK_NULL_HANDLE;
+		}
+		// The old ring is still referenced by the command buffer being
+		// recorded (and possibly the other in-flight frame); release it at the
+		// next frame boundary.
+		if (_IndexRing)
+			deferDestroyBuffer(_IndexRing, _IndexRingMemory);
+		_IndexRing = buffer;
+		_IndexRingMemory = memory;
+		_IndexRingMapped = mapped;
+		_IndexRingSize = newSize;
 		_IndexRingOffset = 0;
+		nlinfo("Vulkan: index ring grown to %u bytes", newSize);
 	}
-	if (_IndexRingOffset + size > _IndexRingSize)
-		_IndexRingOffset = 0; // simple wrap; frame is small enough that this is fine for now
+	// Always 4-byte align: 16- and 32-bit index draws share this ring, and
+	// vkCmdBindIndexBuffer needs the offset to be a multiple of the index size.
+	_IndexRingOffset = (_IndexRingOffset + 3) & ~3u;
 	memcpy((uint8 *)_IndexRingMapped + _IndexRingOffset, data, size);
 	_IndexRingDrawOffset = _IndexRingOffset;
-	_IndexRingOffset += (size + stride - 1) / stride * stride;
+	_IndexRingOffset += (size + 3) & ~3u;
 	return _IndexRing;
 }
 
@@ -1191,36 +1231,8 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	const uint32 slot = 512;
 	if (_UniformRingOffset + slot > _UniformRingSize)
 	{
-		// Wrapping mid-frame would overwrite data already referenced by recorded
-		// commands; grow the ring instead.
-		vkDeviceWaitIdle(_Device);
-		if (_UniformRing)
-		{
-			vkDestroyBuffer(_Device, _UniformRing, NULL);
-			vkFreeMemory(_Device, _UniformRingMemory, NULL);
-		}
-		_UniformRingSize *= 2;
-		VkBufferCreateInfo bci;
-		memset(&bci, 0, sizeof(bci));
-		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-		bci.size = _UniformRingSize;
-		bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-		bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		if (vkCreateBuffer(_Device, &bci, NULL, &_UniformRing) != VK_SUCCESS)
+		if (!growUniformRing(slot))
 			return false;
-		VkMemoryRequirements req;
-		vkGetBufferMemoryRequirements(_Device, _UniformRing, &req);
-		VkMemoryAllocateInfo mai;
-		memset(&mai, 0, sizeof(mai));
-		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		mai.allocationSize = req.size;
-		mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		if (vkAllocateMemory(_Device, &mai, NULL, &_UniformRingMemory) != VK_SUCCESS)
-			return false;
-		vkBindBufferMemory(_Device, _UniformRing, _UniformRingMemory, 0);
-		vkMapMemory(_Device, _UniformRingMemory, 0, VK_WHOLE_SIZE, 0, &_UniformRingMapped);
-		_UniformRingOffset = 0;
 	}
 	uint8 *dst = (uint8 *)_UniformRingMapped + _UniformRingOffset;
 	memcpy(dst, &u, sizeof(u));
@@ -1319,7 +1331,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 	if (key.Mega)
 	{
-		if (!bindMegaDescriptors(cmd, *_CurrentVB, key.MegaCube != 0, true))
+		if (!bindMegaDescriptors(cmd, *_CurrentVB))
 			return false;
 	}
 	else
@@ -1389,7 +1401,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 	if (key.Mega)
 	{
-		if (!bindMegaDescriptors(cmd, *_CurrentVB, key.MegaCube != 0, true))
+		if (!bindMegaDescriptors(cmd, *_CurrentVB))
 			return false;
 	}
 	else
@@ -1593,7 +1605,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 			if (key.Mega)
 			{
-				if (!bindMegaDescriptors(cmd, *_CurrentVB, key.MegaCube != 0, true))
+				if (!bindMegaDescriptors(cmd, *_CurrentVB))
 				{
 					ok = false;
 					break;
