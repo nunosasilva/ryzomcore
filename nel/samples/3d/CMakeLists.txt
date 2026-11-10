@@ -80,7 +80,11 @@ IF(WITH_DRIVER_OPENGL3 AND (WITH_NEL_TESTS OR WITH_TESTING))
         SET_TESTS_PROPERTIES(nel_gl3_smoke_water_assets
                              PROPERTIES
                              WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-                             ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1;NL_GRAPHICS_DIR=${NL_WATER_ASSETS}"
+                             # Measured under Xvfb at 800x600: with the water shape the frame has
+                             # 11050-11107 unique colours, without it 158-159 (sky checker + cube). A
+                             # floor of 1000 therefore fails if the surface stops rendering, which is
+                             # exactly what the plain nel_gl3_smoke_water could not do.
+                             ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1;NL_GRAPHICS_DIR=${NL_WATER_ASSETS};SMOKE_MIN_COLOURS=1000"
                              TIMEOUT 45)
         MESSAGE(STATUS "nl_sample_water: assets found at ${NL_WATER_ASSETS}, water smoke test registered")
       ENDIF()

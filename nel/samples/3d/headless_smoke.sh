@@ -4,6 +4,8 @@
 #
 # Runs the sample under Xvfb + the Mesa software renderer and fails if the sample
 # dies early, if the driver logs an error, or if the captured frame is blank.
+# SMOKE_MIN_COLOURS=<n> raises the unique-colour floor above 1, for samples that draw *some*
+#   frame even when their subject failed to load (see the water sample's assets).
 # The frame check is numeric (unique colour count), not a human look: a black
 # window must fail the test, otherwise "it ran" would hide "it drew nothing".
 #
@@ -145,8 +147,18 @@ if [ -s "$FRAME" ]; then
   COLORS=$(identify -format "%k" "$FRAME" 2>/dev/null)
   SIZE=$(identify -format "%wx%h" "$FRAME" 2>/dev/null)
   echo "frame: $SIZE, unique colours: $COLORS"
-  if [ -z "${COLORS:-}" ] || [ "${COLORS:-0}" -le 1 ]; then
-    echo "FAIL: captured frame is blank ($COLORS unique colours)"
+  # SMOKE_MIN_COLOURS raises the bar above "not blank" for samples whose point is a specific
+  # surface: nl_sample_water draws its sky checker and cube even when the water shape failed to
+  # load (32 unique colours) and draws the wave-distorted surface when it did (849), so a floor
+  # of ~100 is what makes it a water test rather than a "did it crash" test. Default 1 keeps
+  # every other sample exactly as strict as it was.
+  MIN_COLOURS=${SMOKE_MIN_COLOURS:-1}
+  if [ -z "${COLORS:-}" ] || [ "${COLORS:-0}" -le "$MIN_COLOURS" ]; then
+    if [ "$MIN_COLOURS" -le 1 ]; then
+      echo "FAIL: captured frame is blank ($COLORS unique colours)"
+    else
+      echo "FAIL: captured frame has $COLORS unique colours, need more than $MIN_COLOURS"
+    fi
     fail=1
   fi
 else
