@@ -21,6 +21,9 @@
 //   nl_sample_specular --cube     stage 1 is a cube map: the driver then generates the
 //                                 reflection-map coordinate instead of the sphere map
 //   nl_sample_specular --legacy   fixed-function GL driver (reference implementation of Specular)
+//   nl_sample_specular --cutout   transparent bands in the surface texture + alpha test, on the
+//                                 Normal shader (the only one with a tex-env path), no blending:
+//                                 the only thing hiding the geometry is the alpha test
 //   nl_sample_specular --spin     animation, for looking at it
 //
 // MULTI-ARCH: same pattern as the other samples — C++98 only, `sint main`, emscripten builds the
@@ -63,7 +66,7 @@ using namespace NL3D;
 // ----------------------------------------------------------------------------
 static const uint TEX_SIZE = 128;
 
-static void fillChecker(uint8 *pixels)
+static void fillChecker(uint8 *pixels, bool cutout)
 {
 	for (uint y = 0; y < TEX_SIZE; ++y)
 	{
@@ -74,7 +77,9 @@ static void fillChecker(uint8 *pixels)
 			p[0] = on ? 220 : 40;
 			p[1] = on ? 180 : 60;
 			p[2] = on ? 60 : 90;
-			p[3] = 255;
+			// --cutout: transparent bands through the surface texture, so the only thing hiding
+			// the geometry is the alpha test.
+			p[3] = (cutout && ((y / 16) & 1) && on) ? 0 : 255;
 		}
 	}
 }
@@ -204,13 +209,14 @@ static CMatrix buildCamWorldMatrix(const CVector &eye, const CVector &target, co
 class CSpecularDemo
 {
 public:
-	CSpecularDemo(bool normalMaterial, bool legacy, bool cubeMap)
+	CSpecularDemo(bool normalMaterial, bool legacy, bool cubeMap, bool cutout)
 	{
 		_NormalMaterial = normalMaterial;
 		_LegacyDriver = legacy;
 		_CloseWindow = false;
 		_Spin = false;
 		_CubeMap = cubeMap; // must be known before the textures are built below
+		_Cutout = cutout;
 		_Frame = 0;
 		_Driver = NULL;
 
@@ -251,7 +257,7 @@ public:
 		// of this sample looked like: two random colours instead of the generated patterns.
 		const uint32 texBytes = TEX_SIZE * TEX_SIZE * 4;
 		uint8 *px = new uint8[texBytes];
-		fillChecker(px);
+		fillChecker(px, _Cutout);
 		CTextureMem *texSurface = new CTextureMem(px, texBytes, true, false, TEX_SIZE, TEX_SIZE, CBitmap::RGBA);
 		texSurface->setWrapS(ITexture::Clamp);
 		texSurface->setWrapT(ITexture::Clamp);
@@ -307,6 +313,20 @@ public:
 		// the coordinates itself and ignores it.
 		if (_LegacyDriver)
 			mat->setColor(CRGBA(255, 255, 255));
+		if (_Cutout)
+		{
+			// The alpha test needs two things a hand-built material does not get for free: the
+			// wrapper's alpha taken from the texture (CMaterial::texEnvOpAlpha asserts
+			// _ShaderType==Normal, so this only exists for the Normal shader - the Specular shader
+			// has no tex-env path at all) and the test itself. Measured both ways: with these two
+			// lines an all-transparent texture discards the whole sphere; without them it renders
+			// solid even with nlAlphaTest=1 in the material block.
+			mat->setBlend(false);
+			mat->setAlphaTest(true);
+			mat->setAlphaTestThreshold(0.5f);
+			mat->texEnvOpAlpha(0, CMaterial::Replace);
+			mat->texEnvArg0Alpha(0, CMaterial::Texture, CMaterial::SrcAlpha);
+		}
 		_Mat.setZWrite(true);
 		_Mat.setZFunc(UMaterial::lessequal);
 
@@ -372,6 +392,7 @@ private:
 	bool			_CloseWindow;
 	bool			_Spin;
 	bool			_CubeMap;
+	bool			_Cutout;
 	uint			_Frame;
 
 	UMaterial		_Mat;
@@ -388,6 +409,7 @@ sint main(sint argc, char **argv)
 	bool legacy = false;
 	bool spin = false;
 	bool cubeMap = false;
+	bool cutout = false;
 	sint maxFrames = 0; // 0 = run until the window is closed
 	for (sint i = 1; i < argc; ++i)
 	{
@@ -401,10 +423,12 @@ sint main(sint argc, char **argv)
 			spin = true;
 		else if (strcmp(argv[i], "--cube") == 0)
 			cubeMap = true;
+		else if (strcmp(argv[i], "--cutout") == 0)
+			cutout = true;
 	}
 
 #ifdef __EMSCRIPTEN__
-	static CSpecularDemo *demo = new CSpecularDemo(normalMaterial, legacy, cubeMap);
+	static CSpecularDemo *demo = new CSpecularDemo(normalMaterial || cutout, legacy, cubeMap, cutout);
 	demo->setSpin(spin);
 	static sint framesLeft = maxFrames;
 	struct CLoop {
@@ -417,7 +441,7 @@ sint main(sint argc, char **argv)
 	};
 	emscripten_set_main_loop(CLoop::run, 0, 1);
 #else
-	CSpecularDemo demo(normalMaterial, legacy, cubeMap);
+	CSpecularDemo demo(normalMaterial || cutout, legacy, cubeMap, cutout);
 	demo.setSpin(spin);
 	while (!demo.mustClose() && (maxFrames == 0 || (sint)demo.getFrame() < maxFrames))
 	{

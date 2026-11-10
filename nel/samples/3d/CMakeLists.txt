@@ -76,6 +76,16 @@ IF(WITH_DRIVER_OPENGL3 AND (WITH_NEL_TESTS OR WITH_TESTING))
                            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
                            ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1"
                            TIMEOUT 40)
+      # Alpha test: --cutout implies the Normal shader (the only one with a tex-env path) and
+      # turns the surface texture's bands transparent, so the alpha test is what hides them.
+      ADD_TEST(NAME nel_gl3_smoke_specular_cutout
+               COMMAND ${NL_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/headless_smoke.sh
+                       14 $<TARGET_FILE:nl_sample_specular> --cutout)
+      SET_TESTS_PROPERTIES(nel_gl3_smoke_specular_cutout
+                           PROPERTIES
+                           WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+                           ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1"
+                           TIMEOUT 40)
     ENDIF()
   ENDIF()
 ENDIF()
