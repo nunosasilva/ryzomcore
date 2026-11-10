@@ -702,17 +702,9 @@ CVBDrvInfosVulkan::~CVBDrvInfosVulkan()
 	CDriverVulkan *driver = static_cast<CDriverVulkan *>(_Driver);
 	if (driver && driver->getDevice())
 	{
+		// The buffer may still be referenced by a recorded or in-flight frame.
 		if (_VertexBuffer)
-		{
-			if (driver->isFrameOpen())
-				driver->deferDestroyBuffer(_VertexBuffer, _Memory);
-			else
-			{
-				vkDestroyBuffer(driver->getDevice(), _VertexBuffer, NULL);
-				if (_Memory)
-					vkFreeMemory(driver->getDevice(), _Memory, NULL);
-			}
-		}
+			driver->deferDestroyBuffer(_VertexBuffer, _Memory);
 	}
 }
 
