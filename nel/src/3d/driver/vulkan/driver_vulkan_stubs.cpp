@@ -325,21 +325,6 @@ bool CDriverVulkan::isVertexProgramEmulated() const
 	return false;
 }
 
-bool CDriverVulkan::supportVertexProgram(CVertexProgram::TProfile profile) const
-{
-	return false;
-}
-
-bool CDriverVulkan::compileVertexProgram(CVertexProgram *program)
-{
-	return false;
-}
-
-bool CDriverVulkan::activeVertexProgram(CVertexProgram *program)
-{
-	return false;
-}
-
 bool CDriverVulkan::supportPixelProgram(CPixelProgram::TProfile profile) const
 {
 	return false;
@@ -368,90 +353,6 @@ bool CDriverVulkan::compileGeometryProgram(CGeometryProgram *program)
 bool CDriverVulkan::activeGeometryProgram(CGeometryProgram *program)
 {
 	return false;
-}
-
-void CDriverVulkan::setUniform1f(TProgram program, uint index, float f0)
-{
-}
-
-void CDriverVulkan::setUniform2f(TProgram program, uint index, float f0, float f1)
-{
-}
-
-void CDriverVulkan::setUniform3f(TProgram program, uint index, float f0, float f1, float f2)
-{
-}
-
-void CDriverVulkan::setUniform4f(TProgram program, uint index, float f0, float f1, float f2, float f3)
-{
-}
-
-void CDriverVulkan::setUniform1i(TProgram program, uint index, sint32 i0)
-{
-}
-
-void CDriverVulkan::setUniform2i(TProgram program, uint index, sint32 i0, sint32 i1)
-{
-}
-
-void CDriverVulkan::setUniform3i(TProgram program, uint index, sint32 i0, sint32 i1, sint32 i2)
-{
-}
-
-void CDriverVulkan::setUniform4i(TProgram program, uint index, sint32 i0, sint32 i1, sint32 i2, sint32 i3)
-{
-}
-
-void CDriverVulkan::setUniform1ui(TProgram program, uint index, uint32 ui0)
-{
-}
-
-void CDriverVulkan::setUniform2ui(TProgram program, uint index, uint32 ui0, uint32 ui1)
-{
-}
-
-void CDriverVulkan::setUniform3ui(TProgram program, uint index, uint32 ui0, uint32 ui1, uint32 ui2)
-{
-}
-
-void CDriverVulkan::setUniform4ui(TProgram program, uint index, uint32 ui0, uint32 ui1, uint32 ui2, uint32 ui3)
-{
-}
-
-void CDriverVulkan::setUniform3f(TProgram program, uint index, const NLMISC::CVector& v)
-{
-}
-
-void CDriverVulkan::setUniform4f(TProgram program, uint index, const NLMISC::CVector& v, float f3)
-{
-}
-
-void CDriverVulkan::setUniform4f(TProgram program, uint index, const NLMISC::CRGBAF& rgba)
-{
-}
-
-void CDriverVulkan::setUniform4x4f(TProgram program, uint index, const NLMISC::CMatrix& m)
-{
-}
-
-void CDriverVulkan::setUniform4fv(TProgram program, uint index, size_t num, const float *src)
-{
-}
-
-void CDriverVulkan::setUniform4iv(TProgram program, uint index, size_t num, const sint32 *src)
-{
-}
-
-void CDriverVulkan::setUniform4uiv(TProgram program, uint index, size_t num, const uint32 *src)
-{
-}
-
-void CDriverVulkan::setUniformMatrix(TProgram program, uint index, TMatrix matrix, TTransform transform)
-{
-}
-
-void CDriverVulkan::setUniformFog(TProgram program, uint index)
-{
 }
 
 bool CDriverVulkan::isUniformProgramState()
@@ -630,11 +531,6 @@ bool CDriverVulkan::initVertexBufferHard(uint agpMem, uint vramMem)
 uint CDriverVulkan::getMaxLightTableSize() const
 {
 	return 128;
-}
-
-bool CDriverVulkan::bindUniformBuffer(TUBBinding binding, CUniformBuffer *ub)
-{
-	return false;
 }
 
 void CDriverVulkan::enableVertexProgramDoubleSidedColor(bool doubleSided)
