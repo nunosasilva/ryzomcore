@@ -323,7 +323,7 @@ NEL_PFNGLXGETSWAPINTERVALMESAPROC				nglXGetSwapIntervalMESA;
 	if (strstr(glext, ext_str)==NULL) { nlwarning("3D: OpengGL extension '%s' was not found", ext_str); return false; } else { nldebug("3D: OpengGL Extension '%s' found", ext_str); }
 #endif
 
-bool checkExt2(std::vector<const char *> &glext, const char *ext_str)
+bool checkExt2(const std::vector<const char *> &glext, const char *ext_str)
 {
 	for (int i = 0; i < glext.size(); ++i)
 	{
@@ -331,6 +331,36 @@ bool checkExt2(std::vector<const char *> &glext, const char *ext_str)
 			return true;
 	}
 	return false;
+}
+
+// ***************************************************************************
+/** Resolve the per-format compressed texture support from a GL extension list.
+
+	Pure function over the names: no GL call, no driver state, so nelvp_glsl_test can check
+	every platform's advertised set on this box. Desktop GL exposes one "all three formats"
+	extension; GLES/WebGL exposes narrower ones, and the ES3 build used to hardcode "no
+	compression at all" because of that difference.
+*/
+void	resolveCompressedTextureSupport(const std::vector<const char *> &glext, CGlExtensions &ext)
+{
+	// Desktop GL (and Mesa/ANGLE on top of it): covers DXT1, DXT3 and DXT5.
+	const bool s3tc = checkExt2(glext, "GL_EXT_texture_compression_s3tc");
+	// Very old S3 drivers, listed by the original TODO; same coverage.
+	const bool s3 = checkExt2(glext, "GL_S3_s3tc");
+	const bool all = s3tc || s3;
+
+	ext.EXTTextureCompressionS3TC = s3tc;
+	ext.CompressedDXT1 = all
+		|| checkExt2(glext, "GL_EXT_texture_compression_dxt1")
+		|| checkExt2(glext, "GL_ANGLE_texture_compression_dxt1");
+	ext.CompressedDXT3 = all
+		|| checkExt2(glext, "GL_ANGLE_texture_compression_dxt3");
+	ext.CompressedDXT5 = all
+		|| checkExt2(glext, "GL_ANGLE_texture_compression_dxt5");
+
+	if (ext.CompressedDXT1 || ext.CompressedDXT3 || ext.CompressedDXT5)
+		nldebug("3D: compressed textures: DXT1=%d DXT3=%d DXT5=%d",
+			(int)ext.CompressedDXT1, (int)ext.CompressedDXT3, (int)ext.CompressedDXT5);
 }
 
 #define CHECK_EXT_2(ext_str) \
@@ -348,17 +378,6 @@ bool checkExt2(std::vector<const char *> &glext, const char *ext_str)
 // Extensions registrations, and Windows function Registration.
 
 #ifndef USE_OPENGLES3
-
-// *********************************
-static bool	setupEXTTextureCompressionS3TC(std::vector<const char *> &glext)
-{
-	H_AUTO_OGL(setupEXTTextureCompressionS3TC);
-
-	CHECK_EXT_2("GL_EXT_texture_compression_s3tc");
-	// TODO: check also for GL_S3_s3tc, GL_EXT_texture_compression_dxt1
-
-	return true;
-}
 
 // *********************************
 static bool	setupWGLARBPBuffer(const char	*glext)
@@ -698,8 +717,8 @@ bool	registerGlExtensions(CGlExtensions &ext)
 	// Check GL_ARB_separate_shader_objects
 	ext.ARBSeparateShaderObjects = setupARBSeparateShaderObjects(glext);
 
-	// Compression S3TC
-	ext.EXTTextureCompressionS3TC = setupEXTTextureCompressionS3TC(glext);
+	// Compressed textures, per format (S3TC on desktop, the EXT/ANGLE subsets on GLES/WebGL)
+	resolveCompressedTextureSupport(glext, ext);
 
 	// Check GL_EXT_texture_filter_anisotropic
 	ext.EXTTextureFilterAnisotropic = setupEXTTextureFilterAnisotropic(glext);
@@ -923,8 +942,9 @@ bool	registerGlExtensions(CGlExtensions &ext)
 	// SSO not available in GLES 3.0 core
 	ext.ARBSeparateShaderObjects = false;
 
-	// S3TC may be available as extension on some ES implementations
-	ext.EXTTextureCompressionS3TC = false;
+	// Compressed textures are NOT part of ES 3.0 core: resolve whichever subset this
+	// implementation advertises (EXT_texture_compression_dxt1, ANGLE_texture_compression_dxt*).
+	// The resolver runs once the extension list below has been read.
 
 	// Check for anisotropic filtering extension
 	std::vector<const char *> glext;
@@ -947,6 +967,8 @@ bool	registerGlExtensions(CGlExtensions &ext)
 		}
 		DebugLog->displayRaw("\n");
 	}
+
+	resolveCompressedTextureSupport(glext, ext);
 
 	ext.EXTTextureFilterAnisotropic = checkExt2(glext, "GL_EXT_texture_filter_anisotropic");
 	if (ext.EXTTextureFilterAnisotropic)

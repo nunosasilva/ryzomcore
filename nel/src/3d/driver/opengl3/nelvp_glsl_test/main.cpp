@@ -42,6 +42,7 @@
 #include "stdopengl3.h"
 #include "driver_opengl3.h"
 #include "driver_opengl3_program.h"
+#include "driver_opengl3_extension.h"
 
 #include <nel/3d/landscapevb_allocator.h>
 #include <nel/3d/program.h>
@@ -565,6 +566,68 @@ static void testVegetableProgram(uint vpType, bool fogEnabled, const std::string
 	check(glsl.find("FOGC") == std::string::npos, tag + ": converter drops the nelvp fog coordinate");
 }
 
+
+// ----------------------------------------------------------------------------
+// Compressed texture support, per format.
+//
+// This is the one piece of driver_opengl3_extension.cpp that can be tested on any box:
+// resolveCompressedTextureSupport() is a pure function over the extension names, so the
+// extension sets advertised by Windows (S3TC), macOS (S3TC), Linux/Mesa (S3TC) and the
+// GLES/WebGL/Android subsets (EXT_dxt1, ANGLE_dxt*) are all exercised here, without a
+// context and without the platform.
+// ----------------------------------------------------------------------------
+static void testCompressedTextureSupport()
+{
+	const char *s3tc[] = { "GL_EXT_texture_compression_s3tc", "GL_ARB_texture_compression",
+		"GL_EXT_texture_filter_anisotropic", NULL };
+	const char *extDxt1[] = { "GL_EXT_texture_compression_dxt1", "GL_OES_compressed_paletted_texture", NULL };
+	const char *angle[] = { "GL_ANGLE_texture_compression_dxt3",
+		"GL_ANGLE_texture_compression_dxt5", NULL };
+	const char *angleDxt1[] = { "GL_ANGLE_texture_compression_dxt1", NULL };
+	const char *legacyS3[] = { "GL_S3_s3tc", NULL };
+	const char *none[] = { "GL_ARB_multitexture", NULL };
+	const char *empty[] = { NULL };
+
+	struct { const char **list; bool d1, d3, d5; const char *tag; } cases[] = {
+		{ s3tc,      true,  true,  true,  "S3TC (desktop GL: Windows / macOS / Linux)" },
+		{ legacyS3,  true,  true,  true,  "GL_S3_s3tc (old S3 drivers, the original TODO)" },
+		{ extDxt1,   true,  false, false, "GL_EXT_texture_compression_dxt1 only" },
+		{ angleDxt1, true,  false, false, "ANGLE_texture_compression_dxt1 only" },
+		{ angle,     false, true,  true,  "ANGLE dxt3 + dxt5 without dxt1" },
+		{ none,      false, false, false, "no compression extension" },
+		{ empty,     false, false, false, "empty extension list" }
+	};
+
+	for (uint c = 0; c < sizeof(cases) / sizeof(cases[0]); ++c)
+	{
+		std::vector<const char *> glext;
+		for (const char **e = cases[c].list; *e != NULL; ++e)
+			glext.push_back(*e);
+
+		NLDRIVERGL3::CGlExtensions ext; // the ctor must leave everything off
+		NLDRIVERGL3::resolveCompressedTextureSupport(glext, ext);
+
+		const std::string tag = std::string("dxt/") + cases[c].tag;
+		check(ext.CompressedDXT1 == cases[c].d1, tag + ": DXT1");
+		check(ext.CompressedDXT3 == cases[c].d3, tag + ": DXT3");
+		check(ext.CompressedDXT5 == cases[c].d5, tag + ": DXT5");
+		check(ext.EXTTextureCompressionS3TC == (cases[c].list == s3tc),
+			tag + ": the S3TC flag tracks the desktop extension exactly");
+	}
+
+	// A driver that grants nothing must not claim anything even if a *different* subset of
+	// the family is present in a later call: the resolver always assigns, never ORs in.
+	{
+		std::vector<const char *> g; g.push_back("GL_EXT_texture_compression_s3tc");
+		NLDRIVERGL3::CGlExtensions ext;
+		NLDRIVERGL3::resolveCompressedTextureSupport(g, ext);
+		std::vector<const char *> g2; g2.push_back("GL_ARB_multitexture");
+		NLDRIVERGL3::resolveCompressedTextureSupport(g2, ext);
+		check(!ext.CompressedDXT1 && !ext.CompressedDXT3 && !ext.CompressedDXT5,
+			"dxt/re-resolve: a later call with no DXT extension clears the flags");
+	}
+}
+
 static void testRefusals()
 {
 	// A program with no nelvp source: nothing to convert, must say so and add nothing.
@@ -614,6 +677,8 @@ static void testRefusals()
 // ----------------------------------------------------------------------------
 sint main(sint argc, char *argv[])
 {
+
+	testCompressedTextureSupport();
 
 	// Track D.2: the vegetation nelvp programs are the fallback for drivers without
 	// builtin UBO support - convert all shipped variants.

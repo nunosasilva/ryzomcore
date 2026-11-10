@@ -309,6 +309,22 @@ static ITexture::TUploadFormat getEffectiveUploadFormat(ITexture &tex)
 	}
 }
 
+// Per-format compressed texture support. The formats really are separate: desktop GL grants
+// all three through one extension, while GLES/WebGL and some Android drivers grant only DXT1
+// (or the ANGLE_* subsets). Asking per format is what lets a DXT1-only driver keep DXT1 data
+// compressed instead of decompressing every texture on the CPU.
+static inline bool isDxtFormatSupported(const CGlExtensions &ext, ITexture::TUploadFormat fmt)
+{
+	switch (fmt)
+	{
+	case ITexture::DXTC1:
+	case ITexture::DXTC1Alpha:	return ext.CompressedDXT1;
+	case ITexture::DXTC3:		return ext.CompressedDXT3;
+	case ITexture::DXTC5:		return ext.CompressedDXT5;
+	default:					return false;
+	}
+}
+
 // ***************************************************************************
 // Translation of TexFmt mode.
 GLint	CDriverGL3::getGlTextureFormat(ITexture& tex, bool &compressed)
@@ -339,24 +355,26 @@ GLint	CDriverGL3::getGlTextureFormat(ITexture& tex, bool &compressed)
 		}
 	}
 
-	// Get gl tex format, try S3TC compressed ones.
-	if (_Extensions.EXTTextureCompressionS3TC)
+	// Get gl tex format, try the compressed ones this driver supports *for this format*.
+	// `compressed` is set inside each case, never before the switch: a build whose GL headers
+	// do not declare the S3TC enums (the GLES ones do not have to) compiles the cases out, and
+	// the data must then take the uncompressed path below rather than be flagged as compressed.
+	if (isDxtFormatSupported(_Extensions, texfmt))
 	{
-		compressed= true;
 		// Try Compressed ones.
 		switch(texfmt)
 		{
 #ifdef GL_COMPRESSED_RGB_S3TC_DXT1_EXT
-			case ITexture::DXTC1:		return GL_COMPRESSED_RGB_S3TC_DXT1_EXT;
+			case ITexture::DXTC1:		compressed= true; return GL_COMPRESSED_RGB_S3TC_DXT1_EXT;
 #endif
 #ifdef GL_COMPRESSED_RGBA_S3TC_DXT1_EXT
-			case ITexture::DXTC1Alpha:	return GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
+			case ITexture::DXTC1Alpha:	compressed= true; return GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #endif
 #ifdef GL_COMPRESSED_RGBA_S3TC_DXT3_EXT
-			case ITexture::DXTC3:		return GL_COMPRESSED_RGBA_S3TC_DXT3_EXT;
+			case ITexture::DXTC3:		compressed= true; return GL_COMPRESSED_RGBA_S3TC_DXT3_EXT;
 #endif
 #ifdef GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
-			case ITexture::DXTC5:		return GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+			case ITexture::DXTC5:		compressed= true; return GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 #endif
 			default: break;
 		}
@@ -971,7 +989,9 @@ bool CDriverGL3::setupTextureEx (ITexture& tex, bool bUpload, bool &bAllUploaded
 
 					// DXTC: if same format, and same mipmapOn/Off, use glTexCompressedImage*.
 					// We cannot build the mipmaps if they are not here.
-					if (_Extensions.EXTTextureCompressionS3TC && sameDXTCFormat(tex, glfmt))
+					// glfmt is a compressed enum only when getGlTextureFormat() found support
+					// for this format, so sameDXTCFormat() alone is the right test here.
+					if (sameDXTCFormat(tex, glfmt))
 					{
 						sint	nMipMaps = 1;
 
@@ -1381,7 +1401,8 @@ bool CDriverGL3::uploadTexture (ITexture& tex, CRect& rect, uint8 nNumMipMap)
 	GLenum  glSrcType= getGlSrcTextureComponentType(tex,glSrcFmt);
 
 	// If DXTC format
-	if (_Extensions.EXTTextureCompressionS3TC && sameDXTCFormat(tex, glfmt))
+	// glfmt is a compressed enum only when this format is supported (see getGlTextureFormat)
+	if (sameDXTCFormat(tex, glfmt))
 	{
 
 		sint nUploadMipMaps;

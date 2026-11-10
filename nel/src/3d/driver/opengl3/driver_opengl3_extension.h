@@ -26,6 +26,7 @@
 #include "nel/misc/string_common.h"
 
 #include "driver_opengl3_extension_def.h"
+#include <vector>
 
 namespace	NL3D {
 namespace NLDRIVERGL3 {
@@ -49,7 +50,17 @@ struct	CGlExtensions
 	bool	IsAndroidPlatform; // Running on Android (compile-time or navigator.userAgent)
 
 	// Optional extensions
-	bool	EXTTextureCompressionS3TC;
+	/** Per-format compressed texture support, resolved once from the extension list by
+	  * resolveCompressedTextureSupport(). They are separate because the formats are: desktop
+	  * GL advertises GL_EXT_texture_compression_s3tc for all three, while GLES/WebGL and some
+	  * Android drivers advertise GL_EXT_texture_compression_dxt1 or the ANGLE_* family, which
+	  * cover a subset. Keeping them apart is what lets a DXT1-only driver upload DXT1 data
+	  * compressed instead of decompressing everything on the CPU.
+	  */
+	bool	CompressedDXT1;		// s3tc / EXT_dxt1 / ANGLE_dxt1 / GL_S3_s3tc
+	bool	CompressedDXT3;		// s3tc / ANGLE_dxt3 / GL_S3_s3tc
+	bool	CompressedDXT5;		// s3tc / ANGLE_dxt5 / GL_S3_s3tc
+	bool	EXTTextureCompressionS3TC; // the desktop "all three formats" extension, kept for logging
 	bool	EXTTextureFilterAnisotropic;
 	float	EXTTextureFilterAnisotropicMaximum;
 	bool	ARBInvalidateSubdata;
@@ -80,6 +91,9 @@ public:
 		GLCore = false;
 		ARBSeparateShaderObjects = false;
 		MaxFragmentTextureImageUnits = 0;
+		CompressedDXT1 = false;
+		CompressedDXT3 = false;
+		CompressedDXT5 = false;
 
 		IsANGLE = false;
 #ifdef NL_OS_WINDOWS
@@ -168,6 +182,14 @@ public:
 	}
 
 };
+
+/** Resolve CompressedDXT1/3/5 from a GL extension list (the glGetStringi entries).
+
+	Pure: no GL call and no driver state, so it is unit-tested in nelvp_glsl_test without a
+	context. Every name that grants a format is accepted, because one binary runs on desktop
+	GL (S3TC), on GLES/WebGL (the EXT/ANGLE subsets) and on old S3 drivers (GL_S3_s3tc).
+*/
+void	resolveCompressedTextureSupport(const std::vector<const char *> &glext, CGlExtensions &ext);
 
 // ***************************************************************************
 
