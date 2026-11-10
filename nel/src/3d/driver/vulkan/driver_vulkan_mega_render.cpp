@@ -76,8 +76,10 @@ bool CDriverVulkan::canUseMegaPath(bool &cube)
 	case CMaterial::UserColor:
 	case CMaterial::Specular:
 		break;
-	// LightMap materials need the lightmap texture stages that this driver does
-	// not set up yet, so they keep the simple path for now.
+	// LightMap materials are drawn by the multi-pass staging implemented in
+	// beginMaterialMultiPass()/setupMaterialPass().
+	case CMaterial::LightMap:
+		break;
 	default:
 		return false;
 	}
@@ -516,7 +518,26 @@ void CDriverVulkan::stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data)
 	data.worldSpaceNormal = _NumPerPixelLights > 0 ? 1 : 0;
 	data.worldSpacePosition = _NumPerPixelLights > 0 ? 1 : 0;
 	data.numPerPixelLights = (sint32)_NumPerPixelLights;
-	data.fogEnabled = _FogEnabled ? 1 : 0;
+	// The mega shaders implement fog, but the simple path does not yet. Until
+	// both paths share it, applying fog here makes the two disagree on screen
+	// (in foggy zones the fog colour covers the whole world while the simple
+	// path still shows the ground texture). Keep the generated fog code, but
+	// do not enable it for now.
+	data.fogEnabled = 0;
+	if (_MegaPassOverrideActive)
+	{
+		// LightMap pass override, same contract as the GL3 driver: self
+		// illumination carries the pass' LMC ambient, and the dynamic light is
+		// only added in the first pass.
+		memcpy(data.selfIllumination, _MegaPassSelfIllumination, sizeof(data.selfIllumination));
+		if (_MegaPassZeroLightFactors)
+		{
+			memset(data.lightFactors01, 0, sizeof(data.lightFactors01));
+			memset(data.lightFactors45, 0, sizeof(data.lightFactors45));
+		}
+		data.lighting = 1;
+		data.vertexColorLighted = 0;
+	}
 }
 
 void CDriverVulkan::stageMegaMaterialUBO(CMaterial &mat, CMaterialUBOData &data)
@@ -560,6 +581,22 @@ void CDriverVulkan::stageMegaMaterialUBO(CMaterial &mat, CMaterialUBOData &data)
 		else
 			memcpy(data.texMatrix[stage], CMatrix::Identity.get(), 16 * sizeof(float));
 	}
+
+	if (_MegaPassOverrideActive)
+	{
+		// Per-pass material overrides for LightMap, mirroring GL3's
+		// MaterialUBO slots: no material diffuse/specular colour, the lightmap
+		// factors live in constant[0..7], and texture matrices are identity.
+		data.materialDiffuse[0] = _MegaPassDiffuse;
+		data.materialDiffuse[1] = _MegaPassDiffuse;
+		data.materialDiffuse[2] = _MegaPassDiffuse;
+		data.materialDiffuse[3] = 1.f;
+		memset(data.materialSpecular, 0, sizeof(data.materialSpecular));
+		data.nlLightMapScale = _MegaPassLightMapScale;
+		memcpy(data.constant, _MegaPassConstants, sizeof(data.constant));
+		for (uint stage = 0; stage < IDRV_MAT_MAXTEXTURES; ++stage)
+			memcpy(data.texMatrix[stage], CMatrix::Identity.get(), 16 * sizeof(float));
+	}
 }
 
 uint32 CDriverVulkan::allocUniformBlock(const void *data, uint32 size)
@@ -591,7 +628,15 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb, 
 	stageMegaObjectUBO(vb, objectData);
 	stageMegaMaterialUBO(*_CurrentMaterial, materialData);
 	stageMegaLightTableUBO();
-	const CCameraUBOData &cameraData = stageMegaCameraUBO();
+	CCameraUBOData cameraData = stageMegaCameraUBO();
+	if (_MegaPassFogBlack || _FogColorOverrideBlack)
+	{
+		// Additive passes must not add fog again: LightMap passes > 0 and any
+		// additive-blended material get a black fog colour (GL3 behaviour).
+		cameraData.fogColor[0] = 0.f;
+		cameraData.fogColor[1] = 0.f;
+		cameraData.fogColor[2] = 0.f;
+	}
 
 	const uint32 cameraOffset = allocUniformBlock(&cameraData, sizeof(cameraData));
 	const uint32 objectOffset = allocUniformBlock(&objectData, sizeof(objectData));
@@ -668,6 +713,33 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb, 
 	vkUpdateDescriptorSets(_Device, writeCount, writes, 0, NULL);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _MegaPipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 	return true;
+}
+
+// ---------------------------------------------------------------------------
+// LightMap pass setup (ported from driver_opengl3_material.cpp)
+// ---------------------------------------------------------------------------
+
+void CDriverVulkan::computeLightMapInfos(const CMaterial &mat)
+{
+	static const uint32 RGBMaskPacked = CRGBA(255, 255, 255, 0).getPacked();
+
+	nlassert(mat._LightMaps.size() <= NL_VK_MAX_LIGHTMAP);
+
+	// Only lightmaps with a non-null RGB factor are used; build the LUT.
+	_NLightMaps = 0;
+	for (uint i = 0; i < mat._LightMaps.size(); ++i)
+	{
+		if (mat._LightMaps[i].Factor.getPacked() & RGBMaskPacked)
+		{
+			_LightMapLUT[_NLightMaps] = i;
+			++_NLightMaps;
+		}
+	}
+
+	// One stage is reserved for the material texture.
+	_NLightMapPerPass = NL_VK_MEGA_SAMPLER_COUNT - 1;
+	_NLightMapPass = (_NLightMaps + _NLightMapPerPass - 1) / _NLightMapPerPass;
+	// NB: _NLightMaps == 0 means the material has no lightmap at all.
 }
 
 } /* namespace NLVULKAN */
