@@ -393,6 +393,20 @@ bool CDriverVulkan::createSwapchain()
 			return false;
 	}
 
+	// One render-finished semaphore per swapchain image: the presentation engine
+	// may still be waiting on the semaphore of the image it is presenting.
+	for (uint i = 0; i < _RenderFinished.size(); ++i)
+		if (_RenderFinished[i]) vkDestroySemaphore(_Device, _RenderFinished[i], NULL);
+	_RenderFinished.resize(imageCount);
+	VkSemaphoreCreateInfo semInfo;
+	memset(&semInfo, 0, sizeof(semInfo));
+	semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+	for (uint i = 0; i < imageCount; ++i)
+	{
+		if (!checkVk(vkCreateSemaphore(_Device, &semInfo, NULL, &_RenderFinished[i]), "vkCreateSemaphore(present)"))
+			return false;
+	}
+
 	nlinfo("Vulkan: swapchain %ux%u, %u images", _SwapchainExtent.width, _SwapchainExtent.height, imageCount);
 	return true;
 }
@@ -570,7 +584,6 @@ bool CDriverVulkan::createSyncObjects()
 {
 	_Fences.resize(2);
 	_ImageAvailable.resize(2);
-	_RenderFinished.resize(2);
 	VkFenceCreateInfo fci;
 	memset(&fci, 0, sizeof(fci));
 	fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -583,8 +596,6 @@ bool CDriverVulkan::createSyncObjects()
 		if (!checkVk(vkCreateFence(_Device, &fci, NULL, &_Fences[i]), "vkCreateFence"))
 			return false;
 		if (!checkVk(vkCreateSemaphore(_Device, &sci, NULL, &_ImageAvailable[i]), "vkCreateSemaphore"))
-			return false;
-		if (!checkVk(vkCreateSemaphore(_Device, &sci, NULL, &_RenderFinished[i]), "vkCreateSemaphore"))
 			return false;
 	}
 	return true;
@@ -796,6 +807,26 @@ void CDriverVulkan::shutdownVulkan()
 {
 	if (_Device)
 		vkDeviceWaitIdle(_Device);
+
+	if (_Device)
+	{
+		for (uint i = 0; i < _PendingTextureDestroy.size(); ++i)
+		{
+			CTextureVulkan tex = _PendingTextureDestroy[i];
+			if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
+			if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
+			if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
+			if (tex.Memory) vkFreeMemory(_Device, tex.Memory, NULL);
+		}
+		for (uint i = 0; i < _PendingBufferDestroy.size(); ++i)
+		{
+			vkDestroyBuffer(_Device, _PendingBufferDestroy[i].first, NULL);
+			if (_PendingBufferDestroy[i].second)
+				vkFreeMemory(_Device, _PendingBufferDestroy[i].second, NULL);
+		}
+		_PendingTextureDestroy.clear();
+		_PendingBufferDestroy.clear();
+	}
 
 	for (uint i = 0; i < _Fences.size(); ++i)
 		if (_Fences[i]) vkDestroyFence(_Device, _Fences[i], NULL);
@@ -1030,7 +1061,13 @@ bool CDriverVulkan::beginFrame()
 	if (!_PendingTextureDestroy.empty() || !_PendingBufferDestroy.empty())
 		vkDeviceWaitIdle(_Device);
 	for (uint i = 0; i < _PendingTextureDestroy.size(); ++i)
-		destroyTexture(_PendingTextureDestroy[i]);
+	{
+		CTextureVulkan tex = _PendingTextureDestroy[i];
+		if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
+		if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
+		if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
+		if (tex.Memory) vkFreeMemory(_Device, tex.Memory, NULL);
+	}
 	_PendingTextureDestroy.clear();
 	for (uint i = 0; i < _PendingBufferDestroy.size(); ++i)
 	{
@@ -1195,7 +1232,7 @@ bool CDriverVulkan::swapBuffers()
 	si.commandBufferCount = 1;
 	si.pCommandBuffers = &cmd;
 	si.signalSemaphoreCount = 1;
-	si.pSignalSemaphores = &_RenderFinished[frame];
+	si.pSignalSemaphores = &_RenderFinished[_ImageIndex];
 	if (!checkVk(vkQueueSubmit(_GraphicsQueue, 1, &si, _Fences[frame]), "vkQueueSubmit"))
 		return false;
 
@@ -1218,7 +1255,7 @@ bool CDriverVulkan::swapBuffers()
 	memset(&pi, 0, sizeof(pi));
 	pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 	pi.waitSemaphoreCount = 1;
-	pi.pWaitSemaphores = &_RenderFinished[frame];
+	pi.pWaitSemaphores = &_RenderFinished[_ImageIndex];
 	pi.swapchainCount = 1;
 	pi.pSwapchains = &_Swapchain;
 	pi.pImageIndices = &_ImageIndex;

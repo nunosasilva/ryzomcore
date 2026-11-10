@@ -96,14 +96,14 @@ void CDriverVulkan::destroyTexture(CTextureVulkan &tex)
 {
 	if (!_Device)
 		return;
-	if (_FrameOpen)
-	{
-		// Objects referenced by the commands already recorded in the current frame
-		// must stay alive until the frame is submitted.
-		_PendingTextureDestroy.push_back(tex);
-		tex = CTextureVulkan();
+	if (tex.Image == VK_NULL_HANDLE && tex.Memory == VK_NULL_HANDLE &&
+		tex.View == VK_NULL_HANDLE && tex.Sampler == VK_NULL_HANDLE)
 		return;
-	}
+	// Commands that reference this texture may still be recording or in flight,
+	// so always release it at the next frame boundary.
+	_PendingTextureDestroy.push_back(tex);
+	tex = CTextureVulkan();
+	return;
 	if (tex.Sampler) { vkDestroySampler(_Device, tex.Sampler, NULL); tex.Sampler = VK_NULL_HANDLE; }
 	if (tex.View) { vkDestroyImageView(_Device, tex.View, NULL); tex.View = VK_NULL_HANDLE; }
 	if (tex.Image) { vkDestroyImage(_Device, tex.Image, NULL); tex.Image = VK_NULL_HANDLE; }
