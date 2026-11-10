@@ -897,109 +897,11 @@ void CPPBuiltin::checkDriverStateTouched(CDriverGL3 *driver) // MUST NOT depend 
 		Touched = true;
 	}
 }
-
-// TODO: Restructure — material-derived PPBuiltin state (Shader, Flags, TextureActive,
-// TexSamplerMode, TexEnvMode) should be pushed directly from setupMaterial.
-// LightMap texture state (TextureActive, TexSamplerMode from _CurrentTexture[])
-// should be pushed from setupLightmapPass.
-// These functions are no longer called; kept for reference during restructuring.
-#if 0
-void CPPBuiltin::checkDriverMaterialStateTouched(CDriverGL3 *driver, CMaterial::TShader shader)
-{
-	switch (shader)
-	{
-	case CMaterial::LightMap:
-		// Use Textures from current driver state
-		uint maxSam = maxSamplers(shader, driver->_Extensions);
-		uint32 textureActive = 0;
-		uint64 texSamplerMode = 0;
-		for (uint stage = 0; stage < maxSam; ++stage) // NB: Limited to IDRV_PROGRAM_MAXSAMPLERS here
-		{
-			NL3D::ITexture *tex = driver->_CurrentTexture[stage];
-			if (tex)
-			{
-				textureActive |= (1 << stage);
-				texSamplerMode |= (tex->isTextureCube() ? SamplerCube : Sampler2D) << (stage * 2);
-			}
-		}
-		if (TextureActive != textureActive)
-		{
-			TextureActive = textureActive;
-			Touched = true;
-		}
-		if (TexSamplerMode != texSamplerMode)
-		{
-			TexSamplerMode = texSamplerMode;
-			Touched = true;
-		}
-		break;
-	}
-}
-
-void CPPBuiltin::checkMaterialStateTouched(CMaterial &mat, CMaterial::TShader shader)
-{
-	uint32 touched = !PixelProgram ? IDRV_TOUCHED_ALL : mat.getTouched();
-	if (touched == 0) return;
-
-	if (Shader != shader)
-	{
-		Shader = shader;
-		Touched = true;
-	}
-	uint32 flags = mat.getFlags();
-	flags &= IDRV_MAT_ALPHA_TEST;
-	if (Flags != flags)
-	{
-		Flags = flags;
-		Touched = true;
-	}
-	uint maxTex = maxTextures(shader);
-	if (touched & IDRV_TOUCHED_ALLTEX)
-	{
-		switch (shader)
-		{
-		case CMaterial::LightMap:
-			break;
-		default:
-			uint32 textureActive = 0;
-			uint64 texSamplerMode = 0;
-			for (uint stage = 0; stage < maxTex; ++stage)
-			{
-				NL3D::ITexture *tex = mat._Textures[stage];
-				if (tex)
-				{
-					textureActive |= (1 << stage);
-					texSamplerMode |= (tex->isTextureCube() ? SamplerCube : Sampler2D) << (stage * 2);
-				}
-			}
-			if (TextureActive != textureActive)
-			{
-				TextureActive = textureActive;
-				Touched = true;
-			}
-			if (TexSamplerMode != texSamplerMode)
-			{
-				TexSamplerMode = texSamplerMode;
-				Touched = true;
-			}
-			break;
-		}
-	}
-	if (useTexEnv(shader) && (touched & IDRV_TOUCHED_TEXENV))
-	{
-		for (uint stage = 0; stage < maxTex; ++stage)
-		{
-			if (TexEnvMode[stage] != mat._TexEnvs[stage].EnvPacked)
-			{
-				TexEnvMode[stage] = mat._TexEnvs[stage].EnvPacked;
-				Touched = true;
-			}
-		}
-	}
-
-	mat.clearTouched(0xFFFFFFFF);
-}
-#endif
+// Developer note: the material-derived PPBuiltin state (Shader, Flags, TextureActive,
+// TexSamplerMode, TexEnvMode) is pushed directly from CDriverGL3::setupMaterial
+// (driver_opengl3_material.cpp), and the lightmap texture state from setupLightmapPass.
+// That restructure is complete; the old CPPBuiltin::check*StateTouched helpers that used to
+// do it are gone rather than kept behind '#if 0', so there is only one path to read.
 
 } // NLDRIVERGL3
 } // NL3D
