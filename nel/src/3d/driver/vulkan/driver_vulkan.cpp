@@ -1236,11 +1236,10 @@ bool CDriverVulkan::swapBuffers()
 	_ClearStencilPending = false;
 	_FrameOpen = false;
 
-	// Temporary diagnostics: report draw activity once a second.
-	if ((_SwapBufferCounter % 60) == 0)
-		nlinfo("Vulkan: frame %llu, %u arrays draws, %u indexed draws, %u pipelines, vb=%p ib=%p",
+	if ((_SwapBufferCounter % 600) == 0)
+		nldebug("Vulkan: frame %llu, %u vertex draws, %u indexed draws, %u pipelines",
 			(unsigned long long)_SwapBufferCounter, _ArrayDrawCount, _IndexedDrawCount,
-			(uint)_PipelineCache.size(), (void *)_CurrentVB, (void *)_CurrentIB);
+			(uint)_PipelineCache.size());
 
 	return true;
 }
