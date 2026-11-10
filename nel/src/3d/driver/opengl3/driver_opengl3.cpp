@@ -518,8 +518,9 @@ bool CDriverGL3::setupDisplay()
 	glEnable(GL_DITHER);
 	glEnable(GL_DEPTH_TEST);
 	_DriverGLStates.polygonMode(GL_FILL);
-	//glDisable(GL_NORMALIZE);
-	//glDisable(GL_COLOR_SUM_EXT); // FIXME GL3
+	// No glDisable(GL_NORMALIZE) / (GL_COLOR_SUM_EXT) here: neither is GL 3.3 core state.
+	// Normalisation happens in the vertex programs and colour sum is an extension the GL3
+	// driver never enables.
 
 	_CurrViewport.init(0.f, 0.f, 1.f, 1.f);
 	_CurrScissor.initFullScreen();
@@ -646,10 +647,11 @@ bool CDriverGL3::setupDisplay()
 	_PPLightDiffuseColor = NLMISC::CRGBA::White;
 	_PPLightSpecularColor = NLMISC::CRGBA::White;
 
-	// Backward compatibility: default lighting is Light0 default openGL
-	// meaning that light direction is always (0,1,0) in eye-space
-	// use enableLighting(0....), to get normal behaviour
-	// _DriverGLStates.enableLight(0, true); // FIXME GL3 VERTEX PROGRAM
+	// Backward compatibility: the default light is the fixed-function Light0 - direction
+	// (0,1,0) in eye space. In GL3 there is no fixed-function light to enable: the same default
+	// is expressed by setting light 0 up as a directional light from Null and letting the mega
+	// vertex program do the lighting, which is what the two lines below and enableLighting(0)
+	// on the caller side produce.
 	_LightMode[0] = CLight::DirectionalLight;
 	_WorldLightDirection[0] = CVector::Null;
 

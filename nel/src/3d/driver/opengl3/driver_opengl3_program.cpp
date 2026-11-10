@@ -1575,7 +1575,8 @@ void CDriverGL3::setupUniforms(TProgram program)
 	CProgramDrvInfosGL3 *drvInfo = static_cast<CProgramDrvInfosGL3 *>(di);
 	GLuint progId = drvInfo->getProgramId();
 
-	// FIXME
+	// A program that has no GL object yet has no uniforms to address. Nothing to do, and
+	// nothing to warn about: the caller sets them here *before* the program is compiled.
 	if (!progId)
 		return;
 

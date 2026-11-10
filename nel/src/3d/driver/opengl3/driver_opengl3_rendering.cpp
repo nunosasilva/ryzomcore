@@ -407,7 +407,10 @@ bool CDriverGL3::renderRawQuads(CMaterial& mat, uint32 startIndex, uint32 numQua
 		// draw remaining quads
 		while (numLeftQuads)
 		{
-			// TODO : resetting vertex pointer would avoid the need to rebuild indices each times
+			// Indices for the tail are rebuilt here on purpose: it is at most QUAD_BATCH_SIZE
+			// quads into a stack array, cheaper than the alternatives (a second index buffer
+			// upload, or glDrawElementsBaseVertex, which GL 3.3 core does not have - it arrived
+			// in 3.2 only as ARB_draw_elements_base_vertex, and WebGL 2 has no equivalent).
 			uint32 numQuadsToDraw = std::min(numLeftQuads, QUAD_BATCH_SIZE);
 			// draw all quads
 			if (4 * numQuadsToDraw + currIndex <= (1 << 16))

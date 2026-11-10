@@ -839,7 +839,11 @@ void CDriverGL3::generateBuiltinPixelProgram(CMaterial &mat)
 
 void CPPBuiltin::checkDriverStateTouched(CDriverGL3 *driver) // MUST NOT depend on any state set by checkMaterialStateTouched
 {
-	// Add generated texture coordinates to vertex format // TODO: Eliminate unused flags
+	// This mask is the pixel program's cache key and the list of varyings it may declare. It is
+	// deliberately a superset of what a given variant reads: the declarations themselves are now
+	// derived from the generated body (see emitUsedVaryings in driver_opengl3_pixel_mega_program.cpp),
+	// so an unused bit here costs nothing - it cannot pull an unused varying into the program.
+	// Narrowing this instead would mean re-deriving per-variant usage before the body exists.
 	uint16 vertexFormat = driver->m_VPBuiltinCurrent.VertexFormat;
 	for (sint stage = 0; stage < IDRV_MAT_MAXTEXTURES; ++stage)
 		if (driver->m_VPBuiltinCurrent.TexGenMode[stage] >= 0)
