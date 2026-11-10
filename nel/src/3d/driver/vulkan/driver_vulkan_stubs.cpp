@@ -58,10 +58,6 @@ uint8 CDriverVulkan::getBitPerPixel()
 	return 24;
 }
 
-void CDriverVulkan::getBuffer(CBitmap &bitmap)
-{
-}
-
 void CDriverVulkan::getZBuffer(std::vector<float> &zbuffer)
 {
 }
@@ -316,42 +312,6 @@ bool CDriverVulkan::textureCoordinateAlternativeMode() const
 uint CDriverVulkan::getMaxLight() const
 {
 	return 8;
-}
-
-void CDriverVulkan::setLight(uint8 num, const CLight &light)
-{
-}
-
-void CDriverVulkan::enableLight(uint8 num, bool enable)
-{
-}
-
-void CDriverVulkan::setAmbientColor(NLMISC::CRGBA color)
-{
-}
-
-void CDriverVulkan::setPerPixelLightingLight(NLMISC::CRGBA diffuse, NLMISC::CRGBA specular, float shininess)
-{
-}
-
-void CDriverVulkan::setLightMapDynamicLight(bool enable, const CLight &light)
-{
-}
-
-void CDriverVulkan::enableLightTableMode(bool enable)
-{
-}
-
-void CDriverVulkan::setLightTableSize(uint count)
-{
-}
-
-void CDriverVulkan::setLightTableEntry(uint index, const CLight &light)
-{
-}
-
-void CDriverVulkan::setLights(const sint16 *tableIndices, const uint8 *factors, uint numLights, uint numPerPixelLights, NLMISC::CRGBA ambient)
-{
 }
 
 bool CDriverVulkan::isVertexProgramEmulated() const

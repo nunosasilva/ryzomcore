@@ -686,7 +686,7 @@ bool CDriverVulkan::initVulkan()
 
 	// Pipeline layout: 4 texture stages, one push constant block.
 	{
-		VkDescriptorSetLayoutBinding bindings[4];
+		VkDescriptorSetLayoutBinding bindings[5];
 		memset(bindings, 0, sizeof(bindings));
 		for (uint i = 0; i < 4; ++i)
 		{
@@ -695,41 +695,66 @@ bool CDriverVulkan::initVulkan()
 			bindings[i].descriptorCount = 1;
 			bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 		}
+		bindings[4].binding = 4;
+		bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		bindings[4].descriptorCount = 1;
+		bindings[4].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 		VkDescriptorSetLayoutCreateInfo dslci;
 		memset(&dslci, 0, sizeof(dslci));
 		dslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-		dslci.bindingCount = 4;
+		dslci.bindingCount = 5;
 		dslci.pBindings = bindings;
 		if (!checkVk(vkCreateDescriptorSetLayout(_Device, &dslci, NULL, &_DescriptorSetLayout), "vkCreateDescriptorSetLayout"))
 			return false;
 
-		VkDescriptorPoolSize poolSize;
-		poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		poolSize.descriptorCount = 16384;
+		VkDescriptorPoolSize poolSize[2];
+		poolSize[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		poolSize[0].descriptorCount = 16384;
+		poolSize[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		poolSize[1].descriptorCount = 4096;
 		VkDescriptorPoolCreateInfo dpci;
 		memset(&dpci, 0, sizeof(dpci));
 		dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 		dpci.maxSets = 4096;
-		dpci.poolSizeCount = 1;
-		dpci.pPoolSizes = &poolSize;
+		dpci.poolSizeCount = 2;
+		dpci.pPoolSizes = poolSize;
 		for (uint i = 0; i < 2; ++i)
 			if (!checkVk(vkCreateDescriptorPool(_Device, &dpci, NULL, &_DescriptorPools[i]), "vkCreateDescriptorPool"))
 				return false;
-
-		VkPushConstantRange pushRange;
-		memset(&pushRange, 0, sizeof(pushRange));
-		pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-		pushRange.size = 128;
 
 		VkPipelineLayoutCreateInfo plci;
 		memset(&plci, 0, sizeof(plci));
 		plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 		plci.setLayoutCount = 1;
 		plci.pSetLayouts = &_DescriptorSetLayout;
-		plci.pushConstantRangeCount = 1;
-		plci.pPushConstantRanges = &pushRange;
 		if (!checkVk(vkCreatePipelineLayout(_Device, &plci, NULL, &_PipelineLayout), "vkCreatePipelineLayout"))
 			return false;
+	}
+
+	// Uniform ring: per-draw uniform slots, host visible, reset each frame.
+	_UniformRingSize = 2 * 1024 * 1024;
+	{
+		VkBufferCreateInfo bci;
+		memset(&bci, 0, sizeof(bci));
+		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bci.size = _UniformRingSize;
+		bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+		bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		if (!checkVk(vkCreateBuffer(_Device, &bci, NULL, &_UniformRing), "vkCreateBuffer(uniform ring)"))
+			return false;
+		VkMemoryRequirements req;
+		vkGetBufferMemoryRequirements(_Device, _UniformRing, &req);
+		VkMemoryAllocateInfo mai;
+		memset(&mai, 0, sizeof(mai));
+		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		mai.allocationSize = req.size;
+		mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		if (!checkVk(vkAllocateMemory(_Device, &mai, NULL, &_UniformRingMemory), "vkAllocateMemory(uniform ring)"))
+			return false;
+		vkBindBufferMemory(_Device, _UniformRing, _UniformRingMemory, 0);
+		vkMapMemory(_Device, _UniformRingMemory, 0, VK_WHOLE_SIZE, 0, &_UniformRingMapped);
+		_UniformRingOffset = 0;
 	}
 
 	// Put the depth buffer in the layout the render pass expects once.
@@ -1085,6 +1110,7 @@ bool CDriverVulkan::beginFrame()
 
 	_FrameOpen = true;
 	_IndexRingOffset = 0;
+	_UniformRingOffset = 0;
 	if (_SwapBufferCounter == 0)
 	{
 		const char *dumpFrame = getenv("NLVK_SCREENSHOT_FRAME");
@@ -1305,6 +1331,116 @@ void CDriverVulkan::writeScreenshot(const char *path)
 	}
 	fclose(fp);
 	nlinfo("Vulkan: screenshot written to '%s'", path);
+}
+
+void CDriverVulkan::getBuffer(CBitmap &bitmap)
+{
+	if (!_Device || _SwapchainImages.empty())
+	{
+		bitmap.resize(0, 0);
+		return;
+	}
+
+	// Best-effort readback of the last presented image. Copying inside a frame
+	// (recordScreenshotCopy) is the well-defined path; this is used by the
+	// client's screenshot command outside the frame.
+	vkDeviceWaitIdle(_Device);
+
+	VkDeviceSize size = (VkDeviceSize)_SwapchainExtent.width * _SwapchainExtent.height * 4;
+	VkBufferCreateInfo bci;
+	memset(&bci, 0, sizeof(bci));
+	bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bci.size = size;
+	bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	VkBuffer buffer = VK_NULL_HANDLE;
+	if (vkCreateBuffer(_Device, &bci, NULL, &buffer) != VK_SUCCESS)
+		return;
+	VkMemoryRequirements req;
+	vkGetBufferMemoryRequirements(_Device, buffer, &req);
+	VkMemoryAllocateInfo mai;
+	memset(&mai, 0, sizeof(mai));
+	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	mai.allocationSize = req.size;
+	mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	VkDeviceMemory memory = VK_NULL_HANDLE;
+	if (vkAllocateMemory(_Device, &mai, NULL, &memory) != VK_SUCCESS)
+	{
+		vkDestroyBuffer(_Device, buffer, NULL);
+		return;
+	}
+	vkBindBufferMemory(_Device, buffer, memory, 0);
+
+	VkCommandBuffer cmd = VK_NULL_HANDLE;
+	VkCommandBufferAllocateInfo cbi;
+	memset(&cbi, 0, sizeof(cbi));
+	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	cbi.commandPool = _CommandPool;
+	cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cbi.commandBufferCount = 1;
+	vkAllocateCommandBuffers(_Device, &cbi, &cmd);
+	VkCommandBufferBeginInfo bi;
+	memset(&bi, 0, sizeof(bi));
+	bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	vkBeginCommandBuffer(cmd, &bi);
+
+	VkImageMemoryBarrier barrier;
+	memset(&barrier, 0, sizeof(barrier));
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = _SwapchainImages[_ImageIndex];
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.layerCount = 1;
+	barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+	VkBufferImageCopy region;
+	memset(&region, 0, sizeof(region));
+	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.imageSubresource.layerCount = 1;
+	region.imageExtent.width = _SwapchainExtent.width;
+	region.imageExtent.height = _SwapchainExtent.height;
+	region.imageExtent.depth = 1;
+	vkCmdCopyImageToBuffer(cmd, _SwapchainImages[_ImageIndex], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	barrier.dstAccessMask = 0;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+	vkEndCommandBuffer(cmd);
+
+	VkSubmitInfo si;
+	memset(&si, 0, sizeof(si));
+	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	si.commandBufferCount = 1;
+	si.pCommandBuffers = &cmd;
+	vkQueueSubmit(_GraphicsQueue, 1, &si, VK_NULL_HANDLE);
+	vkQueueWaitIdle(_GraphicsQueue);
+
+	void *mapped = NULL;
+	vkMapMemory(_Device, memory, 0, VK_WHOLE_SIZE, 0, &mapped);
+	bitmap.resize(_SwapchainExtent.width, _SwapchainExtent.height, CBitmap::RGBA);
+	uint8 *dst = (uint8 *)bitmap.getPixels(0).getPtr();
+	const uint8 *src = (const uint8 *)mapped;
+	for (uint32 i = 0; i < _SwapchainExtent.width * _SwapchainExtent.height; ++i)
+	{
+		dst[i * 4 + 0] = src[i * 4 + 2]; // B -> R
+		dst[i * 4 + 1] = src[i * 4 + 1];
+		dst[i * 4 + 2] = src[i * 4 + 0]; // R -> B
+		dst[i * 4 + 3] = src[i * 4 + 3];
+	}
+	vkUnmapMemory(_Device, memory);
+
+	vkFreeCommandBuffers(_Device, _CommandPool, 1, &cmd);
+	vkDestroyBuffer(_Device, buffer, NULL);
+	vkFreeMemory(_Device, memory, NULL);
 }
 
 void CDriverVulkan::recordFrameCommands(VkCommandBuffer cmd)
