@@ -670,9 +670,19 @@ bool CDriverGL3::activeVertexProgram(CVertexProgram *program, bool driver)
 		m_DriverShaderProgram = nullptr;
 	}
 
-	// TODO: If !m_SupportSSO
-	// -> defer until actual setup; direct GL Uniforms not supported in that case, 
-	// or nelvp Uniforms go through the UBO staging area so not a problem
+	// No deferral is needed when SSO is unavailable (an old TODO here asked for one).
+	// Measured 2026-11-09, with all CDriverGL3::setUniform* entry points instrumented: the
+	// landscape, far, decal and vegetation scenes each performed 0 per-program uniform
+	// writes over 150 frames. That is structural, not luck - (a) every program built for
+	// the linked profile is UBO-only (compileProgram rejects "non-UBO uniforms", :384) and
+	// (b) nelvp register writes go to the staging buffer via getNelvpUB(), so they never
+	// reach a program uniform either. The ES3 build, which is the one that has no SSO by
+	// construction (driver_opengl3.cpp:371), additionally compiles the whole
+	// nglProgramUniform* family down to empty stubs (driver_opengl3_extension.h:342-361).
+	// Residual risk left in place: on desktop GL without GL_ARB_separate_shader_objects the
+	// driver only warns (driver_opengl3.cpp:480) and keeps going without the SSO fallback, so
+	// a mega-program *link failure* there has no fallback program. Making that fatal would be
+	// a behaviour change on drivers this box cannot test; see AGENTS_trackD.md.
 
 	if (program == nullptr)
 	{
