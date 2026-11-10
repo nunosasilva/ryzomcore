@@ -31,6 +31,7 @@
 #include "nel/3d/vertex_program.h"
 #include "nel/3d/pixel_program.h"
 #include "nel/3d/program.h"
+#include "nel/3d/uniform_buffer.h"
 #include "nel/misc/bitmap.h"
 #include "nel/misc/event_emitter.h"
 
@@ -39,6 +40,7 @@
 #endif
 
 #include <cstring>
+#include <cstdlib>
 #include <unordered_map>
 #include <vector>
 
@@ -48,6 +50,42 @@ using namespace NL3D;
 using namespace NLMISC;
 
 class CDriverVulkan;
+
+/// Driver-side data of a compiled user vertex program.
+///
+/// A program is either a nelvp assembly program converted to Vulkan GLSL by
+/// this driver, or a GLSL vertex program provided by the engine (the wind
+/// tree, vegetable and landscape UBO programs). Both are compiled to a
+/// VkShaderModule that replaces the mega vertex stage for the draws made
+/// while the program is active; the mega pixel stage keeps drawing.
+class CProgramDrvInfosVulkan : public IProgramDrvInfos
+{
+public:
+	CProgramDrvInfosVulkan(CDriverVulkan *drv, ItGPUPrgDrvInfoPtrList it);
+	virtual ~CProgramDrvInfosVulkan();
+	virtual uint getUniformIndex(const char *name) const NL_OVERRIDE;
+
+	CDriverVulkan					*_VkDriver;
+	/// True for a nelvp program converted by convertNelvpToGLSL(): uniform
+	/// writes are redirected into NelvpConstantUB at the engine's user VP
+	/// binding instead of being ignored.
+	bool							IsNelvpConverted;
+	/// Name -> constant register map carried over from the nelvp source.
+	std::map<std::string, uint>		ParamIndices;
+	/// Constant registers in NlNelvpConstants (multiple of 4).
+	uint32							RegisterCount;
+	/// Constant register UBO, owned by this object (nelvp programs only).
+	NLMISC::CRefPtr<CUniformBuffer>	NelvpConstantUB;
+	/// Stable identity of the compiled shader in the pipeline cache.
+	uint32							Id;
+	/// Engine display name, for logs.
+	std::string						DisplayName;
+	/// True once the first draw using this program has been logged.
+	bool							FirstDrawLogged;
+	/// True when the program writes the specular colour varying; selects the
+	/// mega pixel program variant, same contract as GL3's m_VPSpecularOutput.
+	bool							OutputsSpecularColor;
+};
 
 /// A Vulkan vertex buffer created on behalf of a NeL CVertexBuffer.
 /// The memory is host visible and coherent: NeL writes vertex data through
@@ -116,6 +154,8 @@ struct CPipelineKey
 	uint32	AlphaBlendBits;
 	uint32	Mega;             // use the mega VP/PP instead of the simple shader
 	uint32	MegaCube;         // mega PP samples a cubemap at sampler1 (Specular)
+	uint32	UserVP;           // active user vertex program id (0 = builtin mega VP)
+	uint32	MegaSpecular;     // mega PP adds the specularColor varying (from the VP)
 
 	bool operator==(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
 	bool operator<(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) < 0; }
@@ -351,7 +391,7 @@ public:
 	virtual ITexture *getRenderTarget() const override;
 	virtual IOcclusionQuery *createOcclusionQuery() override;
 	virtual bool bindUniformBuffer(TUBBinding binding, CUniformBuffer *ub) override;
-	virtual bool supportBuiltinUBO() const override { return true; }
+	virtual bool supportBuiltinUBO() const override { return getenv("NLVK_NOUBO") == NULL; }
 	virtual uint getMaxLightTableSize() const override;
 	virtual bool supportVertexProgramClipPlanes() const override { return false; }
 	virtual bool needVertexProgramClipVariant() const override { return false; }
@@ -494,13 +534,24 @@ private:
 	VkShaderModule			getMegaPixelShader(bool cube, bool specular);
 	bool					canUseMegaPath(bool &cube);
 	void					fillMegaPipelineKey(CPipelineKey &key);
-	bool					bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb, bool cube, bool specular);
+	bool					bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb);
 	const CCameraUBOData	&stageMegaCameraUBO();
 	void					stageMegaLightTableUBO();
 	void					stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data);
 	void					stageMegaMaterialUBO(CMaterial &mat, CMaterialUBOData &data);
 	uint32					allocUniformBlock(const void *data, uint32 size);
+	/// Make room for one more per-draw uniform block, growing the ring without
+	/// invalidating blocks a frame in flight may still reference.
+	bool					growUniformRing(uint32 required);
 	void					computeLightMapInfos(const CMaterial &mat);
+
+	// --- User vertex programs (driver_vulkan_vp.cpp) ---
+	/// True when a compiled user VP is selected and its shader exists.
+	bool					hasActiveUserVPS();
+	/// The engine UBO that the active user VP reads at binding 4.
+	CUniformBuffer			*activeUserVPUB();
+	/// Copy the active user VP's uniform data into the per-frame ring.
+	bool					stageUserVPUB(VkDescriptorBufferInfo &info);
 
 	// --- Textures (driver_vulkan_texture.cpp) ---
 	CTextureVulkan			*getTextureVulkan(ITexture &tex);
@@ -523,6 +574,7 @@ private:
 
 	// --- Mega shader resources ---
 	bool						_MegaEnabled;
+	bool						_MegaResourcesReady; // mega descriptor layout/pipeline layout exist
 	VkDescriptorSetLayout		_MegaDescriptorSetLayout;
 	VkPipelineLayout			_MegaPipelineLayout;
 	VkShaderModule				_MegaVertexShader;
@@ -535,6 +587,18 @@ private:
 	VkDeviceMemory				_MegaUserBufferMemory;
 	CCameraUBOData				_MegaCameraData;
 	bool						_MegaCameraDirty;
+
+	// --- User vertex programs (driver_vulkan_vp.cpp) ---
+	// The active program replaces the mega vertex stage for every draw made
+	// while it is selected. _NelvpActiveUB is the constant register block a
+	// converted nelvp program writes through setUniform*; _BoundUserUB holds
+	// the UBO the engine bound explicitly for a GLSL user program.
+	CProgramDrvInfosVulkan		*_ActiveUserVP;
+	CUniformBuffer				*_NelvpActiveUB;
+	CUniformBuffer				*_BoundUserUB[UBBindingCount];
+	bool						_VPSpecularOutput;
+	uint32						_NextUserVPId;
+	std::map<uint32, VkShaderModule>	_UserVPShaders;
 
 	// --- Mega lightmap multi-pass staging ---
 	// Mirrors the GL3 driver: the engine draws a LightMap material once per
@@ -650,6 +714,8 @@ public:
 	VkDevice				getDevice() const { return _Device; }
 	bool					isFrameOpen() const { return _FrameOpen; }
 	void					deferDestroyBuffer(VkBuffer buffer, VkDeviceMemory memory) { _PendingBufferDestroy.push_back(std::make_pair(buffer, memory)); }
+	/// Release a user VP shader module and forget its cache entry.
+	void					releaseUserVPShader(uint32 id);
 
 	uint32					findMemoryType(uint32 typeBits, VkMemoryPropertyFlags props) const;
 };

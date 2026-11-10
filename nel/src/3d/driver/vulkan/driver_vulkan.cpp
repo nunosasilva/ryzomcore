@@ -173,6 +173,12 @@ CDriverVulkan::CDriverVulkan()
 	_AmbientColor = CRGBA(51, 51, 51);
 
 	_MegaEnabled = getenv("NLVK_MEGA") != NULL;
+	_MegaResourcesReady = false;
+	_ActiveUserVP = NULL;
+	_NelvpActiveUB = NULL;
+	memset(_BoundUserUB, 0, sizeof(_BoundUserUB));
+	_VPSpecularOutput = true;
+	_NextUserVPId = 0;
 	_MegaDescriptorSetLayout = VK_NULL_HANDLE;
 	_MegaPipelineLayout = VK_NULL_HANDLE;
 	_MegaVertexShader = VK_NULL_HANDLE;
@@ -788,9 +794,11 @@ bool CDriverVulkan::initVulkan()
 	}
 
 	// Uniform ring: per-draw uniform slots, host visible, reset each frame.
-	// The mega path writes camera, object and material blocks per draw, so it
-	// needs more room than the single simple-path block per draw.
-	_UniformRingSize = 8 * 1024 * 1024;
+	// The mega path writes camera, object and material blocks per draw, and a
+	// user vertex program adds its own block; dense vegetation can reach tens
+	// of thousands of draws per frame, so size it generously up front and grow
+	// it without destroying a buffer a frame may still reference.
+	_UniformRingSize = 128 * 1024 * 1024;
 	{
 		VkBufferCreateInfo bci;
 		memset(&bci, 0, sizeof(bci));
@@ -815,10 +823,11 @@ bool CDriverVulkan::initVulkan()
 		_UniformRingOffset = 0;
 	}
 
-	if (_MegaEnabled && !initMega())
+	if (!initMega())
 	{
 		nlwarning("Vulkan: mega shader resources unavailable, keeping the simple shader path");
 		_MegaEnabled = false;
+		_MegaResourcesReady = false;
 	}
 
 	// Put the depth buffer in the layout the render pass expects once.
