@@ -614,7 +614,8 @@ void CDriverVulkan::destroySwapchain()
 	_SwapchainViews.clear();
 	_SwapchainImages.clear();
 	destroyDepthResources();
-	if (_RenderPass) { vkDestroyRenderPass(_Device, _RenderPass, NULL); _RenderPass = VK_NULL_HANDLE; }
+	// The render pass only depends on the attachment formats, which do not change
+	// with the swapchain size: keep it (and therefore every cached pipeline).
 	if (_Swapchain) { vkDestroySwapchainKHR(_Device, _Swapchain, NULL); _Swapchain = VK_NULL_HANDLE; }
 }
 
@@ -950,11 +951,15 @@ void CDriverVulkan::recreateSwapchain()
 	destroySwapchain();
 	if (!createSwapchain())
 		return;
-	if (!createRenderPass())
-		return;
 	if (!createDepthResources())
 		return;
-	createFramebuffers();
+	if (!createFramebuffers())
+		nlwarning("Vulkan: framebuffer recreation failed");
+	if (_FrameOpen)
+	{
+		// Never leave a frame half recorded across a swapchain change.
+		_FrameOpen = false;
+	}
 }
 
 bool CDriverVulkan::getModes(std::vector<GfxMode> &modes)
@@ -1130,20 +1135,35 @@ bool CDriverVulkan::beginFrame()
 	rbi.pClearValues = clears;
 	vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 
-	// Default viewport and scissor for the whole window.
-	VkViewport vkViewport;
-	vkViewport.x = 0.f;
-	vkViewport.y = (float)_SwapchainExtent.height;
-	vkViewport.width = (float)_SwapchainExtent.width;
-	vkViewport.height = -(float)_SwapchainExtent.height;
-	vkViewport.minDepth = 0.f;
-	vkViewport.maxDepth = 1.f;
-	vkCmdSetViewport(cmd, 0, 1, &vkViewport);
-	VkRect2D scissorRect;
-	scissorRect.offset.x = 0;
-	scissorRect.offset.y = 0;
-	scissorRect.extent = _SwapchainExtent;
-	vkCmdSetScissor(cmd, 0, 1, &scissorRect);
+	// Apply the cached viewport and scissor (they may have been set before the
+	// frame was opened; defaults are full screen).
+	{
+		float x = _Viewport.getX() * _SwapchainExtent.width;
+		float y = _Viewport.getY() * _SwapchainExtent.height;
+		float w = _Viewport.getWidth() * _SwapchainExtent.width;
+		float h = _Viewport.getHeight() * _SwapchainExtent.height;
+		VkViewport vkViewport;
+		vkViewport.x = x;
+		vkViewport.y = (float)_SwapchainExtent.height - y;
+		vkViewport.width = w > 0.f ? w : (float)_SwapchainExtent.width;
+		vkViewport.height = h > 0.f ? -h : -(float)_SwapchainExtent.height;
+		vkViewport.minDepth = 0.f;
+		vkViewport.maxDepth = 1.f;
+		vkCmdSetViewport(cmd, 0, 1, &vkViewport);
+
+		VkRect2D scissorRect;
+		scissorRect.offset.x = (sint32)(_Scissor.X * _SwapchainExtent.width);
+		scissorRect.offset.y = (sint32)(_SwapchainExtent.height - (_Scissor.Y + _Scissor.Height) * _SwapchainExtent.height);
+		scissorRect.extent.width = (uint32)(_Scissor.Width * _SwapchainExtent.width);
+		scissorRect.extent.height = (uint32)(_Scissor.Height * _SwapchainExtent.height);
+		if (scissorRect.extent.width == 0 || scissorRect.extent.height == 0)
+		{
+			scissorRect.offset.x = 0;
+			scissorRect.offset.y = 0;
+			scissorRect.extent = _SwapchainExtent;
+		}
+		vkCmdSetScissor(cmd, 0, 1, &scissorRect);
+	}
 
 	_FrameOpen = true;
 	_IndexRingOffset = 0;
@@ -1161,9 +1181,27 @@ bool CDriverVulkan::beginFrame()
 
 bool CDriverVulkan::clear2D(CRGBA rgba)
 {
-	beginFrame();
 	_ClearColor = rgba;
 	_ClearColorPending = true;
+	if (_FrameOpen)
+	{
+		// The pass has already started (the first clear of the frame sets it up).
+		VkClearAttachment attachment;
+		memset(&attachment, 0, sizeof(attachment));
+		attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		attachment.colorAttachment = 0;
+		attachment.clearValue.color.float32[0] = rgba.R / 255.f;
+		attachment.clearValue.color.float32[1] = rgba.G / 255.f;
+		attachment.clearValue.color.float32[2] = rgba.B / 255.f;
+		attachment.clearValue.color.float32[3] = rgba.A / 255.f;
+		VkClearRect rect;
+		memset(&rect, 0, sizeof(rect));
+		rect.rect.extent = _SwapchainExtent;
+		rect.layerCount = 1;
+		vkCmdClearAttachments(_CommandBuffers[_FrameIndex], 1, &attachment, 1, &rect);
+		return true;
+	}
+	beginFrame();
 	return true;
 }
 
@@ -1171,6 +1209,18 @@ bool CDriverVulkan::clearZBuffer(float zval)
 {
 	_ClearDepth = zval;
 	_ClearDepthPending = true;
+	if (_FrameOpen)
+	{
+		VkClearAttachment attachment;
+		memset(&attachment, 0, sizeof(attachment));
+		attachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		attachment.clearValue.depthStencil.depth = zval;
+		VkClearRect rect;
+		memset(&rect, 0, sizeof(rect));
+		rect.rect.extent = _SwapchainExtent;
+		rect.layerCount = 1;
+		vkCmdClearAttachments(_CommandBuffers[_FrameIndex], 1, &attachment, 1, &rect);
+	}
 	return true;
 }
 
