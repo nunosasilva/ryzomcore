@@ -2315,6 +2315,14 @@ CShaderProgram *CDriverGL3::linkPrograms(
 	if (!vpProg || !ppProg || !vpProg->m_DrvInfo || !ppProg->m_DrvInfo)
 		return nullptr;
 
+	// A VP/PP pair whose varyings do not match will fail to link every time it is
+	// requested. Cache the failure so a bad pairing costs one link, not one per frame
+	// (and does not flood client.log). The caller falls back to separate programs.
+	static std::set<std::pair<const IProgram *, const IProgram *> > s_FailedLinkedPrograms;
+	const std::pair<const IProgram *, const IProgram *> linkKey(vpProg, ppProg);
+	if (s_FailedLinkedPrograms.find(linkKey) != s_FailedLinkedPrograms.end())
+		return nullptr;
+
 	CProgramDrvInfosGL3 *vpDrvInfo = static_cast<CProgramDrvInfosGL3 *>((IProgramDrvInfos *)vpProg->m_DrvInfo);
 	CProgramDrvInfosGL3 *ppDrvInfo = static_cast<CProgramDrvInfosGL3 *>((IProgramDrvInfos *)ppProg->m_DrvInfo);
 
@@ -2347,7 +2355,13 @@ CShaderProgram *CDriverGL3::linkPrograms(
 	{
 		char errorLog[1024];
 		nglGetProgramInfoLog(linkedProg, 1024, nullptr, errorLog);
-		nlwarning("GL3: Linked program link failed: %s", errorLog);
+		const char *vpName = (vpProg->source() ? vpProg->source()->DisplayName.c_str() : "?");
+		const char *ppName = (ppProg->source() ? ppProg->source()->DisplayName.c_str() : "?");
+		int vpProfile = (vpProg->source() ? (int)vpProg->source()->Profile : -1);
+		int ppProfile = (ppProg->source() ? (int)ppProg->source()->Profile : -1);
+		nlwarning("GL3: Linked program link failed (VP='%s' profile=%d, PP='%s' profile=%d): %s",
+			vpName, vpProfile, ppName, ppProfile, errorLog);
+		s_FailedLinkedPrograms.insert(linkKey);
 		nglDeleteProgram(linkedProg);
 		return nullptr;
 	}

@@ -171,6 +171,10 @@ public:
 	{
 		M[ (j<<2) + i] = coeff;
 	}
+
+	/// Recompute the state flags after writing the matrix coefficients directly.
+	void		setFlags();
+
 	//@}
 	/** Choose an arbitrary rotation matrix for the given direction. The matrix will have I==idir
 	 *	\param idir: vector direction. MUST  be normalized.
@@ -361,6 +365,10 @@ public:
 	/// Plane (line vector) multiplication.
 	friend CPlane		operator*(const CPlane &p, const CMatrix &m);
 
+	/// Set up an OpenGL-style perspective projection matrix.
+	void frustum(float left, float right, float bottom, float top, float znear, float zfar);
+	/// Set up an OpenGL-style orthographic projection matrix.
+	void ortho(float left, float right, float bottom, float top, float znear, float zfar);
 
 private:
 	float	M[16];
