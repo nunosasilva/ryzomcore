@@ -91,10 +91,28 @@ Vulkan work: the GL3 mega shaders initialise and the client runs.
   credentials out for the login screen only.
 - Driver debug env: `NLVK_VALIDATION=1`, `NLVK_SCREENSHOT[_SEQ]`,
   `NLVK_NOCULL=1`, `NLVK_FORCECLEAR=1`, `NLVK_TESTTRI=1`.
-- `~/.local/share/opencode/worktree/f1fb99/vulkan-mega-shaders` — isolated
-  worktree where a subagent attempted the GL3 mega-shader port behind
-  `NLVK_MEGA=1`; check its branch `vulkan-mega-shaders` for progress. It is NOT
-  merged into `main/atys-live-n-vulkan`.
+## `vulkan-mega-shaders` branch (GL3 mega shaders, `NLVK_MEGA=1`)
+
+A subagent ported the GL3 mega vertex/pixel shaders and the four builtin UBOs
+into the Vulkan driver, gated behind `NLVK_MEGA=1` (the default path is
+untouched). It is pushed as branch **`vulkan-mega-shaders`**, commit
+**`71033c3b5`** (7 files, +2165/−41), based on `8729e8b2b`.
+
+Evidence from that branch:
+- builds with the same flags, no warnings in the new files;
+- with `NLVK_MEGA=1` the login screen renders through the mega path (all draws),
+  pixel-identical to the simple path apart from the blinking caret;
+- validation reports no shader/descriptor/pipeline errors for the mega path.
+
+Not done there: `LightMap` materials and cubemaps still use the simple path,
+TexGen/EMBM are not staged, user VPs are still disabled.
+
+**Merging it needs a rebase**: it predates the later fixes (object lifetime,
+std140 layout, clear ordering, clip-space convention), so a plain merge of
+`main/atys-live-n-vulkan` conflicts in `driver_vulkan.cpp` and
+`driver_vulkan_render.cpp` (merge was attempted and aborted). Rebase
+`vulkan-mega-shaders` onto the current branch, resolve those two files, rebuild,
+then retest with `NLVK_MEGA=1` on the login screen and in game.
 
 ## Build
 
