@@ -80,6 +80,89 @@ static const char *s_LightFacAccess[8] = {
 	"nlLightFactors45.x", "nlLightFactors45.y", "nlLightFactors45.z", "nlLightFactors45.w"
 };
 
+static bool identifierIsUsed(const std::string &src, const char *name)
+{
+	const std::string n(name);
+	size_t at = 0;
+	while ((at = src.find(n, at)) != std::string::npos)
+	{
+		const bool leftOk = at == 0 || !(isalnum((unsigned char)src[at - 1]) || src[at - 1] == '_');
+		const size_t after = at + n.size();
+		const bool rightOk = after >= src.size() || !(isalnum((unsigned char)src[after]) || src[after] == '_');
+		if (leftOk && rightOk)
+			return true;
+		at = after;
+	}
+	return false;
+}
+
+/** Declare exactly the varyings the generated body reads.
+
+	`src` still contains the marker line emitted where the declarations belong; the marker is
+	replaced by the declaration list. Order and locations follow the original scheme so the SSO
+	locations keep matching what the vertex programs write.
+*/
+static std::string emitUsedVaryings(const std::string &src)
+{
+	const char *marker = "//@@NLPPVARYINGS linked=";
+	const size_t mPos = src.find(marker);
+	if (mPos == std::string::npos)
+		return src;
+
+	// mode flag -> the SSO build needs layout(location)
+	const size_t flagPos = mPos + strlen(marker);
+	const bool linked = src[flagPos] == '1';
+	const size_t mEnd = src.find("@@", flagPos) + 2;
+	const size_t lineEnd = src.find('\n', mEnd);
+
+	// The body is everything that is not the marker line; asking about identifiers from the
+	// whole source would match the declarations themselves once they are inserted.
+	const std::string body = src.substr(0, mPos) + src.substr(lineEnd + 1);
+
+	std::string decls;
+	for (int i = Weight; i < NumOffsets; ++i)
+	{
+		if (i == PrimaryColor || i == SecondaryColor)
+			continue; // never varyings: the VP may skip them
+		const char *name = g_AttribNames[i];
+		if (!identifierIsUsed(body, name))
+			continue;
+		if (!linked)
+			decls += "layout(location = " + NLMISC::toString(i) + ") ";
+		decls += std::string("smooth in vec4 ") + name + ";\n";
+	}
+	// The three PPL/fog slots replace generic ones above; declare them only when read.
+	struct { const char *name; int location; } specials[] = {
+		{ "ecPos",       VaryingLocationEcPos },        // never a varying slot of its own
+		{ "vertexColor", VaryingLocationVertexColor },
+		{ "worldPos",    VaryingLocationWorldPos }
+	};
+	for (uint i = 0; i < sizeof(specials) / sizeof(specials[0]); ++i)
+	{
+		if (!identifierIsUsed(body, specials[i].name))
+			continue;
+		if (!linked)
+			decls += "layout(location = " + NLMISC::toString(specials[i].location) + ") ";
+		decls += std::string("smooth in vec4 ") + specials[i].name + ";\n";
+	}
+	struct { const char *name; int location; } colors[] = {
+		{ "diffuseColor",  VaryingLocationDiffuseColor },
+		{ "specularColor", VaryingLocationSpecularColor }
+	};
+	for (uint i = 0; i < sizeof(colors) / sizeof(colors[0]); ++i)
+	{
+		if (!identifierIsUsed(body, colors[i].name))
+			continue;
+		if (!linked)
+			decls += "layout(location = " + NLMISC::toString(colors[i].location) + ") ";
+		decls += std::string("smooth in vec4 ") + colors[i].name + ";\n";
+	}
+
+	std::string out = src;
+	out.replace(mPos, lineEnd - mPos, decls);
+	return out;
+}
+
 void megaPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specular, bool ppClip, bool tableUBO, bool cameraUBO, bool objectUBO, bool materialUBO, bool linked = false)
 {
 	// Object UBO implies camera UBO
@@ -115,43 +198,15 @@ void megaPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specular
 	ss << "out vec4 fragColor;" << std::endl;
 	ss << std::endl;
 
-	// Varying inputs (all declared unconditionally)
-	// layout(location) qualifiers required for SSO (glsl330f), not allowed for linked (glsl300esf)
-	for (int i = Weight; i < NumOffsets; ++i)
-	{
-		if (i == PrimaryColor || i == SecondaryColor)
-			continue;
-		if (fogOrPpl && i == VaryingLocationVertexColor)
-			continue; // Slot used by vertexColor
-		if (fogOrPpl && i == VaryingLocationWorldPos)
-			continue; // Slot used by worldPos
-		if (!linked)
-			ss << "layout(location = " << i << ") ";
-		ss << "smooth in vec4 " << g_AttribNames[i] << ";" << std::endl;
-	}
-	ss << std::endl;
-
-	if (fogOrPpl)
-	{
-		if (!linked)
-			ss << "layout(location = " << VaryingLocationEcPos << ") ";
-		ss << "smooth in vec4 ecPos;" << std::endl;
-		if (!linked)
-			ss << "layout(location = " << VaryingLocationVertexColor << ") ";
-		ss << "smooth in vec4 vertexColor;" << std::endl;
-		if (!linked)
-			ss << "layout(location = " << VaryingLocationWorldPos << ") ";
-		ss << "smooth in vec4 worldPos;" << std::endl;
-	}
-	if (!linked)
-		ss << "layout(location = " << VaryingLocationDiffuseColor << ") ";
-	ss << "smooth in vec4 diffuseColor;" << std::endl;
-	if (specular)
-	{
-		if (!linked)
-			ss << "layout(location = " << VaryingLocationSpecularColor << ") ";
-		ss << "smooth in vec4 specularColor;" << std::endl;
-	}
+	// Varying inputs are emitted by the post-pass at the end of this function, which declares
+	// exactly the ones the generated body reads. Declaring the whole vertex format cost this
+	// driver up to 8 unused vec4 slots per variant (measured: 14-15 declared, 6-9 read), and
+	// GL 3.3 core only guarantees 16 VP->PP varying locations. Deriving the list from the body
+	// itself is what keeps it from drifting: whatever the body references is declared, and
+	// nothing else can be.
+	// layout(location) qualifiers are required for SSO (glsl330f) and allowed in linked
+	// glsl300esf, so the post-pass needs to know which mode it is in.
+	ss << "//@@NLPPVARYINGS linked=" << (int)linked << "@@" << std::endl;
 	ss << std::endl;
 
 	// Samplers
@@ -702,9 +757,14 @@ void megaPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specular
 
 	ss << "}" << std::endl;
 
-	result = ss.str();
+	result = emitUsedVaryings(ss.str());
 }
 
+
+/** True if `name` occurs in `src` as a whole identifier (not as part of a longer one).
+
+	Used by the varying post-pass below: substring matching alone would count `normalize(` as
+	a read of `normal`. */
 } /* anonymous namespace */
 
 bool CDriverGL3::initMegaPixelPrograms()
