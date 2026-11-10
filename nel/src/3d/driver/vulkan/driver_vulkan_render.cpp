@@ -907,6 +907,11 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 	_BlendEnabled = (mat.getFlags() & IDRV_MAT_BLEND) != 0;
 	_SrcBlend = toVkBlend(mat.getSrcBlend());
 	_DstBlend = toVkBlend(mat.getDstBlend());
+	// Additive blended passes must not add the fog colour on top of the scene:
+	// with a fully fogged fragment they would otherwise add fogColor and wash
+	// out (or tint) everything behind them. GL3 overrides the fog colour with
+	// black for these draws.
+	_FogColorOverrideBlack = _BlendEnabled && _DstBlend == VK_BLEND_FACTOR_ONE && _FogEnabled;
 	_DepthWriteEnabled = (mat.getFlags() & IDRV_MAT_ZWRITE) != 0;
 	_DepthTestEnabled = true;
 	_DepthFunc = toVkCompare(mat.getZFunc());
@@ -949,15 +954,132 @@ bool CDriverVulkan::setupMaterial(CMaterial &mat)
 
 sint CDriverVulkan::beginMaterialMultiPass()
 {
-	return 1;
+	bool cube = false;
+	// The simple path keeps drawing one pass. Only the mega path implements the
+	// lightmap passes, so leaving a LightMap material on the simple path keeps
+	// its previous single-pass behaviour.
+	if (!_MegaEnabled || !_CurrentMaterial || _CurrentMaterial->getShader() != CMaterial::LightMap
+		|| !canUseMegaPath(cube))
+		return 1;
+
+	computeLightMapInfos(*_CurrentMaterial);
+	memcpy(_BaseStageTextures, _StageTextures, sizeof(_BaseStageTextures));
+	_MegaMultiPassActive = true;
+	return (sint)std::max(_NLightMapPass, (uint)1);
 }
 
 void CDriverVulkan::setupMaterialPass(uint pass)
 {
+	if (!_MegaMultiPassActive || !_MegaEnabled || !_CurrentMaterial)
+		return;
+
+	CMaterial &mat = *_CurrentMaterial;
+	_MegaPassOverrideActive = true;
+	_MegaPassDiffuse = 1.f;
+	_MegaPassLightMapScale = 1.f;
+	memset(_MegaPassConstants, 0, sizeof(_MegaPassConstants));
+	memset(_MegaPassSelfIllumination, 0, sizeof(_MegaPassSelfIllumination));
+	_MegaPassZeroLightFactors = false;
+	_MegaPassFogBlack = false;
+
+	for (uint stage = 0; stage < IDRV_PROGRAM_MAXSAMPLERS; ++stage)
+		_StageTextures[stage] = NULL;
+
+	// No usable lightmap: draw the material texture once, with the dynamic
+	// lighting kept as-is (no lightmap colour to add).
+	if (_NLightMaps == 0)
+	{
+		ITexture *texture = mat.getTexture(0);
+		if (texture)
+		{
+			bool allUploaded = false;
+			if (setupTextureEx(*texture, true, allUploaded, false))
+				_StageTextures[0] = getTextureVulkan(*texture);
+		}
+		// Keep dynamic light only: white diffuse, no specular, no lightmap scale.
+		_MegaPassLightMapScale = 1.f;
+		return;
+	}
+
+	nlassert(pass < _NLightMapPass);
+
+	// Stage layout, same as GL3: 0..nstages-2 are this pass' lightmaps,
+	// nstages-1 is the material texture. Lightmap factors become the TexEnv
+	// constants so the mega pixel program can accumulate them.
+	const uint lmapId = pass * _NLightMapPerPass;
+	const uint nstages = std::min(_NLightMapPerPass, _NLightMaps - lmapId) + 1;
+	uint r = 0, g = 0, b = 0;
+	for (uint sa = 0; sa < nstages - 1; ++sa)
+	{
+		const CMaterial::CLightMap &lm = mat._LightMaps[_LightMapLUT[lmapId + sa]];
+		r += ((uint32)lm.Factor.R * ((uint32)lm.LMCAmbient.R + (lm.LMCAmbient.R >> 7))) >> 8;
+		g += ((uint32)lm.Factor.G * ((uint32)lm.LMCAmbient.G + (lm.LMCAmbient.G >> 7))) >> 8;
+		b += ((uint32)lm.Factor.B * ((uint32)lm.LMCAmbient.B + (lm.LMCAmbient.B >> 7))) >> 8;
+	}
+	const CRGBA ambient((uint8)std::min(r, 255u), (uint8)std::min(g, 255u), (uint8)std::min(b, 255u), 255);
+	_MegaPassSelfIllumination[0] = ambient.R / 255.f;
+	_MegaPassSelfIllumination[1] = ambient.G / 255.f;
+	_MegaPassSelfIllumination[2] = ambient.B / 255.f;
+	_MegaPassSelfIllumination[3] = 0.f;
+	// Additive passes must not add the dynamic light again.
+	_MegaPassZeroLightFactors = (pass > 0);
+	_MegaPassFogBlack = (pass > 0 && _FogEnabled);
+
+	uint nextLightMap = lmapId;
+	for (uint stage = 0; stage < IDRV_PROGRAM_MAXSAMPLERS; ++stage)
+	{
+		if (stage < nstages - 1)
+		{
+			const CMaterial::CLightMap &lm = mat._LightMaps[_LightMapLUT[nextLightMap]];
+			ITexture *texture = lm.Texture;
+			if (texture)
+			{
+				bool allUploaded = false;
+				if (setupTextureEx(*texture, true, allUploaded, false))
+					_StageTextures[stage] = getTextureVulkan(*texture);
+			}
+			// The factor is modulated by the lightmap compression diffuse term,
+			// matching GL3 (LMC 8-bit lightmaps).
+			CRGBA factor = lm.Factor;
+			factor.R = (uint8)(((uint32)factor.R * ((uint32)lm.LMCDiffuse.R + (lm.LMCDiffuse.R >> 7))) >> 8);
+			factor.G = (uint8)(((uint32)factor.G * ((uint32)lm.LMCDiffuse.G + (lm.LMCDiffuse.G >> 7))) >> 8);
+			factor.B = (uint8)(((uint32)factor.B * ((uint32)lm.LMCDiffuse.B + (lm.LMCDiffuse.B >> 7))) >> 8);
+			factor.A = 255;
+			_MegaPassConstants[stage][0] = factor.R / 255.f;
+			_MegaPassConstants[stage][1] = factor.G / 255.f;
+			_MegaPassConstants[stage][2] = factor.B / 255.f;
+			_MegaPassConstants[stage][3] = factor.A / 255.f;
+			++nextLightMap;
+		}
+		else if (stage < nstages)
+		{
+			ITexture *texture = mat.getTexture(0);
+			if (texture)
+			{
+				bool allUploaded = false;
+				if (setupTextureEx(*texture, true, allUploaded, false))
+					_StageTextures[stage] = getTextureVulkan(*texture);
+			}
+		}
+	}
+
+	// x2 lightmap mode (legacy GL_RGB_SCALE=2): the vertex lighting is halved
+	// and the whole lightmap sum is scaled by two in the pixel program.
+	_MegaPassLightMapScale = mat._LightMapsMulx2 ? 2.f : 1.f;
+	_MegaPassDiffuse = 1.f / _MegaPassLightMapScale;
 }
 
 void CDriverVulkan::endMaterialMultiPass()
 {
+	if (!_MegaMultiPassActive)
+		return;
+	memcpy(_StageTextures, _BaseStageTextures, sizeof(_BaseStageTextures));
+	_MegaMultiPassActive = false;
+	_MegaPassOverrideActive = false;
+	_MegaPassZeroLightFactors = false;
+	_MegaPassFogBlack = false;
+	memset(_MegaPassConstants, 0, sizeof(_MegaPassConstants));
+	memset(_MegaPassSelfIllumination, 0, sizeof(_MegaPassSelfIllumination));
 }
 
 void CDriverVulkan::startSpecularBatch()
@@ -1295,14 +1417,38 @@ bool CDriverVulkan::renderTriangles(CMaterial &mat, uint32 firstIndex, uint32 nl
 {
 	if (!setupMaterial(mat))
 		return false;
-	return drawIndexed(mat, firstIndex, nlines * 3, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, _IndexFormat / 8);
+	sint passes = beginMaterialMultiPass();
+	bool ok = true;
+	for (sint pass = 0; pass < passes; ++pass)
+	{
+		setupMaterialPass((uint)pass);
+		if (!drawIndexed(mat, firstIndex, nlines * 3, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, _IndexFormat / 8))
+		{
+			ok = false;
+			break;
+		}
+	}
+	endMaterialMultiPass();
+	return ok;
 }
 
 bool CDriverVulkan::renderLines(CMaterial &mat, uint32 firstIndex, uint32 nlines)
 {
 	if (!setupMaterial(mat))
 		return false;
-	return drawIndexed(mat, firstIndex, nlines * 2, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, _IndexFormat / 8);
+	sint passes = beginMaterialMultiPass();
+	bool ok = true;
+	for (sint pass = 0; pass < passes; ++pass)
+	{
+		setupMaterialPass((uint)pass);
+		if (!drawIndexed(mat, firstIndex, nlines * 2, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, _IndexFormat / 8))
+		{
+			ok = false;
+			break;
+		}
+	}
+	endMaterialMultiPass();
+	return ok;
 }
 
 bool CDriverVulkan::renderSimpleTriangles(uint32 firstIndex, uint32 ntris)
@@ -1314,21 +1460,57 @@ bool CDriverVulkan::renderRawTriangles(CMaterial &mat, uint32 startVertex, uint3
 {
 	if (!setupMaterial(mat))
 		return false;
-	return drawArrays(mat, startVertex, numTri * 3, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+	sint passes = beginMaterialMultiPass();
+	bool ok = true;
+	for (sint pass = 0; pass < passes; ++pass)
+	{
+		setupMaterialPass((uint)pass);
+		if (!drawArrays(mat, startVertex, numTri * 3, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST))
+		{
+			ok = false;
+			break;
+		}
+	}
+	endMaterialMultiPass();
+	return ok;
 }
 
 bool CDriverVulkan::renderRawLines(CMaterial &mat, uint32 startVertex, uint32 numTri)
 {
 	if (!setupMaterial(mat))
 		return false;
-	return drawArrays(mat, startVertex, numTri * 2, VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
+	sint passes = beginMaterialMultiPass();
+	bool ok = true;
+	for (sint pass = 0; pass < passes; ++pass)
+	{
+		setupMaterialPass((uint)pass);
+		if (!drawArrays(mat, startVertex, numTri * 2, VK_PRIMITIVE_TOPOLOGY_LINE_LIST))
+		{
+			ok = false;
+			break;
+		}
+	}
+	endMaterialMultiPass();
+	return ok;
 }
 
 bool CDriverVulkan::renderRawPoints(CMaterial &mat, uint32 startVertex, uint32 numPoints)
 {
 	if (!setupMaterial(mat))
 		return false;
-	return drawArrays(mat, startVertex, numPoints, VK_PRIMITIVE_TOPOLOGY_POINT_LIST);
+	sint passes = beginMaterialMultiPass();
+	bool ok = true;
+	for (sint pass = 0; pass < passes; ++pass)
+	{
+		setupMaterialPass((uint)pass);
+		if (!drawArrays(mat, startVertex, numPoints, VK_PRIMITIVE_TOPOLOGY_POINT_LIST))
+		{
+			ok = false;
+			break;
+		}
+	}
+	endMaterialMultiPass();
+	return ok;
 }
 
 bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 numQuads)
@@ -1364,77 +1546,120 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 	if (!info || !info->_VertexBuffer)
 		return false;
 
-	uint32 remaining = numQuads;
-	uint32 base = 0;
-	while (remaining > 0)
+	sint passes = beginMaterialMultiPass();
+	bool ok = true;
+	for (sint pass = 0; pass < passes && ok; ++pass)
 	{
-		uint32 batch = std::min(remaining, QUAD_BATCH_SIZE);
-		uint32 bytes = batch * 6 * sizeof(uint16);
-		VkBuffer indexBuffer = getIndexUploadBuffer(s_QuadIndices, bytes, sizeof(uint16));
-		if (indexBuffer == VK_NULL_HANDLE)
-			return false;
-
-		CPipelineKey key;
-		key.VertexFormat = makeVertexLayoutHash(*_CurrentVB);
-	key.VertexFlags = _CurrentVB->getVertexFormat();
-		key.VertexStride = _CurrentVB->getVertexSize();
-		key.Topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-		key.BlendEnable = _BlendEnabled ? 1 : 0;
-		key.SrcBlend = _SrcBlend;
-		key.DstBlend = _DstBlend;
-		key.DepthTest = _DepthTestEnabled ? 1 : 0;
-		key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
-		key.DepthCompare = _DepthFunc;
-		key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
-		key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-		key.ColorWriteMask = _ClearColorMask;
-		key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
-		key.HasTexture0 = _StageTextures[0] ? 1 : 0;
-		fillMegaPipelineKey(key);
-
-		VkPipeline pipeline = getPipeline(key);
-		if (pipeline == VK_NULL_HANDLE)
-			return false;
-
-		VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
-		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-		if (key.Mega)
+		setupMaterialPass((uint)pass);
+		uint32 remaining = numQuads;
+		uint32 base = 0;
+		while (remaining > 0)
 		{
-			if (!bindMegaDescriptors(cmd, *_CurrentVB, key.MegaCube != 0, true))
-				return false;
-		}
-		else
-		{
-			if (!commitPushConstants(key, cmd, *_CurrentVB))
-				return false;
-		}
-		VkDeviceSize offset = 0;
-		vkCmdBindVertexBuffers(cmd, 0, 1, &info->_VertexBuffer, &offset);
-		vkCmdBindIndexBuffer(cmd, indexBuffer, _IndexRingDrawOffset, VK_INDEX_TYPE_UINT16);
+			uint32 batch = std::min(remaining, QUAD_BATCH_SIZE);
+			uint32 bytes = batch * 6 * sizeof(uint16);
+			VkBuffer indexBuffer = getIndexUploadBuffer(s_QuadIndices, bytes, sizeof(uint16));
+			if (indexBuffer == VK_NULL_HANDLE)
+			{
+				ok = false;
+				break;
+			}
 
-		// The quad index pattern addresses vertices relative to the batch start.
-		sint32 firstVertex = (sint32)(startVertex + base);
-		vkCmdDrawIndexed(cmd, batch * 6, 1, 0, firstVertex, 0);
-		++_IndexedDrawCount;
+			CPipelineKey key;
+			key.VertexFormat = makeVertexLayoutHash(*_CurrentVB);
+			key.VertexFlags = _CurrentVB->getVertexFormat();
+			key.VertexStride = _CurrentVB->getVertexSize();
+			key.Topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+			key.BlendEnable = _BlendEnabled ? 1 : 0;
+			key.SrcBlend = _SrcBlend;
+			key.DstBlend = _DstBlend;
+			key.DepthTest = _DepthTestEnabled ? 1 : 0;
+			key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
+			key.DepthCompare = _DepthFunc;
+			key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
+			key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+			key.ColorWriteMask = _ClearColorMask;
+			key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
+			key.HasTexture0 = _StageTextures[0] ? 1 : 0;
+			fillMegaPipelineKey(key);
 
-		base += batch * 4;
-		remaining -= batch;
+			VkPipeline pipeline = getPipeline(key);
+			if (pipeline == VK_NULL_HANDLE)
+			{
+				ok = false;
+				break;
+			}
+
+			VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+			if (key.Mega)
+			{
+				if (!bindMegaDescriptors(cmd, *_CurrentVB, key.MegaCube != 0, true))
+				{
+					ok = false;
+					break;
+				}
+			}
+			else
+			{
+				if (!commitPushConstants(key, cmd, *_CurrentVB))
+				{
+					ok = false;
+					break;
+				}
+			}
+			VkDeviceSize offset = 0;
+			vkCmdBindVertexBuffers(cmd, 0, 1, &info->_VertexBuffer, &offset);
+			vkCmdBindIndexBuffer(cmd, indexBuffer, _IndexRingDrawOffset, VK_INDEX_TYPE_UINT16);
+
+			// The quad index pattern addresses vertices relative to the batch start.
+			sint32 firstVertex = (sint32)(startVertex + base);
+			vkCmdDrawIndexed(cmd, batch * 6, 1, 0, firstVertex, 0);
+			++_IndexedDrawCount;
+
+			base += batch * 4;
+			remaining -= batch;
+		}
 	}
-	return true;
+	endMaterialMultiPass();
+	return ok;
 }
 
 bool CDriverVulkan::renderTrianglesWithIndexOffset(CMaterial &mat, uint32 firstIndex, uint32 ntris, uint indexOffset)
 {
 	if (!setupMaterial(mat))
 		return false;
-	return drawIndexed(mat, firstIndex, ntris * 3, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, _IndexFormat / 8);
+	sint passes = beginMaterialMultiPass();
+	bool ok = true;
+	for (sint pass = 0; pass < passes; ++pass)
+	{
+		setupMaterialPass((uint)pass);
+		if (!drawIndexed(mat, firstIndex, ntris * 3, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, _IndexFormat / 8))
+		{
+			ok = false;
+			break;
+		}
+	}
+	endMaterialMultiPass();
+	return ok;
 }
 
 bool CDriverVulkan::renderLinesWithIndexOffset(CMaterial &mat, uint32 firstIndex, uint32 nlines, uint indexOffset)
 {
 	if (!setupMaterial(mat))
 		return false;
-	return drawIndexed(mat, firstIndex, nlines * 2, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, _IndexFormat / 8);
+	sint passes = beginMaterialMultiPass();
+	bool ok = true;
+	for (sint pass = 0; pass < passes; ++pass)
+	{
+		setupMaterialPass((uint)pass);
+		if (!drawIndexed(mat, firstIndex, nlines * 2, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, _IndexFormat / 8))
+		{
+			ok = false;
+			break;
+		}
+	}
+	endMaterialMultiPass();
+	return ok;
 }
 
 bool CDriverVulkan::renderSimpleTrianglesWithIndexOffset(uint32 firstIndex, uint32 ntris, uint indexOffset)
