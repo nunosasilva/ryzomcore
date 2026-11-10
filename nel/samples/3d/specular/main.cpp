@@ -211,7 +211,6 @@ public:
 		_CloseWindow = false;
 		_Spin = false;
 		_CubeMap = cubeMap; // must be known before the textures are built below
-		_Time = 0.0;
 		_Frame = 0;
 		_Driver = NULL;
 
@@ -373,7 +372,6 @@ private:
 	bool			_CloseWindow;
 	bool			_Spin;
 	bool			_CubeMap;
-	double			_Time;
 	uint			_Frame;
 
 	UMaterial		_Mat;
