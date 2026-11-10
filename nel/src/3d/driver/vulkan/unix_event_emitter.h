@@ -18,8 +18,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#ifndef NL_UNIX_EVENT_EMITTER_H
-#define NL_UNIX_EVENT_EMITTER_H
+#ifndef NL_VULKAN_UNIX_EVENT_EMITTER_H
+#define NL_VULKAN_UNIX_EVENT_EMITTER_H
 
 #include "nel/misc/types_nl.h"
 #include "nel/misc/event_emitter.h"
@@ -40,16 +40,16 @@ namespace NLMISC {
  * \author Nevrax France
  * \date 2000
  */
-class CUnixEventEmitter : public IEventEmitter
+class CVulkanEventEmitter : public IEventEmitter
 {
 public:
 
 	/// Constructor
-	CUnixEventEmitter();
-	virtual ~CUnixEventEmitter();
+	CVulkanEventEmitter();
+	virtual ~CVulkanEventEmitter();
 
 	/**
-	 * initialize CUnixEventEmitter
+	 * initialize CVulkanEventEmitter
 	 */
 	void init(Display *dpy, Window win, NL3D::IDriver *driver = nullptr);
 
@@ -82,7 +82,7 @@ private:
 	// Private internal server message
 	class CUnixEventServer : CEventServer
 	{
-		friend class CUnixEventEmitter;
+		friend class CVulkanEventEmitter;
 	public:
 		void setServer (CEventServer *server)
 		{

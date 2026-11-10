@@ -77,10 +77,14 @@ bool CDriverVulkan::fillBuffer(CBitmap &bitmap)
 
 void CDriverVulkan::setDepthRange(float znear, float zfar)
 {
+	_DepthRangeNear = znear;
+	_DepthRangeFar = zfar;
 }
 
 void CDriverVulkan::getDepthRange(float &znear, float &zfar) const
 {
+	znear = _DepthRangeNear;
+	zfar = _DepthRangeFar;
 }
 
 void CDriverVulkan::forceDXTCCompression(bool dxtcComp)

@@ -42,7 +42,7 @@ static Atom XA_WM_DELETE_WINDOW = 0;
 
 namespace NLMISC {
 
-CUnixEventEmitter::CUnixEventEmitter ():_dpy(nullptr)
+CVulkanEventEmitter::CVulkanEventEmitter ():_dpy(nullptr)
     , _win(0), _driver(nullptr)
 {
 	_im = nullptr;
@@ -50,12 +50,12 @@ CUnixEventEmitter::CUnixEventEmitter ():_dpy(nullptr)
 	_SelectionOwned=false;
 }
 
-CUnixEventEmitter::~CUnixEventEmitter()
+CVulkanEventEmitter::~CVulkanEventEmitter()
 {
 	closeIM();
 }
 
-void CUnixEventEmitter::init(Display *dpy, Window win, NL3D::IDriver *driver)
+void CVulkanEventEmitter::init(Display *dpy, Window win, NL3D::IDriver *driver)
 {
 	_dpy = dpy;
 	_win = win;
@@ -84,7 +84,7 @@ void CUnixEventEmitter::init(Display *dpy, Window win, NL3D::IDriver *driver)
 	createIM();
 }
 
-void CUnixEventEmitter::createIM()
+void CVulkanEventEmitter::createIM()
 {
 #ifdef X_HAVE_UTF8_STRING
 
@@ -113,7 +113,7 @@ void CUnixEventEmitter::createIM()
 #endif
 }
 
-void CUnixEventEmitter::closeIM()
+void CVulkanEventEmitter::closeIM()
 {
 #ifdef X_HAVE_UTF8_STRING
 	if (_ic)
@@ -130,7 +130,7 @@ void CUnixEventEmitter::closeIM()
 #endif
 }
 
-void CUnixEventEmitter::submitEvents(CEventServer & server, bool allWindows)
+void CVulkanEventEmitter::submitEvents(CEventServer & server, bool allWindows)
 {
 	while (XPending(_dpy))
 	{
@@ -463,7 +463,7 @@ static bool keyRepeat(Display *display, XEvent *event)
 	return false;
 }
 
-bool CUnixEventEmitter::processMessage (XEvent &event, CEventServer *server)
+bool CVulkanEventEmitter::processMessage (XEvent &event, CEventServer *server)
 {
 	if (!server)
 		server=&_InternalServer;
@@ -821,7 +821,7 @@ bool CUnixEventEmitter::processMessage (XEvent &event, CEventServer *server)
 	return true;
 }
 
-bool CUnixEventEmitter::copyTextToClipboard(const std::string &text)
+bool CVulkanEventEmitter::copyTextToClipboard(const std::string &text)
 {
 	_CopiedString = text;
 
@@ -840,7 +840,7 @@ bool CUnixEventEmitter::copyTextToClipboard(const std::string &text)
 	return true;
 }
 
-bool CUnixEventEmitter::pasteTextFromClipboard(std::string &text)
+bool CVulkanEventEmitter::pasteTextFromClipboard(std::string &text)
 {
 	// check if we own the selection
 	if (_SelectionOwned)

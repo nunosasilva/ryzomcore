@@ -374,7 +374,7 @@ private:
 	bool					_WindowVisible;
 	GfxMode					_CurrentMode;
 #if defined(NL_OS_UNIX) && !defined(NL_OS_MAC)
-	NLMISC::CUnixEventEmitter _EventEmitter;
+	NLMISC::CVulkanEventEmitter _EventEmitter;
 #endif
 
 	// --- Vulkan core ---

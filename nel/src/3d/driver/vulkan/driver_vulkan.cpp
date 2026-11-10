@@ -850,6 +850,49 @@ void CDriverVulkan::shutdownVulkan()
 
 	if (_Device)
 	{
+		// Textures.
+		for (map<ITexture *, CTextureVulkan>::iterator it = _TexturesVulkan.begin(); it != _TexturesVulkan.end(); ++it)
+		{
+			CTextureVulkan &tex = it->second;
+			if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
+			if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
+			if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
+			if (tex.Memory) vkFreeMemory(_Device, tex.Memory, NULL);
+		}
+		_TexturesVulkan.clear();
+		CTextureVulkan &white = _WhiteTexture;
+		if (white.Sampler) vkDestroySampler(_Device, white.Sampler, NULL);
+		if (white.View) vkDestroyImageView(_Device, white.View, NULL);
+		if (white.Image) vkDestroyImage(_Device, white.Image, NULL);
+		if (white.Memory) vkFreeMemory(_Device, white.Memory, NULL);
+
+		// Pipelines and layouts.
+		for (map<CPipelineKey, CPipelineVulkan>::iterator it = _PipelineCache.begin(); it != _PipelineCache.end(); ++it)
+			if (it->second.Pipeline) vkDestroyPipeline(_Device, it->second.Pipeline, NULL);
+		_PipelineCache.clear();
+		if (_TestPipeline) { vkDestroyPipeline(_Device, _TestPipeline, NULL); _TestPipeline = VK_NULL_HANDLE; }
+		if (_PipelineLayout) { vkDestroyPipelineLayout(_Device, _PipelineLayout, NULL); _PipelineLayout = VK_NULL_HANDLE; }
+		if (_DescriptorSetLayout) { vkDestroyDescriptorSetLayout(_Device, _DescriptorSetLayout, NULL); _DescriptorSetLayout = VK_NULL_HANDLE; }
+		for (uint i = 0; i < 2; ++i)
+			if (_DescriptorPools[i]) { vkDestroyDescriptorPool(_Device, _DescriptorPools[i], NULL); _DescriptorPools[i] = VK_NULL_HANDLE; }
+
+		// Shaders.
+		for (map<uint32, VkShaderModule>::iterator it = _VertexShaderVariants.begin(); it != _VertexShaderVariants.end(); ++it)
+			vkDestroyShaderModule(_Device, it->second, NULL);
+		_VertexShaderVariants.clear();
+		if (_FragmentShader) { vkDestroyShaderModule(_Device, _FragmentShader, NULL); _FragmentShader = VK_NULL_HANDLE; }
+
+		// Ring and debug buffers.
+		if (_UniformRing) { vkDestroyBuffer(_Device, _UniformRing, NULL); _UniformRing = VK_NULL_HANDLE; }
+		if (_UniformRingMemory) { vkFreeMemory(_Device, _UniformRingMemory, NULL); _UniformRingMemory = VK_NULL_HANDLE; }
+		if (_IndexRing) { vkDestroyBuffer(_Device, _IndexRing, NULL); _IndexRing = VK_NULL_HANDLE; }
+		if (_IndexRingMemory) { vkFreeMemory(_Device, _IndexRingMemory, NULL); _IndexRingMemory = VK_NULL_HANDLE; }
+		if (_ScreenshotBuffer) { vkDestroyBuffer(_Device, _ScreenshotBuffer, NULL); _ScreenshotBuffer = VK_NULL_HANDLE; }
+		if (_ScreenshotMemory) { vkFreeMemory(_Device, _ScreenshotMemory, NULL); _ScreenshotMemory = VK_NULL_HANDLE; }
+
+		// The render pass is kept for the lifetime of the device.
+		if (_RenderPass) { vkDestroyRenderPass(_Device, _RenderPass, NULL); _RenderPass = VK_NULL_HANDLE; }
+
 		vkDestroyDevice(_Device, NULL);
 		_Device = VK_NULL_HANDLE;
 	}
@@ -860,6 +903,14 @@ void CDriverVulkan::shutdownVulkan()
 	}
 	if (_Instance)
 	{
+		if (_DebugMessenger)
+		{
+			PFN_vkDestroyDebugUtilsMessengerEXT destroyMessenger =
+				(PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(_Instance, "vkDestroyDebugUtilsMessengerEXT");
+			if (destroyMessenger)
+				destroyMessenger(_Instance, _DebugMessenger, NULL);
+			_DebugMessenger = VK_NULL_HANDLE;
+		}
 		vkDestroyInstance(_Instance, NULL);
 		_Instance = VK_NULL_HANDLE;
 	}
