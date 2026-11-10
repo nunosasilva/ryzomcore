@@ -525,11 +525,11 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	colorBlend.attachmentCount = 1;
 	colorBlend.pAttachments = &blendAttachment;
 
-	VkDynamicState dynamicStates[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+	VkDynamicState dynamicStates[3] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS };
 	VkPipelineDynamicStateCreateInfo dynamicState;
 	memset(&dynamicState, 0, sizeof(dynamicState));
 	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamicState.dynamicStateCount = 2;
+	dynamicState.dynamicStateCount = 3;
 	dynamicState.pDynamicStates = dynamicStates;
 
 	VkGraphicsPipelineCreateInfo pci;
@@ -1102,6 +1102,13 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	writes[4].pBufferInfo = &bufferInfo;
 	vkUpdateDescriptorSets(_Device, 5, writes, 0, NULL);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _PipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+	const float blendConstants[4] = {
+		_BlendConstantColor.R / 255.f,
+		_BlendConstantColor.G / 255.f,
+		_BlendConstantColor.B / 255.f,
+		_BlendConstantColor.A / 255.f,
+	};
+	vkCmdSetBlendConstants(cmd, blendConstants);
 	return true;
 }
 
