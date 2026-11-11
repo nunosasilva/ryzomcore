@@ -2437,3 +2437,91 @@ The static Release client was also run from its install path as
 - The binary is stripped (`WITH_SYMBOLS=OFF`); `-DWITH_SYMBOLS=ON` if a
   symbolized optimized build is wanted for crash dumps (larger).
 - Nothing committed except the doc update; no client/gamescope left running.
+
+## Key-rebinding Save crash: closed-socket FD_SET abort (branch `vulkan-fdset-crash`)
+
+Worktree `f1fb99/vulkan-fdset-crash` at `db380f605`, branch
+`vulkan-fdset-crash`. User report: in the optimized static client
+(`ryzom_client_vulkan_opt`, Release + `FINAL_VERSION=OFF`), pressing `k`,
+rebinding movement, then clicking **Save** froze for a moment and the client
+aborted with `*** bit out of range 0 - FD_SETSIZE on fd_set ***: terminated`.
+
+### It was not an fd leak
+
+`coredumpctl` still had the user's core (PID 2730049, 2026-11-11 22:22:13,
+`ryzom_client_vulkan_opt`). Its stack is:
+
+    __libc_message -> __fortify_fail -> __GI___fdelt_chk
+      <- CSock::dataAvailable()            (ryzom_client_vulkan_opt + 0xb01358)
+      <- CUdpSimSock::dataAvailable()      (tail call to CSock::dataAvailable)
+      <- client network update state       (ryzom_client_vulkan_opt + 0x5696a8)
+
+At the abort, the `CSock` object (`0x5e2569501a40`, embedded as `UdpSock` in
+`CUdpSimSock` at `CNetworkConnection::_Connection`) had `_Sock == -1`.
+`glibc`'s `__fdelt_chk` rejects `-1` as well as `>= FD_SETSIZE`; the message
+mentions FD_SETSIZE, but the descriptor was **INVALID_SOCKET**, not 1024+.
+`client.log` confirms the sequence: `You were disconnected by the server` ->
+`sendSystemDisconnection` -> abort. `CNetworkConnection::receiveNormalMessage`
+handles `ACTION_DISCONNECTION_CODE` by calling `disconnect()`, which closes
+`_Connection` (`_Sock = -1`); the same `stateConnected()` receive loop then
+polls `_Connection.dataAvailable()` once more. `CSock::dataAvailable()` did
+`FD_SET(-1)` and aborted.
+
+No leak: `/proc/<pid>/fd | wc -l` was **413-416** in the user's static build
+and **394-414** in the fixed Debug/Release runs, stable over 5+ minutes and
+across repeated saves. Of those, ~252 are the two per-thread cached `FILE*`
+handles of ~126 `.bnp` files (`CBigFile`), 60 sockets and 74 eventfds (Vulkan,
+X11, sound); none grow per save or per frame. The fd never came near 1024.
+
+The visible "freeze" is the save itself: `saveConfig()` visits every widget,
+writes `save/interface_<char>.icfg` (~68 KB) and the FOW maps, then
+`saveKeys()` writes `save/keys_<char>.xml` (~13 KB). In the user's log the
+600-frame heartbeat took 7 s instead of 5 s, i.e. a ~2 s pause. It is not an
+infinite loop and does not by itself crash the client; the abort is a separate
+latent network bug that fires whenever the server disconnects the client.
+
+### Fix
+
+- `nel/src/net/sock.cpp`: `CSock::dataAvailable()` returns `false` for
+  `INVALID_SOCKET`; on Unix it now waits with `poll()` instead of `select()`.
+  `poll()` has no `FD_SETSIZE` limit and reports a stale descriptor as
+  `POLLNVAL` instead of writing outside an `fd_set`.
+- `nel/src/net/stdnet.h`: include `<poll.h>` on Unix.
+- `CBufClient::sleepUntilDataAvailable`, `CBufServer::sleepUntilDataAvailable`
+  and `CUnifiedNetwork::sleepUntilDataAvailable`: wait on their wake-up pipe
+  with `poll()` (also Unix-only code). An invalid pipe returns instead of
+  aborting.
+- `CServerReceiveTask::run` / `CListenTask::run` (server-only, not built by the
+  client) still use `select()`; they now check every socket/pipe descriptor
+  before `FD_SET` and sleep/log once if one is invalid or `>= FD_SETSIZE`
+  instead of aborting. A full `poll()` conversion of the server loops is left
+  as a follow-up; the receive loop can legitimately have >1024 clients.
+
+### Verification (1280x800 headless gamescope, account mats005 slot 1)
+
+- Unit checks: a closed `CUdpSock::dataAvailable()` returns `0`; a valid UDP
+  socket moved to fd **1100** (`> FD_SETSIZE`) also returns `0` instead of
+  aborting.
+- Exact crash path: a temporary `#ifdef NL_DEBUG` hook in `stateConnected()`
+  closed `_Connection` right after a normal message (the same place the
+  server-disconnection action does), then let the loop poll it again. With the
+  fix the Debug client kept rendering frames 600-7800 for ~66 s and wrote no
+  core; the hook was removed before committing.
+- Debug + fixed static Release, Vulkan and OpenGL3: opened `k`, clicked
+  **Save** five times in a row on each binary/driver. All stayed alive;
+  static Vulkan fds 411-412, static GL3 fds 394, Debug Vulkan 400-411. No
+  `FD_SET` abort, no new coredump. Key bindings persisted in
+  `save/keys_kykikos.xml` (e.g. `KeyW -> backward`, `KeyD -> look_down`).
+- Builds used for the test: Debug (`build-vulkan`) and a fresh static Release
+  `FINAL_VERSION=OFF` tree (`build-static-release`, 35 MB, no `libnel*` in
+  `ldd`), both from this branch.
+
+### Left
+
+- The ~2 s UI pause on Save is the normal full interface/FOW serialization;
+  it was not optimized here. If it matters, `serialFOWMaps()` and the
+  `CQuitVisitor` pass over all widgets are the places to look.
+- The server receive/listen loops still use one `select()` each. Converting
+  them to `poll()` would remove the >1024-client limit, but the client fix
+  does not depend on it.
+- No client/gamescope left running.
