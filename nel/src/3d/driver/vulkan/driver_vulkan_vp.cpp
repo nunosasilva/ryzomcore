@@ -1268,8 +1268,9 @@ bool CDriverVulkan::compilePixelProgram(CPixelProgram *program)
 		return false;
 	}
 
-	CProgramDrvInfosVulkan *drvInfo = new CProgramDrvInfosVulkan(this,
-		_GPUPrgDrvInfos.insert(_GPUPrgDrvInfos.end(), (IProgramDrvInfos *)NULL));
+	ItGPUPrgDrvInfoPtrList it = _GPUPrgDrvInfos.insert(_GPUPrgDrvInfos.end(), (IProgramDrvInfos *)NULL);
+	CProgramDrvInfosVulkan *drvInfo = new CProgramDrvInfosVulkan(this, it);
+	*it = drvInfo;
 	drvInfo->Id = ++_NextUserPPId;
 	drvInfo->DisplayName = src->DisplayName;
 	drvInfo->IsPixelProgram = true;
@@ -1364,8 +1365,9 @@ bool CDriverVulkan::compileInsertVertexProgram(CVertexProgram *program, IProgram
 		return false;
 	}
 
-	CProgramDrvInfosVulkan *drvInfo = new CProgramDrvInfosVulkan(this,
-		_GPUPrgDrvInfos.insert(_GPUPrgDrvInfos.end(), (IProgramDrvInfos *)NULL));
+	ItGPUPrgDrvInfoPtrList it = _GPUPrgDrvInfos.insert(_GPUPrgDrvInfos.end(), (IProgramDrvInfos *)NULL);
+	CProgramDrvInfosVulkan *drvInfo = new CProgramDrvInfosVulkan(this, it);
+	*it = drvInfo;
 	drvInfo->Id = ++_NextUserVPId;
 	drvInfo->DisplayName = insertSrc->DisplayName;
 	drvInfo->IsInsertProgram = true;
@@ -1433,8 +1435,9 @@ bool CDriverVulkan::compileVertexProgram(CVertexProgram *program)
 			VkShaderModule module = VK_NULL_HANDLE;
 			if (compileShader(source.c_str(), &module, true))
 			{
-				CProgramDrvInfosVulkan *drvInfo = new CProgramDrvInfosVulkan(this,
-					_GPUPrgDrvInfos.insert(_GPUPrgDrvInfos.end(), (IProgramDrvInfos *)NULL));
+				ItGPUPrgDrvInfoPtrList it = _GPUPrgDrvInfos.insert(_GPUPrgDrvInfos.end(), (IProgramDrvInfos *)NULL);
+				CProgramDrvInfosVulkan *drvInfo = new CProgramDrvInfosVulkan(this, it);
+				*it = drvInfo;
 				drvInfo->Id = ++_NextUserVPId;
 				drvInfo->DisplayName = glslSrc->DisplayName;
 				drvInfo->OutputsSpecularColor = glslSrc->Features.OutputsSpecularColor;
@@ -1503,8 +1506,9 @@ bool CDriverVulkan::compileVertexProgram(CVertexProgram *program)
 		memset(mem, 0, registerCount * 16);
 		constants->unlock();
 
-		CProgramDrvInfosVulkan *drvInfo = new CProgramDrvInfosVulkan(this,
-			_GPUPrgDrvInfos.insert(_GPUPrgDrvInfos.end(), (IProgramDrvInfos *)NULL));
+		ItGPUPrgDrvInfoPtrList it = _GPUPrgDrvInfos.insert(_GPUPrgDrvInfos.end(), (IProgramDrvInfos *)NULL);
+		CProgramDrvInfosVulkan *drvInfo = new CProgramDrvInfosVulkan(this, it);
+		*it = drvInfo;
 		drvInfo->Id = ++_NextUserVPId;
 		drvInfo->DisplayName = nelvpSrc->DisplayName;
 		drvInfo->IsNelvpConverted = true;

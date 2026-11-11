@@ -28,6 +28,7 @@
 #include <X11/keysym.h>
 #include <X11/Xutil.h>
 #include <X11/XKBlib.h>
+#include <cstring>
 #include "nel/misc/debug.h"
 #include "nel/misc/utf_string_view.h"
 
@@ -39,6 +40,13 @@ static Atom XA_UTF8_STRING = 0;
 static Atom XA_TARGETS = 0;
 static Atom XA_NEL_SEL = 0;
 static Atom XA_WM_DELETE_WINDOW = 0;
+
+/// Xlib's default error handler terminates the process; window queries after
+/// the WM destroyed the window must not do that.
+static int ignoreXErrorNoExit(Display *, XErrorEvent *)
+{
+	return 0;
+}
 
 namespace NLMISC {
 
@@ -469,7 +477,14 @@ bool CVulkanEventEmitter::processMessage (XEvent &event, CEventServer *server)
 		server=&_InternalServer;
 
 	XWindowAttributes xwa;
+	memset(&xwa, 0, sizeof(xwa));
+	// The window may have been destroyed by the WM (DestroyNotify is one of
+	// the events that leads here); Xlib's default handler would exit the
+	// process on the resulting BadWindow, so ignore protocol errors.
+	XErrorHandler oldHandler = XSetErrorHandler(ignoreXErrorNoExit);
 	XGetWindowAttributes (_dpy, _win, &xwa);
+	XSync(_dpy, False);
+	XSetErrorHandler(oldHandler);
 
 	switch (event.type)
 	{
@@ -803,8 +818,20 @@ bool CVulkanEventEmitter::processMessage (XEvent &event, CEventServer *server)
 		XRefreshKeyboardMapping((XMappingEvent *)&event);
 		break;
 	case DestroyNotify:
-		// XIM server has crashed
-		createIM();
+		if (event.xdestroywindow.window == _win)
+		{
+			// The game window itself is gone: the WM force-closed it (or the
+			// user's window manager destroyed it instead of asking). Treat it
+			// like WM_DELETE so the client shuts down instead of running the
+			// frame loop against a dead surface.
+			if (server != nullptr)
+				server->postEvent(new CEventDestroyWindow(this));
+		}
+		else
+		{
+			// XIM server has crashed
+			createIM();
+		}
 		break;
 	case ClientMessage:
 		if ((event.xclient.format == 32) && ((Atom)event.xclient.data.l[0] == XA_WM_DELETE_WINDOW))

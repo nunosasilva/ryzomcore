@@ -1251,5 +1251,111 @@ Still open:
   (true for the skin manager); a third write to the same VB in one frame could
   still be seen by an earlier recorded draw.
 - In-place (non-first-time) texture updates still do a device wait + submit.
-- `WM_DELETE_WINDOW` shutdown still fails while recreating the swapchain; use
-  Escape -> Quit Ryzom -> Quit Now.
+
+## Window close, present instrumentation, preview check (branch `vulkan-shutdown-flicker`)
+
+Worktree `f1fb99/vulkan-shutdown-flicker`, based on `cc519718f`.
+
+**Closing the window now exits with status 0.** Three separate bugs were in the
+way:
+
+1. `CVulkanEventEmitter::processMessage()` called `XGetWindowAttributes()` on
+   the window for every event, at the top of the function. When the WM destroys
+   the window (`xdotool windowclose`, a force close) the next event made that
+   call fail; Xlib's default error handler then *exits the process* with an X
+   error, which looked like a crash during teardown. The call is now wrapped in
+   a scoped handler that ignores protocol errors, and `DestroyNotify` for the
+   game window is now treated like `WM_DELETE_WINDOW` (previously it was taken
+   for "XIM server crashed" and the client kept looping against a dead surface).
+2. `recreateSwapchain()` could be called after the surface was gone. It
+   destroyed the swapchain, `createSwapchain()` failed on
+   `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` (VK_ERROR_SURFACE_LOST_KHR,
+   -1000000000), and the frame loop kept calling `vkAcquireNextImageKHR` on a
+   null swapchain. The driver now checks that the X window still exists *before*
+   touching the surface (no more capabilities call on a dead window), marks the
+   swapchain lost when recreation fails, and `beginFrame()`/`swapBuffers()`/
+   `clear2D()` become no-ops once `_ShuttingDown`/`_SwapchainLost` is set.
+3. `IDriver::release()` hung forever deleting GPU program driver info: the
+   Vulkan driver inserted a NULL into `_GPUPrgDrvInfos` and never wrote the new
+   `CProgramDrvInfosVulkan` back into the list, so the `while (begin() != end())
+   delete *it;` loop deleted NULL forever. Fixed at all four creation sites
+   (user VP, insert VP, GLSL VP, user PP). The client only hung once a user
+   program existed, i.e. at character selection with `NLVK_GPUSKIN=1` or in
+   game with the mega path; the login screen hid it.
+
+Teardown order was also tightened: `release()` waits for the device while the
+window is still mapped, then unmaps (like GL3) and stops all further presents;
+`shutdownVulkan()` destroys the swapchain before the presentation semaphores
+and the device, destroys render-target framebuffers still in the deferred
+destroy list (validation had reported two leaked `VkFramebuffer` at
+`vkDestroyDevice`), closes the XIM and destroys the X window/closes the display
+under the same non-fatal X handler. `isActive()` no longer lets an X protocol
+error kill the process.
+
+Verified (mats006, gamescope 1280x800, Debug):
+
+| run | close | result |
+|---|---|---|
+| login screen, `NLVK_VALIDATION=1` | WM_DELETE | exit 0, no VUID, no leak |
+| login screen | `xdotool windowclose` (window destroyed) | exit 0, no capabilities error, no X error |
+| character selection, `NLVK_GPUSKIN=1` | WM_DELETE | exit 0 |
+| in game, `NLVK_VALIDATION=1` | WM_DELETE | exit 0, only the known gamescope WSI VUIDs, no leaks |
+| in game | Escape -> Quit Ryzom -> Quit Now | exit 0 |
+
+No `*.dmp` was produced by any of these runs.
+
+**Present instrumentation (`NLVK_PRESENT_LOG=1`).** One line per presented
+frame with the frame id, CPU interval since the previous present, swapchain
+generation, acquired image index, acquire/fence/submit/present `VkResult`, and
+the cumulative skipped-frame count; skipped frames and swapchain recreations
+get their own lines with the reason. All logging is gated by the env var.
+
+Character-selection flicker: not reproduced, and no evidence of a driver-side
+skip was found. The present log of a run that logins and ends at character
+selection showed **5564 presented frames, one swapchain generation,
+acquire/present VK_SUCCESS on every frame, zero skipped frames, zero
+out-of-date/suboptimal results**; the 364 consecutive
+`NLVK_SCREENSHOT_EVERY=1` dumps taken at character selection (frames 5200-5563)
+kept a mean brightness within 154.5..155.6 (a black frame would be ~0). A
+separate login-screen run (2946 frames) was equally clean, and in game 517
+more frames showed the same result. The remaining explanation is the
+compositor/observation (gamescope), or an artifact of a pre-fix build; with
+the fix the driver never skips or recreates at character selection. The
+instrumentation stays in the driver so the next report can be checked quickly.
+
+**Character-selection preview.** Captured with the default build (CPU
+skinning) and with `NLVK_GPUSKIN=1`: both render the full-body avatar cleanly
+(`charsel-cpu.png`, `charsel-gpuskin.png`); the small portraits are fine in
+both. The insert path only changes the idle pose/arms in these captures, no
+smear or displaced geometry, so the reported preview artifacts are not present
+on this build.
+
+**Loading-screen text.** The loading messages are drawn at the top right and
+the sampled ones are complete ("Putting masks on all the Zoraïs...",
+"Singing ryzker sleeping songs...", "Oh my god, look, a flying Yubo!",
+"Teasing Frahars..."). The version line
+(`DEV Omega / v26.11.422 #cc519718f`) is right-aligned at x=1.0 and its last
+glyph sits on the last pixel column, so it looks clipped at the screen edge;
+that is `progress.cpp`'s anchor/layout, not glyph atlas clipping (all glyphs
+render and the message line below has a margin). Not changed.
+
+Run scripts and evidence from this session: `/tmp/opencode/sd/` (out/*.log,
+charsel.png, gpuskin.png, ingame2.png, flicker dumps in `/tmp/opencode/sd` are
+in `/var/tmp/sd/`).
+
+Still open:
+- Fog/colour parity with GL3 (the Vulkan scene is darker and warmer).
+- `ForceDXTC` compression of RGBA source textures is still a no-op.
+- Blitting from a BC texture in `stretchRect()` is untested (FXAA/bloom only
+  use RGBA render targets today).
+- The FullRewrite two-copy rotation assumes one write per buffer per frame
+  (true for the skin manager); a third write to the same VB in one frame could
+  still be seen by an earlier recorded draw.
+- In-place (non-first-time) texture updates still do a device wait + submit.
+- Depth buffer is shared by all swapchain images and by both frames in flight;
+  correct today only because the render pass clears it at the start of every
+  frame, but two in-flight frames still write the same depth image. Making it
+  per image (or per frame) would remove the race.
+- The character-selection/"present-level" black frame is not reproducible from
+  the driver side; check with `NLVK_PRESENT_LOG=1` if it is seen again.
+
