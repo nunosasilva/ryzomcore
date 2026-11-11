@@ -1309,10 +1309,16 @@ bool CDriverVulkan::supportVertexProgram(CVertexProgram::TProfile profile) const
 	{
 	case IProgram::nelvp:
 	case IProgram::glsl330v:
-	case IProgram::glsl3vi:
-		// glsl3vi is supported: the snippet is spliced into the mega vertex
-		// program, which is what GPU skinning and MRM geomorph need.
 		return true;
+	case IProgram::glsl3vi:
+		// GPU skinning / MRM geomorph through the insert vertex program is
+		// OPT-IN until it is validated. With the insert path enabled, the
+		// character's equipment meshes (head, hair, gloves) are drawn displaced
+		// and rotated while the CPU-skinned body is correct, and the MRM
+		// geomorph path is equally unverified. The CPU path is the one both
+		// reference drivers use and it is known-correct, so it is the default.
+		// Run with NLVK_GPUSKIN=1 to exercise the insert path.
+		return getenv("NLVK_GPUSKIN") != NULL;
 	default:
 		return false;
 	}
@@ -1590,6 +1596,21 @@ bool CDriverVulkan::stageUserUB(TUBBinding binding, VkDescriptorBufferInfo &info
 		return true;
 	}
 
+	// A block that has not been touched since it was copied into this frame's
+	// ring is still there at the same offset: reuse the copy. The 12 KiB
+	// skeleton block is bound once per skeleton and read by every one of its
+	// skinned draws, so this removes a large per-draw memcpy.
+	const uint bindingIndex = (uint)binding;
+	if (_UserUBStageCache[bindingIndex] == ub &&
+		_UserUBStageSize[bindingIndex] == size &&
+		!ub->Touched)
+	{
+		info.buffer = _UniformRing;
+		info.offset = _UserUBStageOffset[bindingIndex];
+		info.range = size;
+		return true;
+	}
+
 	const uint32 offset = allocUniformBlock(ub->data(), size);
 	if (offset == 0xFFFFFFFF)
 	{
@@ -1599,6 +1620,10 @@ bool CDriverVulkan::stageUserUB(TUBBinding binding, VkDescriptorBufferInfo &info
 	info.buffer = _UniformRing;
 	info.offset = offset;
 	info.range = size;
+	_UserUBStageCache[bindingIndex] = ub;
+	_UserUBStageOffset[bindingIndex] = offset;
+	_UserUBStageSize[bindingIndex] = size;
+	ub->Touched = false;
 	return true;
 }
 
