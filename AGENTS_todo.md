@@ -1505,3 +1505,115 @@ so the gain is entirely the removed device waits/serialisation.
 - The FullRewrite two-copy rotation assumes one write per buffer per frame.
 - Depth buffer shared by both frames in flight.
 - The character-selection "black frame" is not reproducible from the driver.
+
+## Descriptor sets, CPU/GPU balance and the staging ring (branch `vulkan-descriptors`)
+
+This section supersedes "Remaining hot spots" items 1 and 2 above: the
+per-draw descriptor allocation is **not** 3.0 us/draw, and the frame is **not**
+GPU bound in the Debug build.
+
+### Descriptor sets: implemented, measured, reverted
+
+A frame-slot cache was implemented and tested in two forms: descriptor sets
+keyed on the four simple stage textures / eight mega textures plus the user
+program block layouts, with dynamic UBO offsets (camera, object, material and
+the three user blocks) and a hash map per frame slot; then the same with a
+one-entry "same key as the previous draw" fast path. Both are frame-safe (the
+cache is dropped with its descriptor pool after the slot's fence, and a uniform
+ring growth clears it), and both rendered correctly. **Neither is faster than
+the per-draw path on RADV, so the commit does not keep the cache.** The numbers
+below are from the moor spot, 1280x800, Debug, `NLVK_STATS=1`, same binary for
+the cache/no-cache rows (`NLVK_NODESCCACHE=1` was a temporary switch, removed):
+
+| build | ms/frame | draws/frame | descriptor+draw |
+|---|---|---|---|
+| `a463c5e44` (baseline) | 30.8-33.3 | ~1205 | 3.0-3.2 us |
+| hash cache + dynamic offsets | 31.3-32.7 | ~1184 | 3.4-3.5 us |
+| same binary, cache off | 29.1-30.9 | ~1179 | 3.3-3.4 us |
+
+With the cache, the hash lookup alone cost **0.69 us/draw**; with the cache off,
+`vkAllocateDescriptorSets` + `vkUpdateDescriptorSets` of the full set (15 writes
+on the mega path) cost **0.52-0.53 us/draw**. The lookup key is what makes the
+cache lose: the mega key hashes eight image views and eight samplers. The
+one-entry fast path brought the average back to 0.52-0.54 us (41% of lookups
+were the same key as the previous draw), i.e. a wash, not a win.
+
+What the 3.0 us actually contains (cache off, final build):
+
+| per draw | us |
+|---|---|
+| pipeline-key build | 0.39-0.40 |
+| `getPipeline` (`std::map` lookup) | 0.34-0.35 |
+| bind: UBO staging + descriptor write + `vkCmdBind*` | 1.85-1.88 |
+| vertex/index binds + `vkCmdDrawIndexed` | 0.47-0.48 |
+| index copy (`getIndexUploadBuffer`) | 0.20 |
+
+`NLVK_NOCULL` was scanned with `getenv()` on every draw; it is now read once.
+
+### CPU vs GPU (the frame is CPU bound)
+
+`NLVK_STATS=1` now writes two GPU timestamps around the frame command buffer
+(per frame slot, read after the slot's fence) and also reports the CPU record
+time from `beginFrame()` to `swapBuffers()`, plus the fence and acquire waits:
+
+| metric | value |
+|---|---|
+| GPU time | **3.7-4.3 ms** |
+| CPU frame record | **24.4-26.5 ms** |
+| fence wait at `beginFrame` | 0.01 ms |
+| acquire wait | 0.05 ms |
+| wall frame | 29-31 ms |
+
+The GPU is idle for ~85% of the frame. The earlier "CPU ~5 ms" was the driver's
+draw submission (1170 x 3.1 us + index copies), not the engine: ~20 ms of the
+frame is engine work outside the driver. This is a **Debug** build, so a
+release build can shift the balance back; re-measure before deciding that
+engine CPU is the target. Until then, further driver-side per-draw
+micro-optimisation (including descriptor caching) has very little headroom.
+
+### Texture staging ring: peak verified, memory returned
+
+- Loading peaks at a **64 MiB ring** (32 MiB per frame in flight) with a
+  **31.7 MiB frame peak** (seen on the `peak ... MiB/frame` column and from the
+  grow messages, which now report the whole frame's requirement: 5.2, 8.7,
+  17.0 MiB ...). In game the traffic is **0.01-0.03 MiB/frame** (20-60 copies
+  per frame: font glyphs and remote-player textures).
+- `growStagingRing()` now receives the whole frame's need instead of one copy's
+  size, and `allocTextureStaging()` uses the current slot's base for the fit
+  test; before, the first upload after a frame-slot switch always grew the ring
+  (it compared against the previous frame's base).
+- The ring shrinks back to **8 MiB** after 1800 consecutive frames below
+  2 MiB/frame. In the final run the 64 MiB ring was built at 16:00:37 and
+  shrunk at 16:01:52 (75 s; a texture burst resets the counter). The old buffer
+  is retired with the frames that still read it, so there is no stall.
+- Measured with `NLVK_STATS`: `ring 8192 KiB` and `peak 0.01-0.04 MiB/frame`
+  once in game.
+- The same loading frame also grows the **other** rings and they never shrink:
+  vertex ring 128 MiB, uniform ring 64 MiB, index ring 32 MiB (in-game use is a
+  few MiB per frame at most). That is ~224 MiB of host-visible memory left over
+  from loading - the same idle-shrink pattern would apply, but it was left for
+  the memory work, not done here.
+
+### Audit (do not duplicate)
+
+- **Depth buffer**: fixed on main by `fb6e5b5e5`; `createDepthResources()`
+  allocates one depth image/view per swapchain image and `createFramebuffers()`
+  pairs `_DepthViews[i]` with `_SwapchainViews[i]`. Confirmed in this tree.
+- **ForceDXTC and fog/colour parity**: left to `vulkan-color-fog`.
+- **Texture eviction**: still in place from `596557f25` (`_TexDrvShares`,
+  `releaseTextureDrvInfo`).
+- FullRewrite two-copy rotation, the character-selection black frame: unchanged,
+  still open.
+
+### Verification
+
+- Build: `ninja -C build-vulkan -j 4 ryzom_client_dev lib/libnel_drv_vulkan.so`
+  clean (the usual warnings only).
+- In game with `NLVK_VALIDATION=1 NLVK_STATS=1`: no VUIDs apart from the known
+  gamescope `VkSwapchainPresentModeInfoKHR` / `VK_EXT_surface_maintenance1`
+  ones and the benign "vertex attribute not consumed" warnings. HUD, avatar and
+  scene correct; clean `Quit -> Quit Now` logout; no `*.dmp`.
+- Final non-validation run: 30.3-31.6 ms/frame (31.7-33.0 fps), desktop `u`
+  window reads **FPS: 31**; screenshot
+  `/tmp/opencode/desc/out/perf-u.png`, loading ring log in
+  `/home/nuno/Projects/ryzom/ryzom_live_vk_desc/client.log`.

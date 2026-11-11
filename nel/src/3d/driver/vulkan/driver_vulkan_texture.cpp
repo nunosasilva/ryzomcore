@@ -554,26 +554,12 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 // Upload staging ring
 // ---------------------------------------------------------------------------
 
-bool CDriverVulkan::growStagingRing(uint32 required)
+bool CDriverVulkan::createStagingRing(uint32 size)
 {
-	// One copy cannot be split over two buffers, so the ring must have a half
-	// that fits it. Very large textures get a dedicated staging buffer instead
-	// (see allocTextureStaging()), which keeps the ring small.
-	const uint32 maxRingSize = 64u * 1024u * 1024u;
-	uint32 newSize = _StagingRingSize ? _StagingRingSize : 8u * 1024u * 1024u;
-	// Always double: the ring grew because this frame's slice did not fit, not
-	// necessarily because one copy is bigger than the current half.
-	while (newSize / 2 < required || newSize <= _StagingRingSize)
-	{
-		if (newSize >= maxRingSize)
-			return false;
-		newSize *= 2;
-	}
-
 	VkBufferCreateInfo bci;
 	memset(&bci, 0, sizeof(bci));
 	bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-	bci.size = newSize;
+	bci.size = size;
 	bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 	bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	VkBuffer buffer = VK_NULL_HANDLE;
@@ -609,12 +595,44 @@ bool CDriverVulkan::growStagingRing(uint32 required)
 	_StagingRing = buffer;
 	_StagingRingMemory = memory;
 	_StagingRingMapped = mapped;
-	_StagingRingSize = newSize;
-	_StagingRingHalf = newSize / 2;
+	_StagingRingSize = size;
+	_StagingRingHalf = size / 2;
 	_StagingRingFrameBase = _FrameIndex * _StagingRingHalf;
 	_StagingRingOffset = _StagingRingFrameBase;
+	_StagingRingIdleFrames = 0;
+	return true;
+}
+
+bool CDriverVulkan::growStagingRing(uint32 required)
+{
+	// One copy cannot be split over two buffers, so the ring must have a half
+	// that fits it. Very large textures get a dedicated staging buffer instead
+	// (see allocTextureStaging()), which keeps the ring small.
+	uint32 newSize = _StagingRingSize ? _StagingRingSize : NL_VK_STAGING_RING_INITIAL;
+	// Always double: the ring grew because this frame's slice did not fit, not
+	// necessarily because one copy is bigger than the current half.
+	while (newSize / 2 < required || newSize <= _StagingRingSize)
+	{
+		if (newSize >= NL_VK_STAGING_RING_MAX)
+			return false;
+		newSize *= 2;
+	}
+	if (!createStagingRing(newSize))
+		return false;
 	nlinfo("Vulkan: texture staging ring grown to %u bytes (%u bytes needed)", newSize, required);
 	return true;
+}
+
+void CDriverVulkan::shrinkStagingRing()
+{
+	// The loading phase can grow the ring to tens of MiB; in game the traffic
+	// is a few KiB per frame. Rebuild it at its initial size once it is idle
+	// (see swapBuffers()), so the memory comes back. The old buffer is retired
+	// with the frame that may still read it, like any other ring growth.
+	if (_StagingRingSize <= NL_VK_STAGING_RING_INITIAL)
+		return;
+	if (createStagingRing(NL_VK_STAGING_RING_INITIAL))
+		nlinfo("Vulkan: texture staging ring shrunk to %u bytes (idle)", NL_VK_STAGING_RING_INITIAL);
 }
 
 bool CDriverVulkan::allocTextureStaging(VkDeviceSize size, STextureStaging &out)
@@ -629,18 +647,23 @@ bool CDriverVulkan::allocTextureStaging(VkDeviceSize size, STextureStaging &out)
 	// BC blocks are at most 16 bytes and RGBA texels 4, so 16-byte alignment
 	// satisfies every bufferOffset requirement of vkCmdCopyBufferToImage.
 	const VkDeviceSize alignment = 16;
-	if (_StagingRingHalf)
-	{
-		// Uploads can also arrive between two frames, when the frame index has
-		// already moved to the next slot but its ring half has not been set up.
-		const uint32 frameBase = _FrameIndex * _StagingRingHalf;
-		if (_StagingRingOffset < frameBase || _StagingRingOffset >= frameBase + _StagingRingHalf)
-			_StagingRingOffset = frameBase;
-	}
+	// This frame slot's half of the ring. Uploads can also arrive between two
+	// frames, after _FrameIndex moved to the next slot but before beginFrame()
+	// updated _StagingRingFrameBase; always use this slot's base, not the
+	// member, or the first such upload would grow the ring for no reason.
+	const uint32 frameBase = _StagingRingHalf ? _FrameIndex * _StagingRingHalf : 0;
+	if (_StagingRingHalf &&
+		(_StagingRingOffset < frameBase || _StagingRingOffset >= frameBase + _StagingRingHalf))
+		_StagingRingOffset = frameBase;
 	VkDeviceSize offset = ((VkDeviceSize)_StagingRingOffset + alignment - 1) & ~(alignment - 1);
-	if (_StagingRing == VK_NULL_HANDLE || offset + size > (VkDeviceSize)_StagingRingFrameBase + _StagingRingHalf)
+	if (_StagingRing == VK_NULL_HANDLE || offset + size > (VkDeviceSize)frameBase + _StagingRingHalf)
 	{
-		if (!growStagingRing((uint32)size))
+		// Grow so that this frame's whole upload set fits: the copies already
+		// recorded still occupy their slices, so only the space after them
+		// helps. Passing just `size` doubles the ring once per copy instead.
+		const uint64 needed64 = (offset - frameBase) + size;
+		const uint32 needed = needed64 > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32)needed64;
+		if (!growStagingRing(needed))
 		{
 			// Too large for the ring: one dedicated allocation, retired with the
 			// frame that reads it.
