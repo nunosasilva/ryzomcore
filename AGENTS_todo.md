@@ -1871,3 +1871,38 @@ Agent `vulkan-config-tool` (worktree `f1fb99/vulkan-config-tool`, base
 `f26c0167f`, no game account) is adding a Vulkan choice to
 `ryzom_configuration_qt` so it writes `Driver3D = "Vulkan";` (and checking the
 OpenGL3 option too), building with Qt5 and verifying the written config.
+
+## Qt configuration tool: Vulkan and OpenGL3 options (branch `vulkan-config-tool`)
+
+`ryzom_configuration_qt` (the Qt client config tool) only offered Auto, OpenGL
+and a Direct3D radio button (disabled outside Windows) — it ignored the
+`OpenGL3`, `OpenGLES` and `Vulkan` values that `client_cfg.cpp` accepts. It now
+offers:
+
+- Auto (default, still the fallback for missing/unknown values),
+- OpenGL,
+- OpenGL3,
+- Vulkan,
+- Direct3D (Windows only, as before).
+
+Selecting a driver writes the string form (`OpenGL3`, `Vulkan`, ...) to
+`client.cfg`; loading accepts both the string and the numeric form (`4`, `5`)
+case-insensitively, matching `client_cfg.cpp`. The comment in
+`ryzom/client/client_default.cfg` now lists all five numeric values. The
+video-mode list reuses the OpenGL modes for OpenGL3/Vulkan (same as Auto).
+
+Built with Qt5 in `build-config` (`WITH_QT5=ON`, `WITH_QT=OFF`, otherwise the
+same flags as `build-vulkan`) and verified under Xvfb (`QT_QPA_PLATFORM=xcb`,
+1280x800): the tool displays all five radio buttons and writes
+`Driver3D = "Vulkan";`, `"OpenGL3"`, `"OpenGL"` and `"Auto"` correctly from
+successive runs; a config with `"5"`/`"4"` shows Vulkan/OpenGL3 checked and is
+normalised to the string form on save. Run against a temp directory copy of
+`client.cfg`/`client_default.cfg`, not the user's install.
+
+Packages needed to build the tool: `qtbase5-dev`, `libqt5opengl5-dev`,
+`qttools5-dev`, `qttools5-dev-tools`.
+
+**Left:** the tool still does not offer `OpenGLES` (mobile driver, value `3`);
+its translations for the changed driver label were not regenerated; the tool
+writes only the string form, so an unquoted numeric `Driver3D` in an existing
+`client.cfg` is not converted.
