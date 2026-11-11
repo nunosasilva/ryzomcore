@@ -266,6 +266,21 @@ CDriverVulkan::CDriverVulkan()
 	_FrameCpuStartNs = 0;
 	_StatsTextureCopies = 0;
 	_StatsUploadBytes = 0;
+	_StatsPipelineBinds = 0;
+	_StatsDescriptorSets = 0;
+	_StatsTextureBinds = 0;
+	memset(_StatsVertexFormats, 0, sizeof(_StatsVertexFormats));
+	_StatsVertexFormatCount = 0;
+	memset(_StageTextureSrc, 0, sizeof(_StageTextureSrc));
+	memset(_StageTextureVk, 0, sizeof(_StageTextureVk));
+	memset(_StageTextureGen, 0, sizeof(_StageTextureGen));
+	_TextureGeneration = 1;
+	_StatsTexInfoHits = 0;
+	_StatsTexInfoMisses = 0;
+	_MegaLightTableValid = false;
+	_MegaLightTableOffset = 0xFFFFFFFF;
+	_LastPipeline = VK_NULL_HANDLE;
+	_BlendConstantsSet = false;
 	_StatsWindowStartNs = 0;
 	_StatsWindowFrames = 0;
 	_GpuTimeQuery = VK_NULL_HANDLE;
@@ -1624,6 +1639,10 @@ bool CDriverVulkan::beginFrame()
 	beginUploadBatch();
 
 	_FrameOpen = true;
+	// Dynamic state is per command buffer: it starts from the defaults.
+	_LastPipeline = VK_NULL_HANDLE;
+	_BlendConstantsSet = false;
+	_MegaLightTableValid = false;
 	_RenderTargetTexture = NULL;
 	_RenderTargetInfo = NULL;
 	_IndexRingFrameBase = _FrameIndex * _IndexRingHalf;
@@ -1942,6 +1961,31 @@ bool CDriverVulkan::swapBuffers()
 				_StagingRingSize / 1024);
 			nlinfo("Vulkan stats: per draw: key %.2f us, pipeline %.2f us, bind %.2f us, submit %.2f us",
 				perKey, perPipeline, perBind, perSubmit);
+			nlinfo("Vulkan stats: state/frame: %llu draws, %llu pipeline binds (%.2f/draw), %llu descriptor sets (%.2f/draw), %llu texture stage binds (%.2f/draw)",
+				(unsigned long long)(_StatsDraws / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				(unsigned long long)(_StatsPipelineBinds / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				_StatsDraws ? (double)_StatsPipelineBinds / (double)_StatsDraws : 0.0,
+				(unsigned long long)(_StatsDescriptorSets / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				_StatsDraws ? (double)_StatsDescriptorSets / (double)_StatsDraws : 0.0,
+				(unsigned long long)(_StatsTextureBinds / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				_StatsDraws ? (double)_StatsTextureBinds / (double)_StatsDraws : 0.0);
+			{
+				char formats[512];
+				formats[0] = 0;
+				size_t used = 0;
+				for (uint i = 0; i < _StatsVertexFormatCount && used + 64 < sizeof(formats); ++i)
+				{
+					used += (size_t)smprintf(formats + used, sizeof(formats) - used, "%s0x%x/%u x%llu",
+						i ? ", " : "", _StatsVertexFormats[i].Flags, _StatsVertexFormats[i].Stride,
+						(unsigned long long)(_StatsVertexFormats[i].Draws / (_StatsWindowFrames ? _StatsWindowFrames : 1)));
+				}
+				nlinfo("Vulkan stats: vertex formats/frame: %s", formats);
+			}
+			nlinfo("Vulkan stats: texture infos: %llu resolved without a share-name lookup, %llu lookups per frame",
+				(unsigned long long)(_StatsTexInfoHits / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				(unsigned long long)(_StatsTexInfoMisses / (_StatsWindowFrames ? _StatsWindowFrames : 1)));
+			_StatsTexInfoHits = 0;
+			_StatsTexInfoMisses = 0;
 			_StatsWindowStartNs = now;
 			_StatsWindowFrames = 0;
 			_StatsDraws = 0;
@@ -1959,10 +2003,43 @@ bool CDriverVulkan::swapBuffers()
 			_StatsStagingPeak = 0;
 			_StatsTextureCopies = 0;
 			_StatsUploadBytes = 0;
+			_StatsPipelineBinds = 0;
+			_StatsDescriptorSets = 0;
+			_StatsTextureBinds = 0;
+			memset(_StatsVertexFormats, 0, sizeof(_StatsVertexFormats));
+			_StatsVertexFormatCount = 0;
 		}
 	}
 
 	return true;
+}
+
+/// NLVK_STATS: accumulate the vertex layout of a draw, keeping the array
+/// sorted by draw count so the report lists the most used layouts first.
+void CDriverVulkan::countVertexFormat(uint32 flags, uint32 stride)
+{
+	uint i = 0;
+	for (; i < _StatsVertexFormatCount; ++i)
+		if (_StatsVertexFormats[i].Flags == flags && _StatsVertexFormats[i].Stride == stride)
+			break;
+	if (i == _StatsVertexFormatCount)
+	{
+		if (i >= sizeof(_StatsVertexFormats) / sizeof(_StatsVertexFormats[0]))
+			return;
+		++_StatsVertexFormatCount;
+		_StatsVertexFormats[i].Flags = flags;
+		_StatsVertexFormats[i].Stride = stride;
+		_StatsVertexFormats[i].Draws = 0;
+	}
+	++_StatsVertexFormats[i].Draws;
+	// Bubble the entry up while it is more frequent than its predecessor.
+	while (i > 0 && _StatsVertexFormats[i].Draws > _StatsVertexFormats[i - 1].Draws)
+	{
+		SVertexFormatDraw tmp = _StatsVertexFormats[i - 1];
+		_StatsVertexFormats[i - 1] = _StatsVertexFormats[i];
+		_StatsVertexFormats[i] = tmp;
+		--i;
+	}
 }
 
 void CDriverVulkan::recordScreenshotCopy(VkCommandBuffer cmd)
