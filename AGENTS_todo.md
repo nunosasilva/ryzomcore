@@ -1749,3 +1749,97 @@ micro-optimisation (including descriptor caching) has very little headroom.
   window reads **FPS: 31**; screenshot
   `/tmp/opencode/desc/out/perf-u.png`, loading ring log in
   `/home/nuno/Projects/ryzom/ryzom_live_vk_desc/client.log`.
+
+## Static build with the Vulkan driver linked in (`vulkan-static-build`) — done
+
+Commit `a5762bcdc` on branch `vulkan-static-build` (based on `fb2ce0563`).
+Goal met: one `ryzom_client_dev` binary runs the login screen from a standard
+install with **no `LD_LIBRARY_PATH` and no `libnel*.so`** next to it.
+
+### Driver change
+
+- `nel/src/3d/dru.cpp` declares `createVulkanDriverInstance()` under
+  `NL_STATIC` (+`NL_VULKAN_AVAILABLE`), next to the GL3 entry point.
+- `nel/src/3d/driver/vulkan/driver_vulkan.cpp` defines it in `namespace NL3D`
+  for `NL_STATIC`, and keeps `NL3D_createIDriverInstance` /
+  `NL3D_interfaceVersion` inside `#ifndef NL_STATIC` for the shared-driver
+  build. Same shape as `driver_opengl3.cpp`.
+- Static drivers exposed a real duplicate-symbol bug: GL, GL3 and Vulkan each
+  define `NLMISC::getMouseButton`, `getKeyButton`, `getKeyFromKeycode` and
+  `getKeyFromKeySym` in `unix_event_emitter.cpp`, not declared in any header
+  and used only in their own file. Linking two backends collided
+  (`multiple definition`). They are now `static` in all three copies (no
+  behaviour change; `getKeyFromKeyEvent` already was). This is what makes any
+  multi-driver static build link, not just Vulkan.
+
+### Build (this machine)
+
+Full command in `docs/vulkan-static-build.md`. In short: the working
+`build-vulkan` options plus `-DWITH_STATIC=ON -DWITH_STATIC_DRIVERS=ON`, and
+the *shared external* fallback:
+
+    -DWITH_STATIC_LIBXML2=OFF -DWITH_STATIC_CURL=OFF -DWITH_STATIC_EXTERNAL=OFF
+
+Static libxml2/curl **do not link on Ubuntu 26.04**: `libcurl.a`/`libcrypto.a`
+need zstd, brotli, idn2, psl, nghttp2, jitterentropy and `libfreetype.a` needs
+bz2, none of which the CMake files add. With `WITH_STATIC_EXTERNAL=ON` the
+find modules also pick every `.a`, so it fails even if curl is off. The
+fallback keeps `libnel*` and the drivers static, which is the point.
+`ninja -C build-static ryzom_client` gives `build-static/bin/ryzom_client_dev`
+(534 MB Debug). glslang and SPIRV-Tools are linked from their static archives.
+
+`ldd` result: no `libnel*.so`, no `libnel_drv_vulkan.so`; only system
+libraries (libX11, libGL, libvulkan, libopenal, libfreetype, ogg/vorbis,
+libcurl/libssl/libxml2, lua5.3, libc/libstdc++ ...). `nm -C` shows
+`T NL3D::createVulkanDriverInstance()`. `client.log` has **no** `Using the
+library` line (that is the dynamic path) and logs
+`Vulkan: using 'AMD Radeon 840M (RADV GFX1153)'`. The static client also logs
+`checkDriverVersion: Can't check video driver version`, which is expected: it
+looks for the driver `.so` to read its version; harmless.
+
+### Runtime test (standard install layout, no LD_LIBRARY_PATH)
+
+Run dir `~/Projects/ryzom/ryzom_live_static_test`: `data/` and `cfg/`
+symlinked to `~/Projects/ryzom/ryzom_live`, `client_default.cfg` copied,
+`client.cfg` with `Driver3D="Vulkan"` (both occurrences), `RootConfigFilename`
+-> the local copy, `FullScreen=0`, 1280x800, `SoundOn=0`. No `examples/` dir;
+the client only warns about it.
+
+- gamescope 1280x800, driver-side capture:
+  `/tmp/opencode/vkstatic/login_ui.png` = full login UI (Login/Password
+  fields, CONNECT, resolution/LOD strips, version
+  `DEV Omega / v26.11.422 #fb2ce0563`); the earlier background shot is
+  `login.png`. Frame 420 shot retried clean (`f420.ppm`).
+- Window close (`xdotool windowclose` on the gamescope nested display from
+  `/proc/PID/environ`, not the desktop display): the **client exits 0**
+  (`CLIENTEXIT=0`), log shows
+  `Vulkan: window destroyed (present: out of date); rendering stopped` and the
+  full release path, no `*.dmp`. gamescope itself exits 139 after its child
+  dies; don't read that as a client crash.
+- One-off, not reproduced: the first run (gamescope failed to bind the desktop
+  X0 socket and ended up on display :2) dumped a minidump in
+  `recordScreenshotCopy` -> `vkCmdCopyImageToBuffer`, with a garbage image
+  handle (non-canonical value). Frames 150, 420 (retry) and 1200 are clean, and
+  so are all later runs. If a screenshot ever crashes right after a window
+  resize/reconfigure, look at `_SwapchainImages[_ImageIndex]` there first.
+
+### User instructions (repeat to the user)
+
+1. Take `build-static/bin/ryzom_client_dev` (or ask the next agent to rebuild
+   it) and copy it into `~/Projects/ryzom/ryzom_live`.
+2. In `~/Projects/ryzom/ryzom_live/client.cfg` set `Driver3D = "Vulkan";`
+   (the file contains the key twice; the client takes the last one, so change
+   both). Keep `RootConfigFilename` pointing at that install's
+   `client_default.cfg`.
+3. Run `./ryzom_client_dev --nopatch 1`. No `LD_LIBRARY_PATH`, no copy of
+   `libnel*.so`/`libnel_drv_vulkan.so`. The install's `libopenal.so.1` is
+   enough; everything else is a normal system library.
+4. `Driver3D = "OpenGL3"` or unset still works in the same binary (all three
+   drivers are linked in).
+
+### Descriptor caching
+
+**Retest descriptor caching after future performance work (user request).**
+The per-draw descriptor set is not the current bottleneck (see the audit
+above); revisit it once a release build or engine-side CPU work changes the
+GPU/CPU balance.

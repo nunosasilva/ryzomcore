@@ -179,7 +179,7 @@ static Bool isMouseMoveEvent(Display *display, XEvent *event, XPointer arg)
 #  define AltMask     (Mod1Mask)
 #endif
 
-TMouseButton getMouseButton (uint32 state)
+static TMouseButton getMouseButton (uint32 state)
 {
 	uint32 button=noButton;
 	if (state&Button1Mask) button|=leftButton;
@@ -192,7 +192,7 @@ TMouseButton getMouseButton (uint32 state)
 	return (TMouseButton)button;
 }
 
-TKeyButton getKeyButton (uint32 state)
+static TKeyButton getKeyButton (uint32 state)
 {
 	uint32 button=noKeyButton;
 	if (state&ControlMask) button|=ctrlKeyButton;
@@ -202,7 +202,7 @@ TKeyButton getKeyButton (uint32 state)
 	return (TKeyButton)button;
 }
 
-TKey getKeyFromKeycode (uint keycode)
+static TKey getKeyFromKeycode (uint keycode)
 {
 	// keycodes are depending on system
 	switch (keycode)
@@ -268,7 +268,7 @@ TKey getKeyFromKeycode (uint keycode)
 	return KeyNOKEY;
 }
 
-TKey getKeyFromKeySym (KeySym keysym)
+static TKey getKeyFromKeySym (KeySym keysym)
 {
 //	nlwarning("0x%x %d '%c'", keysym, keysym, keysym);
 	switch (keysym)
