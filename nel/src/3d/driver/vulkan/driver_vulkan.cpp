@@ -116,6 +116,8 @@ CDriverVulkan::CDriverVulkan()
 	, _FogDensity(1.f)
 	, _DepthRangeNear(0.f)
 	, _DepthRangeFar(1.f)
+	, _OODeltaZ(1.f)
+	, _MaterialZBias(0.f)
 	, _ExitFunc(NULL)
 	, _ScreenshotFrame(120)
 	, _ClearColor(0, 0, 0, 255)
@@ -185,6 +187,8 @@ CDriverVulkan::CDriverVulkan()
 	memset(_BoundUserUB, 0, sizeof(_BoundUserUB));
 	_VPSpecularOutput = true;
 	_NextUserVPId = 0;
+	_ActiveUserPP = NULL;
+	_NextUserPPId = 0;
 	_MegaDescriptorSetLayout = VK_NULL_HANDLE;
 	_MegaPipelineLayout = VK_NULL_HANDLE;
 	_MegaVertexShader = VK_NULL_HANDLE;

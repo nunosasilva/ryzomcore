@@ -107,17 +107,20 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 
 	bool cube = false;
 	const bool materialOk = canUseMegaPath(cube);
-	// The mega path is used for every draw when NLVK_MEGA=1 selects it, and
-	// for the draws of an active user vertex program otherwise. The latter
-	// reuses the same descriptor layout and pixel stage (see driver.h).
+	// The mega path is used for every draw when NLVK_MEGA=1 selects it, for
+	// the draws of an active user vertex program, and for a user pixel program
+	// (it needs the mega descriptor layout for its UBO and samplers). The
+	// three cases share the descriptor layout and pipeline.
 	const bool userVP = hasActiveUserVPS();
-	if (materialOk && (_MegaEnabled || userVP))
+	const bool userPP = _ActiveUserPP != NULL;
+	if (materialOk && (_MegaEnabled || userVP || userPP))
 	{
 		key.Mega = 1;
 		key.MegaCube = cube ? 1 : 0;
 		key.UserVP = userVP ? _ActiveUserVP->Id : 0;
 		key.UserVPInsert = userVP && _ActiveUserVP->IsInsertProgram ? 1 : 0;
 		key.MegaSpecular = _VPSpecularOutput ? 1 : 0;
+		key.UserPP = userPP ? _ActiveUserPP->Id : 0;
 	}
 	else
 	{
@@ -126,6 +129,7 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 		key.UserVP = 0;
 		key.UserVPInsert = 0;
 		key.MegaSpecular = 0;
+		key.UserPP = 0;
 	}
 }
 
@@ -591,20 +595,42 @@ void CDriverVulkan::stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data)
 		}
 	}
 
+	// Render-target textures are stored top-down, while NeL texture coordinates
+	// have V = 0 at the bottom. Tell the pixel program which stages to flip.
+	data.rtFlipMask = 0;
+	for (uint i = 0; i < IDRV_MAT_MAXTEXTURES; ++i)
+	{
+		const ITexture *tex = mat.getTexture(i);
+		// Same rule as the simple path: only NeL offscreen textures are
+		// flipped (the shadow maps' CTextureMem targets are handled by the
+		// shadow map manager's copy pass).
+		if (tex && tex->getRenderTarget() && tex->isOffscreenTexture())
+			data.rtFlipMask |= (1 << i);
+	}
+
 	data.lighting = mat.isLighted() ? 1 : 0;
 	data.vertexColorLighted = (mat.getFlags() & IDRV_MAT_LIGHTED_VERTEX_COLOR) ? 1 : 0;
-	data.vertexFormat = (sint32)vb.getVertexFormat();
+	// The pixel program samples texCoordN for a stage only when the matching
+	// vertex-format bit is set. Generated coordinates have no vertex attribute,
+	// and a user vertex program can write texCoordN varyings the vertex buffer
+	// does not describe (bloom's blur writes four offset coordinates), so both
+	// sources are added to the buffer format here. GL3 does the same for texgen.
+	uint16 vertexFormat = vb.getVertexFormat();
+	for (uint i = 0; i < IDRV_MAT_MAXTEXTURES; ++i)
+		if (data.texGenMode[i] >= 0)
+			vertexFormat |= (uint16)(CVertexBuffer::TexCoord0Flag << i);
+	if (_ActiveUserVP && _ActiveUserVP->WrittenTexCoords)
+		vertexFormat |= _ActiveUserVP->WrittenTexCoords;
+	data.vertexFormat = (sint32)vertexFormat;
 	// Per-pixel lights need world-space position and normal; the vertex program
 	// emits them when these flags are set (same contract as the GL3 driver).
 	data.worldSpaceNormal = _NumPerPixelLights > 0 ? 1 : 0;
 	data.worldSpacePosition = _NumPerPixelLights > 0 ? 1 : 0;
 	data.numPerPixelLights = (sint32)_NumPerPixelLights;
-	// The mega shaders implement fog, but the simple path does not yet. Until
-	// both paths share it, applying fog here makes the two disagree on screen
-	// (in foggy zones the fog colour covers the whole world while the simple
-	// path still shows the ground texture). Keep the generated fog code, but
-	// do not enable it for now.
-	data.fogEnabled = 0;
+	// Fog is enabled per draw from the engine state. Both paths (the mega
+	// programs and the simple generated shader) use the same camera fog data
+	// and eye-space depth, so they render identical fog.
+	data.fogEnabled = _FogEnabled ? 1 : 0;
 	if (_MegaPassOverrideActive)
 	{
 		// LightMap pass override, same contract as the GL3 driver: self
@@ -807,6 +833,9 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	// engine bound for a GLSL program. glsl3vi insert programs also read the
 	// skeleton bones at binding 6 (bound once per skeleton before the draws).
 	if (_ActiveUserVP && !stageUserUB(UBBindingVertexProgram, bufferInfos[4]))
+		return false;
+	// A user pixel program reads its own block at binding 5 (FXAA's NlFXAA).
+	if (_ActiveUserPP && !stageUserUB(UBBindingPixelProgram, bufferInfos[5]))
 		return false;
 	if (_ActiveUserVP && _ActiveUserVP->IsInsertProgram && !stageUserUB(UBBindingSkeleton, bufferInfos[6]))
 		return false;

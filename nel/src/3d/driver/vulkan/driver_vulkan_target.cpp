@@ -64,7 +64,7 @@ VkExtent2D CDriverVulkan::currentTargetExtent() const
 	return extent;
 }
 
-void CDriverVulkan::applyViewportScissor(VkCommandBuffer cmd, VkExtent2D extent)
+VkViewport CDriverVulkan::computeViewport(VkExtent2D extent) const
 {
 	// NeL viewports are normalized (0..1) relative to the render target, with
 	// the origin at the bottom left; Vulkan clips with the origin at the top.
@@ -77,13 +77,33 @@ void CDriverVulkan::applyViewportScissor(VkCommandBuffer cmd, VkExtent2D extent)
 	if (h <= 0.f)
 		h = (float)extent.height;
 
+	// Depth range, like GL's glDepthRange: setDepthRange() selects the window
+	// depth range and the material zBias shifts it. Shadow receivers and decals
+	// rely on a small negative bias to win the depth test against the surface
+	// they are drawn over.
+	float depthBias = _MaterialZBias * (_DepthRangeFar - _DepthRangeNear);
+	float nearDepth = _DepthRangeNear + depthBias;
+	float farDepth = _DepthRangeFar + depthBias;
+
 	VkViewport vkViewport;
 	vkViewport.x = x;
 	vkViewport.y = (float)extent.height - y;
 	vkViewport.width = w;
 	vkViewport.height = -h; // GL-like bottom-up
-	vkViewport.minDepth = 0.f;
-	vkViewport.maxDepth = 1.f;
+	vkViewport.minDepth = std::min(std::max(nearDepth, 0.f), 1.f);
+	vkViewport.maxDepth = std::min(std::max(farDepth, 0.f), 1.f);
+	return vkViewport;
+}
+
+void CDriverVulkan::applyDepthRange(VkCommandBuffer cmd)
+{
+	VkViewport vkViewport = computeViewport(currentTargetExtent());
+	vkCmdSetViewport(cmd, 0, 1, &vkViewport);
+}
+
+void CDriverVulkan::applyViewportScissor(VkCommandBuffer cmd, VkExtent2D extent)
+{
+	VkViewport vkViewport = computeViewport(extent);
 	vkCmdSetViewport(cmd, 0, 1, &vkViewport);
 
 	VkRect2D scissor;
@@ -635,6 +655,204 @@ bool CDriverVulkan::copyTargetToTexture(ITexture *tex, uint32 offsetx, uint32 of
 	extent.height = src->Height;
 	beginOffscreenPass(cmd, *src, extent);
 	applyViewportScissor(cmd, extent);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// stretchRect()
+// ---------------------------------------------------------------------------
+
+namespace /* anonymous */ {
+
+/// NeL rectangles have their origin at the bottom left; images are stored top
+/// down. Clamp a rect to an image and return the blit region.
+static bool makeBlitRegion(const CRect &rect, uint32 imageWidth, uint32 imageHeight, VkImageBlit &blit, bool source)
+{
+	sint32 x = rect.X;
+	sint32 y = rect.Y;
+	sint32 w = (sint32)rect.Width;
+	sint32 h = (sint32)rect.Height;
+	if (w == 0)
+	{
+		x = 0;
+		w = (sint32)imageWidth;
+	}
+	if (h == 0)
+	{
+		y = 0;
+		h = (sint32)imageHeight;
+	}
+	if (x < 0)
+	{
+		w += x;
+		x = 0;
+	}
+	if (y < 0)
+	{
+		h += y;
+		y = 0;
+	}
+	if (x >= (sint32)imageWidth || y >= (sint32)imageHeight)
+		return false;
+	if (x + w > (sint32)imageWidth)
+		w = (sint32)imageWidth - x;
+	if (y + h > (sint32)imageHeight)
+		h = (sint32)imageHeight - y;
+	if (w <= 0 || h <= 0)
+		return false;
+	// Top-down image rows.
+	const sint32 top = (sint32)imageHeight - (y + h);
+	if (source)
+	{
+		blit.srcOffsets[0].x = x;
+		blit.srcOffsets[0].y = top;
+		blit.srcOffsets[0].z = 0;
+		blit.srcOffsets[1].x = x + w;
+		blit.srcOffsets[1].y = top + h;
+		blit.srcOffsets[1].z = 1;
+	}
+	else
+	{
+		blit.dstOffsets[0].x = x;
+		blit.dstOffsets[0].y = top;
+		blit.dstOffsets[0].z = 0;
+		blit.dstOffsets[1].x = x + w;
+		blit.dstOffsets[1].y = top + h;
+		blit.dstOffsets[1].z = 1;
+	}
+	return true;
+}
+
+} /* anonymous namespace */
+
+bool CDriverVulkan::stretchRectImage(ITexture *srcText, CRect &srcRect, ITexture *destText, CRect &destRect)
+{
+	if (!_Device || !srcText || !destText || srcText == destText)
+		return false;
+	// Mip levels and cube faces have no caller here; a whole 2D image is copied.
+	if (srcText->getWidth() == 0 || srcText->getHeight() == 0 ||
+		destText->getWidth() == 0 || destText->getHeight() == 0)
+		return false;
+
+	CTextureVulkan *src = getTextureVulkan(*srcText);
+	CTextureVulkan *dst = getTextureVulkan(*destText);
+	if (!src || !dst || src->Image == VK_NULL_HANDLE || dst->Image == VK_NULL_HANDLE)
+		return false;
+
+	static bool logged = false;
+	if (!logged)
+	{
+		logged = true;
+		nlinfo("Vulkan: stretchRect %ux%u -> %ux%u (scaled blit)", src->Width, src->Height, dst->Width, dst->Height);
+	}
+	// vkCmdBlitImage needs matching texel layout; every image this driver
+	// creates is R8G8B8A8_UNORM.
+	if (!(src->Usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) || !(dst->Usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+		return false;
+
+	VkImageBlit blit;
+	memset(&blit, 0, sizeof(blit));
+	blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	blit.srcSubresource.layerCount = 1;
+	blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	blit.dstSubresource.layerCount = 1;
+	if (!makeBlitRegion(srcRect, src->Width, src->Height, blit, true) ||
+		!makeBlitRegion(destRect, dst->Width, dst->Height, blit, false))
+		return false;
+
+	if (!_FrameOpen && !beginFrame())
+		return false;
+	VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
+
+	// A blit is not allowed inside a render pass, and an attachment cannot be
+	// a transfer source or destination. Suspend the open pass and restore it
+	// afterwards; the engine calls stretchRect() in the middle of a frame.
+	const bool resumeTarget = _RenderTargetInfo != NULL;
+	if (resumeTarget)
+		endOffscreenPass(cmd, *_RenderTargetInfo);
+	else
+		vkCmdEndRenderPass(cmd);
+
+	VkImageMemoryBarrier barriers[2];
+	memset(barriers, 0, sizeof(barriers));
+	barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barriers[0].oldLayout = src->Layout;
+	barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barriers[0].image = src->Image;
+	barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barriers[0].subresourceRange.levelCount = 1;
+	barriers[0].subresourceRange.layerCount = 1;
+	barriers[0].srcAccessMask = src->Layout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_WRITE_BIT;
+	barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+	barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barriers[1].oldLayout = dst->Layout;
+	barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barriers[1].image = dst->Image;
+	barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barriers[1].subresourceRange.levelCount = 1;
+	barriers[1].subresourceRange.layerCount = 1;
+	barriers[1].srcAccessMask = dst->Layout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_WRITE_BIT;
+	barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	vkCmdPipelineBarrier(cmd,
+		src->Layout == VK_IMAGE_LAYOUT_UNDEFINED && dst->Layout == VK_IMAGE_LAYOUT_UNDEFINED
+			? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 2, barriers);
+	src->Layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	dst->Layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+	// Filtered blit: the bloom effect stretches the scene target into its fixed
+	// 256x256 blur target, so source and destination sizes usually differ.
+	vkCmdBlitImage(cmd, src->Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		dst->Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+	memset(barriers, 0, sizeof(barriers));
+	barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barriers[0].image = src->Image;
+	barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barriers[0].subresourceRange.levelCount = 1;
+	barriers[0].subresourceRange.layerCount = 1;
+	barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+	barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barriers[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barriers[1].image = dst->Image;
+	barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barriers[1].subresourceRange.levelCount = 1;
+	barriers[1].subresourceRange.layerCount = 1;
+	barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		0, 0, NULL, 0, NULL, 2, barriers);
+	src->Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	dst->Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+	// Resume the pass that was open when stretchRect() was called.
+	if (resumeTarget)
+	{
+		VkExtent2D extent;
+		extent.width = _RenderTargetInfo->Width;
+		extent.height = _RenderTargetInfo->Height;
+		beginOffscreenPass(cmd, *_RenderTargetInfo, extent);
+		applyViewportScissor(cmd, extent);
+	}
+	else
+	{
+		beginMainPass(cmd, false);
+	}
 	return true;
 }
 

@@ -131,7 +131,8 @@ bool CDriverVulkan::supportNonPowerOfTwoTextures() const
 
 bool CDriverVulkan::stretchRect(ITexture *srcText, NLMISC::CRect &srcRect, ITexture *destText, NLMISC::CRect &destRect)
 {
-	return false;
+	// Implemented in driver_vulkan_target.cpp, next to the other image copies.
+	return stretchRectImage(srcText, srcRect, destText, destRect);
 }
 
 bool CDriverVulkan::supportPerPixelLighting(bool specular) const
@@ -312,17 +313,9 @@ bool CDriverVulkan::isVertexProgramEmulated() const
 
 bool CDriverVulkan::supportPixelProgram(CPixelProgram::TProfile profile) const
 {
-	return false;
-}
-
-bool CDriverVulkan::compilePixelProgram(CPixelProgram *program)
-{
-	return false;
-}
-
-bool CDriverVulkan::activePixelProgram(CPixelProgram *program)
-{
-	return false;
+	// Only the UBO-formatted GLSL profile; compilePixelProgram() and
+	// activePixelProgram() implement it (driver_vulkan_vp.cpp).
+	return _MegaResourcesReady && profile == IProgram::glsl300esf;
 }
 
 bool CDriverVulkan::supportGeometryProgram(CGeometryProgram::TProfile profile) const
@@ -352,7 +345,11 @@ bool CDriverVulkan::supportCloudRenderSinglePass() const
 
 bool CDriverVulkan::supportBloomEffect() const
 {
-	return false;
+	// Bloom needs offscreen render targets (implemented) and stretchRect()
+	// (implemented as a scaled vkCmdBlitImage): the blur passes draw with the
+	// engine's texture-offset vertex program, which the converted nelvp path
+	// runs on the mega pipeline.
+	return true;
 }
 
 bool CDriverVulkan::supportVertexProgramDoubleSidedColor() const

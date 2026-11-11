@@ -90,6 +90,12 @@ public:
 	/// program variant with the engine's nlPreTransform() snippet spliced in,
 	/// stored in the driver's _InsertVPShaders map instead of _UserVPShaders.
 	bool							IsInsertProgram;
+	/// True for a user pixel program, whose module lives in _UserPPShaders.
+	bool							IsPixelProgram;
+	/// CVertexBuffer texcoord flags the program writes as varyings. The pixel
+	/// program uses them to decide which texCoordN to sample (bloom's blur
+	/// writes four offset coordinates even though the quad has one UV set).
+	uint16							WrittenTexCoords;
 };
 
 /// A Vulkan vertex buffer created on behalf of a NeL CVertexBuffer.
@@ -197,6 +203,7 @@ struct CPipelineKey
 	uint32	UserVPInsert;     // the id refers to a glsl3vi insert mega VP variant
 	uint32	MegaSpecular;     // mega PP adds the specularColor varying (from the VP)
 	uint32	Target;           // render pass the pipeline is used with (0 = swapchain, 1 = offscreen)
+	uint32	UserPP;           // active user pixel program id (0 = builtin mega PP)
 
 	bool operator==(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
 	bool operator<(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) < 0; }
@@ -553,6 +560,12 @@ private:
 	float					_FogDensity;
 	float					_DepthRangeNear;
 	float					_DepthRangeFar;
+	/// 1 / (zfar - znear) of the current frustum; converts a material zBias
+	/// (expressed in NDC units) into the depth range offset GL uses.
+	float					_OODeltaZ;
+	/// mat.getZBias() * _OODeltaZ of the current draw, applied to the viewport
+	/// depth range like the GL/GL3 drivers do (glDepthRange).
+	float					_MaterialZBias;
 	emptyProc				_ExitFunc;
 	int						_ScreenshotFrame;
 	VkBuffer				_ScreenshotBuffer;
@@ -592,6 +605,10 @@ private:
 	VkExtent2D				currentTargetExtent() const;
 	/// Bind the cached viewport/scissor, clamped to 'extent'.
 	void					applyViewportScissor(VkCommandBuffer cmd, VkExtent2D extent);
+	/// Viewport from _Viewport, the depth range and the current material zBias.
+	VkViewport				computeViewport(VkExtent2D extent) const;
+	/// Re-issue the dynamic viewport when the material zBias changes.
+	void					applyDepthRange(VkCommandBuffer cmd);
 	/// Depth/stencil attachment shared by the targets of this size.
 	sint32					getDepthTarget(uint32 width, uint32 height);
 	bool					createTargetFramebuffer(CTextureVulkan &target, VkRenderPass pass);
@@ -693,6 +710,14 @@ private:
 	bool						_VPSpecularOutput;
 	uint32						_NextUserVPId;
 	std::map<uint32, VkShaderModule>	_UserVPShaders;
+
+	// --- User pixel programs (driver_vulkan_vp.cpp) ---
+	// A user PP replaces the mega pixel stage while it is active (FXAA is the
+	// only engine user today). It draws on the mega pipeline so the UBOs and
+	// samplers keep the same bindings.
+	CProgramDrvInfosVulkan		*_ActiveUserPP;
+	uint32						_NextUserPPId;
+	std::map<uint32, VkShaderModule>	_UserPPShaders;
 	/// glsl3vi insert mega VP variants, keyed by insertVertexShaderKey().
 	std::map<uint64, VkShaderModule>	_InsertVPShaders;
 
@@ -718,11 +743,16 @@ private:
 	std::vector<CTextureVulkan>				_PendingTextureDestroy;
 	std::vector<std::pair<VkBuffer, VkDeviceMemory> >	_PendingBufferDestroy;
 	bool					uploadTexturePixels(ITexture &tex, CTextureVulkan &out, CBitmap::TType sourceFormat);
+	/// stretchRect() implementation: scaled image blit between two NeL textures.
+	bool					stretchRectImage(ITexture *srcText, NLMISC::CRect &srcRect, ITexture *destText, NLMISC::CRect &destRect);
 	std::map<uint32, std::vector<VkVertexInputAttributeDescription> >	_VertexLayouts;
 
 	// Per-frame index upload ring.
-	// Per-draw uniform data (lighting + material + matrices).
+	// Per-draw uniform data (lighting + material + matrices + texgen + fog).
 	// This layout must match the std140 NlSimple block in the shaders exactly.
+	// Padding members only exist to make the C offsets line up with the
+	// implicit std140 padding; the std140 member order is the GLSL declaration
+	// order in s_UniformBlockGLSL (driver_vulkan_render.cpp).
 	struct SSimpleUniforms
 	{
 		float	MVP[16];				// 0
@@ -734,13 +764,28 @@ private:
 		sint32	Flags;					// 164
 		uint32	TexEnv[4];				// 168
 		uint32	UvRouting;				// 184
-		uint32	Pad0;					// 188
+		uint32	RtFlipMask;				// 188 (V flip for render-target stages)
 		float	LightDirOrPos[4][4];	// 192
 		float	LightDiffuse[4][4];		// 256
 		sint32	LightCount;				// 320
-		sint32	Pad1[3];				// 324
-	};
-	static_assert(sizeof(SSimpleUniforms) == 336, "SSimpleUniforms must match the std140 NlSimple block");
+		sint32	Pad1[3];				// 324 (std140: texGenMode is ivec4-aligned)
+		sint32	TexGenMode[4];			// 336 (-1 = disabled, else TexGen* mode)
+		float	FogColor[4];			// 352
+		float	FogParams[2];			// 368 (start, end)
+		float	FogDensity;				// 376
+		sint32	FogMode;				// 380
+		sint32	FogEnabled;				// 384
+		sint32	Pad2[3];				// 388 (std140: texGenPlane is vec4-aligned)
+		// Four planes per stage (s, t, r, q), identity unless the engine ever
+		// exposes GL's TEXTURE_GEN plane coefficients: the GL driver always uses
+		// the default object/eye planes, so only the user texture matrix moves
+		// the coordinates.
+		float	TexGenPlane[4][4][4];	// 400
+		float	TexMatrix[4][16];		// 656 (user texture matrix per stage)
+		float	SpecularTexMtx[16];		// 912 (inverse view rotation, reflection texgen)
+		float	ModelView[16];			// 976 (eye-space position for texgen and fog)
+	};									// 1040
+	static_assert(sizeof(SSimpleUniforms) == 1040, "SSimpleUniforms must match the std140 NlSimple block");
 
 	VkBuffer				_UniformRing;
 	VkDeviceMemory			_UniformRingMemory;
@@ -813,6 +858,8 @@ public:
 	void					deferDestroyBuffer(VkBuffer buffer, VkDeviceMemory memory) { _PendingBufferDestroy.push_back(std::make_pair(buffer, memory)); }
 	/// Release a user VP shader module and forget its cache entry.
 	void					releaseUserVPShader(uint32 id);
+	/// Release a user PP shader module and forget its cache entry.
+	void					releaseUserPPShader(uint32 id);
 
 	uint32					findMemoryType(uint32 typeBits, VkMemoryPropertyFlags props) const;
 };

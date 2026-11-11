@@ -116,7 +116,7 @@ struct CObjectUBOData
 	sint32 worldSpacePosition;     // 4
 	sint32 numPerPixelLights;      // 4
 	sint32 fogEnabled;             // 4
-	sint32 _pad[1];                // 4
+	sint32 rtFlipMask;             // 4 (V flip for render-target stages)
 };                                 // 320
 nlctassert(sizeof(CObjectUBOData) == 320);
 

@@ -332,9 +332,12 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 		mipCount = max(1u, (uint)tex.getMipMapCount());
 	}
 
-	VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	// TRANSFER_SRC is always on so any texture can be the source of
+	// stretchRect()'s vkCmdBlitImage (the engine also stretches plain textures).
+	VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+		VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 	if (renderTarget)
-		usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	if (!createTextureImage(width, height, mipCount, usage, out))
 		return false;
 
