@@ -2007,3 +2007,15 @@ window freezes the game with a black screen. Agent `vulkan-resize` (mats005,
 worktree `f1fb99/vulkan-resize`, base `681e78f91`) is investigating the
 swapchain-recreate path, zero-sized extents, `_FrameOpen` state and semaphores,
 and will fix/verify it.
+
+## Queued: CPU -> GPU offload audit (after the perf assessment is merged)
+
+User request: search the code for work done on the CPU that should be done on
+the GPU (old CPU paths from the game's era, newer offload techniques). Examples
+to look for: software skinning, matrix/palette transforms, particle/vegetation
+updates, texture conversion/DXT compression at load, per-frame vertex/index
+generation, sorting, fog/lightmap computation, CPU-side mipmapping, etc.
+Any change must keep the other drivers working (OpenGL/GL3), preferably by
+putting the mechanism in shared engine code rather than the Vulkan driver
+alone. Dispatch a dedicated subagent after `vulkan-perf` is merged; it must
+report candidates with cost/benefit and implement the safe ones with numbers.
