@@ -85,16 +85,14 @@ bool CDriverVulkan::canUseMegaPath(bool &cube)
 	}
 
 	// The mega pixel program declares sampler1 as samplerCube for the Specular
-	// material and every other sampler as sampler2D, so a cubemap anywhere else
-	// keeps the draw on the simple path.
+	// material and every other sampler as sampler2D. Cube textures are not
+	// uploaded as cube images yet (uploadTextureCube() is still a stub), so a
+	// cube here would bind a 2D view to a samplerCube and trip validation;
+	// keep those materials on the simple path until cube uploads exist.
 	for (uint stage = 0; stage < IDRV_MAT_MAXTEXTURES; ++stage)
 	{
 		ITexture *tex = _CurrentMaterial->getTexture(stage);
-		if (!tex || !tex->isTextureCube())
-			continue;
-		if (stage == 1)
-			cube = true;
-		else
+		if (tex && tex->isTextureCube())
 			return false;
 	}
 	return true;
@@ -113,6 +111,7 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 		key.Mega = 1;
 		key.MegaCube = cube ? 1 : 0;
 		key.UserVP = userVP ? _ActiveUserVP->Id : 0;
+		key.UserVPInsert = userVP && _ActiveUserVP->IsInsertProgram ? 1 : 0;
 		key.MegaSpecular = _VPSpecularOutput ? 1 : 0;
 	}
 	else
@@ -120,6 +119,7 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 		key.Mega = 0;
 		key.MegaCube = 0;
 		key.UserVP = 0;
+		key.UserVPInsert = 0;
 		key.MegaSpecular = 0;
 	}
 }
@@ -259,6 +259,7 @@ void CDriverVulkan::shutdownMega()
 	if (!_Device)
 	{
 		_UserVPShaders.clear();
+		_InsertVPShaders.clear();
 		return;
 	}
 	// Program driver infos may outlive the device; clearing the map before the
@@ -267,6 +268,10 @@ void CDriverVulkan::shutdownMega()
 		if (it->second)
 			vkDestroyShaderModule(_Device, it->second, NULL);
 	_UserVPShaders.clear();
+	for (std::map<uint64, VkShaderModule>::iterator it = _InsertVPShaders.begin(); it != _InsertVPShaders.end(); ++it)
+		if (it->second)
+			vkDestroyShaderModule(_Device, it->second, NULL);
+	_InsertVPShaders.clear();
 
 	for (map<uint32, VkShaderModule>::iterator it = _MegaPixelShaderVariants.begin(); it != _MegaPixelShaderVariants.end(); ++it)
 		if (it->second)
@@ -318,18 +323,33 @@ void CDriverVulkan::shutdownMega()
 // ---------------------------------------------------------------------------
 
 /// Build a complete program from a generated body: keep its #version line on
-/// top, inject the builtin UBO declarations, then append the rest.
-static std::string assembleMegaSource(const std::string &body)
+/// top, inject the builtin UBO declarations, then append the rest. userUBOs is
+/// the active vertex program's block map; insert programs declare NlMorph at
+/// binding 4 and NlSkeleton at binding 6 through it.
+bool assembleMegaSource(const std::string &body,
+	const std::map<sint, NLMISC::CSmartPtr<CUniformBufferFormat> > *userUBOs,
+	std::string &outSource)
 {
 	const size_t versionEnd = body.find('\n');
 	std::string src = body.substr(0, versionEnd + 1);
-	src += "// Builtin UBO blocks (bindings 0-3)\n";
-	src += buildVulkanLightTableHeader((sint)NL_VK_MEGA_MAX_LIGHT_TABLE);
-	src += VulkanCameraHeader;
-	src += VulkanObjectHeader;
-	src += VulkanMaterialHeader;
+	if (userUBOs && !userUBOs->empty())
+	{
+		bool ok = true;
+		src += buildVertexProgramUBOHeaders(*userUBOs, ok);
+		if (!ok)
+			return false;
+	}
+	else
+	{
+		src += "// Builtin UBO blocks (bindings 0-3)\n";
+		src += buildVulkanLightTableHeader((sint)NL_VK_MEGA_MAX_LIGHT_TABLE);
+		src += VulkanCameraHeader;
+		src += VulkanObjectHeader;
+		src += VulkanMaterialHeader;
+	}
 	src += body.substr(versionEnd + 1);
-	return src;
+	outSource = src;
+	return true;
 }
 
 VkShaderModule CDriverVulkan::getMegaVertexShader()
@@ -339,7 +359,13 @@ VkShaderModule CDriverVulkan::getMegaVertexShader()
 
 	std::string body;
 	megavkVPGenerate(body, true);
-	std::string source = assembleMegaSource(body);
+	std::string source;
+	if (!assembleMegaSource(body, NULL, source))
+	{
+		nlwarning("Vulkan: mega vertex program could not be assembled");
+		_MegaEnabled = false;
+		return VK_NULL_HANDLE;
+	}
 	VkShaderModule module = VK_NULL_HANDLE;
 	if (!compileShader(source.c_str(), &module, true))
 	{
@@ -362,7 +388,13 @@ VkShaderModule CDriverVulkan::getMegaPixelShader(bool cube, bool specular)
 
 	std::string body;
 	megavkPPGenerate(body, true, cube, specular);
-	std::string source = assembleMegaSource(body);
+	std::string source;
+	if (!assembleMegaSource(body, NULL, source))
+	{
+		nlwarning("Vulkan: mega pixel program could not be assembled");
+		_MegaEnabled = false;
+		return VK_NULL_HANDLE;
+	}
 	VkShaderModule module = VK_NULL_HANDLE;
 	if (!compileShader(source.c_str(), &module, false))
 	{
@@ -749,9 +781,11 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	}
 	// The user vertex program reads its own block at binding 4: the
 	// NlNelvpConstants registers for a converted nelvp program, or the UBO the
-	// engine bound for a GLSL program. The skeleton block (6) stays a
-	// placeholder until the glsl3vi insert programs are supported.
-	if (_ActiveUserVP && !stageUserVPUB(bufferInfos[4]))
+	// engine bound for a GLSL program. glsl3vi insert programs also read the
+	// skeleton bones at binding 6 (bound once per skeleton before the draws).
+	if (_ActiveUserVP && !stageUserUB(UBBindingVertexProgram, bufferInfos[4]))
+		return false;
+	if (_ActiveUserVP && _ActiveUserVP->IsInsertProgram && !stageUserUB(UBBindingSkeleton, bufferInfos[6]))
 		return false;
 	if (_ActiveUserVP && !_ActiveUserVP->FirstDrawLogged)
 	{
@@ -760,7 +794,6 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 			_ActiveUserVP->DisplayName.c_str(), vb.getVertexFormat(),
 			(int)_CurrentMaterial->getShader(), (void *)_StageTextures[0]);
 	}
-
 	VkDescriptorImageInfo imageInfos[NL_VK_MEGA_SAMPLER_COUNT];
 	for (uint stage = 0; stage < NL_VK_MEGA_SAMPLER_COUNT; ++stage)
 	{

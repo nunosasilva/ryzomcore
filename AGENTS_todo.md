@@ -1,21 +1,24 @@
 # Port Ryzom to Vulkan — handoff
 
-_Last updated: 2026-11-10, vertex programs (branch `vulkan-nelvp`)_
+_Last updated: 2026-11-11, glsl3vi insert programs + GPU skinning (branch `vulkan-skinning`)_
 
 ## Status in one line
 
-**`nel_drv_vulkan` runs the live client on Vulkan: the login screen (all text),
-the in-game UI, the sky, the landscape and the vegetation render, validation-clean.**
-User vertex programs (nelvp assembly and the engine's GLSL/UBO programs) compile
-and draw; lighting, lightmaps and post effects are still partial, so the world is
-flat and the player avatar is still black (CPU skinning path, no vertex program).
+**`nel_drv_vulkan` runs the live client on Vulkan: the login/character-selection
+screens, the in-game UI, the sky, the landscape, the vegetation and the player
+avatar render, validation-clean.** User vertex programs (nelvp, glsl330v and
+now the `glsl3vi` insert profile used by GPU skinning/MRM geomorph) compile and
+draw. The avatar is textured with `Shadows = 0`; with shadows enabled it is
+still a black silhouette because the client's shadow-map pass has no render
+target to write to (see below).
 
 ## Branch
 
 `main/atys-live-n-vulkan` = `main/atys-live` + OpenGL3 renderer (fast-forward
 from `origin/atys-n-gl3`, `88e72dc35`) + the Vulkan driver, pushed to `origin`.
-The vertex-program work is on local branch `vulkan-nelvp` (not pushed), based on
-`de3bc1253`.
+The vertex-program work is on local branch `vulkan-nelvp` (nelvp/glsl330v, not
+pushed) and `vulkan-skinning` (glsl3vi insert programs + GPU skinning, based on
+`b7c8b0200`, not pushed).
 
 The GL2 and GL3 drivers are kept. `Driver3D="OpenGL3"` was re-tested after the
 Vulkan work: the GL3 mega shaders initialise and the client runs.
@@ -55,11 +58,17 @@ Vulkan work: the GL3 mega shaders initialise and the client runs.
    `Specular` and the TexEnv path, but not PPL, water and fog (fog is generated
    but disabled). Lighting on many meshes is still flat; this is the main
    remaining rendering work.
-2. **Vertex programs.** Implemented on branch `vulkan-nelvp` (see the section
-   below). Still missing: the `glsl3vi` insert profile (GPU skinning / MRM
-   geomorph), so the engine stays on CPU skinning and the avatar renders black.
+2. **Vertex programs.** Implemented on `vulkan-nelvp` and `vulkan-skinning`
+   (see the sections below). `glsl3vi` insert programs now compile and draw
+   (GPU skinning + MRM geomorph). The avatar still takes the CPU-skinning +
+   simple-shader path because the live character has blend shapes, but that
+   path now renders it textured; see the shadow-map note.
 3. **Render targets.** `setRenderTarget`/`copyTargetToTexture` are stubs, so
-   bloom, FXAA, water reflection and shadow maps are disabled.
+   bloom, FXAA, water reflection **and shadow maps** are disabled. Shadow maps
+   are the reason characters are black silhouettes when `Shadows = 1`: the
+   client renders shadow casters into "the shadow texture", but with no render
+   target the black shadow pass lands in the main framebuffer. Set
+   `Shadows = 0` in `client.cfg` until render targets exist.
 4. **Textures are never evicted** from `_TexturesVulkan` (no `ITextureDrvInfos`
    hook): a per-session leak, and a re-used `ITexture` address could show a
    stale texture.
@@ -288,19 +297,19 @@ Final screenshot: `/tmp/opencode/ryzomtest/vp/final2/f.ppm.8400.png`.
 
 ## Next steps (in order of value)
 
-1. Fog parity: the mega shaders implement fog but it is currently disabled
+1. **Render targets + shadows.** Implement `setRenderTarget`/`copyTargetToTexture`
+   (and `ITexture::setRenderTarget` support) so the shadow-map pass writes to a
+   real target; then set `Shadows = 1` again. This is also the prerequisite for
+   bloom, FXAA and water reflection. Until then keep `Shadows = 0`.
+2. Fog parity: the mega shaders implement fog but it is currently disabled
    (`stageMegaObjectUBO`) because the simple path has none. Port fog to the
    simple shader (or make the mega path the default) and re-enable
    `data.fogEnabled`; GL3's black-fog overrides for additive blends and
    LightMap passes > 0 are already in place.
-2. Verify the new LightMap multi-pass staging in game on a static-lightmapped
+3. Verify the LightMap multi-pass staging in game on a static-lightmapped
    object (no LightMap material was in view at the test spot).
-3. Vertex programs: DONE on `vulkan-nelvp` for nelvp + glsl330v. Next is the
-   `glsl3vi` insert profile so GPU skinning and MRM geomorph can run, then the
-   avatar's CPU-skinning material/lighting path.
-4. Render targets + bloom/FXAA/water reflection.
-5. Texture eviction via an `ITextureDrvInfos` implementation.
-6. Partial texture uploads, BC textures, cubemaps.
+4. Texture eviction via an `ITextureDrvInfos` implementation.
+5. Partial texture uploads, BC textures, real cubemaps.
 
 ## Review findings already fixed
 
@@ -362,7 +371,93 @@ work for nelvp and glsl330v. In game, 24 user programs compile (wind tree UBO +
 `g5` = old behaviour with `NLVK_NOVP=1`). Debug env: `NLVK_NOVP=1`,
 `NLVK_NOUBO=1`, `NLVK_VP_DUMP=<dir>`.
 
-Not supported: glsl3vi insert programs (GPU skinning/MRM geomorph) — rejected
-so the engine keeps CPU skinning; the avatar is still a black silhouette.
-Next: splice the insert snippet into the mega VP, declare `NlMorph` (binding 4)
-and `NlSkeleton` (binding 6), then accept `glsl3vi`.
+Not supported before `vulkan-skinning`: glsl3vi insert programs (GPU
+skinning/MRM geomorph) were rejected. They are now implemented; see the next
+section.
+
+## glsl3vi insert programs + GPU skinning (branch `vulkan-skinning`)
+
+`glsl3vi` is not a complete shader: `nel/src/3d/gpu_skin_vp.cpp` provides a
+snippet that defines
+
+```glsl
+void nlPreTransform(inout vec4 pos, inout vec3 norm, inout vec4 tc0, inout vec4 tangent)
+```
+
+and the engine expects it to be spliced into the mega vertex program. The
+Vulkan driver now does that:
+
+- `megavkVPGenerate(result, fogOrPpl, insertSource)` emits the snippet after the
+  varying declarations, declares `nlTangent` and calls `nlPreTransform()` on the
+  vertex inputs before `modelViewProjection * nlPos`, like GL3.
+- The engine snippet uses `gl_VertexID` (the GL spelling); the generator rewrites
+  the token to `gl_VertexIndex` for Vulkan.
+- The insert program's `UniformBufferFormats` declare `NlMorph` at
+  `UBBindingVertexProgram` (binding 4) and `NlSkeleton` at `UBBindingSkeleton`
+  (binding 6). `buildVertexProgramUBOHeaders()` (now shared with the raw GLSL
+  user programs) prepends those blocks to the generated mega VP.
+- `compileInsertVertexProgram()` caches the compiled variants in
+  `_InsertVPShaders` keyed by `insertVertexShaderKey(id, fogOrPpl, hwClip)`.
+  Only `(1, 0)` is generated today: the mega pixel stage is always the fog/PPL
+  variant and `supportVertexProgramClipPlanes()` is false, so no `hwClip`
+  variant can be selected. The key keeps both GL3 bits for later.
+- `bindMegaDescriptors()` stages binding 4 from `UBBindingVertexProgram` (morph)
+  and, for insert programs, binding 6 from `UBBindingSkeleton` (bones). The
+  skeleton model binds the bone UBO once per skeleton, before its draws.
+- `supportVertexProgram(glsl3vi)` returns true, so `CSkeletonModel` takes the
+  GPU path and `CMeshMRMSkinnedGeom::buildGPUSkinVB()` starts building the
+  combined skin VB/index buffer.
+- `PaletteSkin` (UChar4) is bound as `VK_FORMAT_R8G8B8A8_USCALED`, matching GL3's
+  non-normalized integer attribute: the shader reads the raw bone indices 0..255
+  in a `vec4`.
+
+Evidence in game (run dir `~/Projects/ryzom/ryzom_live_vk2_mega`, 1280x800):
+
+- `grep "compiled insert vertex program"`: both `GPU Skinning Insert` (MRM
+  geomorph) and `GPU Skinning Simple Insert` compile; no shader/UBO errors.
+- Character selection (`/tmp/opencode/ryzomtest/final/skin.ppm.2400.ppm`): the
+  preview character is entirely drawn through the insert programs (`userVP=1`
+  for `vflags=0x31c7`, `userVP=2` for `vflags=0x3007`) and is textured.
+- In game every skinned draw logs the insert path; the avatar itself takes the
+  CPU path (blend shapes) and now renders textured with `Shadows = 0`
+  (`/tmp/opencode/ryzomtest/final/skin.ppm.13200.ppm`; torso samples
+  `(214,197,183)` and `(177,166,156)`, not `(0,0,0)`).
+- Login/character screens still render. Validation is clean apart from the
+  pre-existing gamescope WSI warnings and benign "attribute not consumed"
+  warnings: `/tmp/opencode/ryzomtest/final/run.log`.
+
+### The black-silhouette mystery: shadow maps, not skinning
+
+The player avatar is a **CPU-skinned** mesh (the live character has blend
+shapes), so it does not use the insert programs in game; the char-selection
+preview and NPCs do. The black silhouette was the client's **shadow-map pass**:
+`CDriverVulkan::setRenderTarget()` is a stub that returns false and does
+nothing, so `CShadowMapManager` keeps rendering shadow casters with its black
+depth material straight into the main framebuffer. With `Shadows = 1`
+(`client.cfg` default in the run dir) every character/NPC/tree is black.
+
+Workaround used for the verification: `Shadows = 0` in
+`~/Projects/ryzom/ryzom_live_vk2_mega/client.cfg` (original saved as
+`client.cfg.shadows1.bak`). The real fix is render targets, which are also
+needed for bloom/FXAA/water reflection.
+
+### Simple-path fixes found while chasing the avatar
+
+These are driver bugs independent of insert programs, kept because they make the
+CPU-skinning path match the mega programs:
+
+- The simple vertex shader used the material colour for lit materials. It now
+  uses the material **diffuse** when lighting is on and the material colour when
+  unlit, like the mega VP (`NlSimple` gained a `vec4 diffuse`; the block is now
+  336 bytes).
+- Primary/vertex colours: unlit draws replace the material colour (they used to
+  multiply, turning CPU skin VBs with black primary colours into black
+  silhouettes); lit draws use them only when
+  `IDRV_MAT_LIGHTED_VERTEX_COLOR` is set.
+- The simple path now transforms the world-space light direction/position into
+  eye space with `_ViewMatrix` (the shader lights eye-space normals); it used
+  world-space lights before.
+- Cube textures keep the draw on the simple path: `uploadTextureCube()` is a
+  stub that creates a 2D view, so the mega `samplerCube` variant would bind a 2D
+  view and trip `VUID-vkCmdDrawIndexed-viewType-07752`. This also removes the
+  black Specular-environment draws until real cube uploads exist.
