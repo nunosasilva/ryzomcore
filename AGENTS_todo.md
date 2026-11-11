@@ -1999,3 +1999,11 @@ binary sits next to `data/`), not something suppressed by this change.
   paths; that is intentional (warnings must stay visible). The per-frame Vulkan
   stats are gone from the terminal and remain in `client.log`.
 - Do not merge before the user verifies the static binary in the real install.
+
+## Bug: windowed resize freezes (Vulkan) — in progress
+
+User report: with `Driver3D="Vulkan"` and `FullScreen = 0`, resizing the game
+window freezes the game with a black screen. Agent `vulkan-resize` (mats005,
+worktree `f1fb99/vulkan-resize`, base `681e78f91`) is investigating the
+swapchain-recreate path, zero-sized extents, `_FrameOpen` state and semaphores,
+and will fix/verify it.
