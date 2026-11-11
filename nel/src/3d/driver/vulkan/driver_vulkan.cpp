@@ -1283,10 +1283,9 @@ bool CDriverVulkan::beginFrame()
 	vkWaitForFences(_Device, 1, &_Fences[frame], VK_TRUE, UINT64_MAX);
 
 	// Frame `frame` (and therefore everything recorded for it) is finished.
-	// Resources retired two or more frames ago cannot be referenced by any
-	// command buffer that is still executing - with two frame slots in flight,
-	// the other slot's last submission is at most one frame old - so they can
-	// be freed here without a device-wide wait.
+	// Resources retired at least three frames ago cannot be referenced by any
+	// command buffer that is still executing (see the retireBefore comment
+	// below), so they are freed here without a device-wide wait.
 	vkResetDescriptorPool(_Device, _DescriptorPools[frame], 0);
 	{
 		// A resource retired here can be referenced by the upload batch of an
@@ -1298,10 +1297,16 @@ bool CDriverVulkan::beginFrame()
 			_UploadSubmitted = false;
 			freeUploadStaging();
 		}
-		const uint64 retireBefore = _SwapBufferCounter >= 2 ? _SwapBufferCounter - 2 : 0;
+		// Retire a resource once three swap-buffer frames have passed since it
+		// was retired (tag + 3 <= counter). Two frames are not enough: a resource
+		// can be retired between frames (a vertex buffer destroyed by the game
+		// thread, the index ring grown by a loader), and then the most recent
+		// submission belongs to the *other* slot, whose fence is not the one
+		// waited above. Nothing is freed during the first three frames, when the
+		// counter is too small for any tag to be provably unused.
 		for (size_t i = 0; i < _PendingTextureDestroy.size(); )
 		{
-			if (_PendingTextureDestroy[i].first > retireBefore)
+			if (_PendingTextureDestroy[i].first + 3 > _SwapBufferCounter)
 			{
 				++i;
 				continue;
@@ -1317,7 +1322,7 @@ bool CDriverVulkan::beginFrame()
 		}
 		for (size_t i = 0; i < _PendingBufferDestroy.size(); )
 		{
-			if (_PendingBufferDestroy[i].first > retireBefore)
+			if (_PendingBufferDestroy[i].first + 3 > _SwapBufferCounter)
 			{
 				++i;
 				continue;
@@ -1461,19 +1466,21 @@ bool CDriverVulkan::swapBuffers()
 	vkCmdEndRenderPass(cmd);
 
 	bool wantScreenshot = false;
+	// 0 = a single dump at NLVK_SCREENSHOT_FRAME; otherwise dump every N frames
+	// (each burst frame is named after its frame number, like NLVK_SCREENSHOT_SEQ).
+	uint64 screenshotEvery = 0;
 	const char *screenshotPath = getenv("NLVK_SCREENSHOT");
 	if (screenshotPath)
 	{
 		const char *everyEnv = getenv("NLVK_SCREENSHOT_EVERY");
 		if (getenv("NLVK_SCREENSHOT_SEQ"))
-			wantScreenshot = _SwapBufferCounter >= (uint64)_ScreenshotFrame && (_SwapBufferCounter % 600) == 0;
-		else if (everyEnv && atoi(everyEnv) > 0)
-		{
-			// Consecutive-frame dumps, for short glitches (flicker) that a
-			// 600-frame sequence would miss.
-			const uint64 every = (uint64)atoi(everyEnv);
-			wantScreenshot = _SwapBufferCounter >= (uint64)_ScreenshotFrame && (_SwapBufferCounter % every) == 0;
-		}
+			screenshotEvery = 600;
+		// Consecutive-frame dumps, for short glitches (flicker) that a
+		// 600-frame sequence would miss.
+		if (everyEnv && atoi(everyEnv) > 0)
+			screenshotEvery = (uint64)atoi(everyEnv);
+		if (screenshotEvery)
+			wantScreenshot = _SwapBufferCounter >= (uint64)_ScreenshotFrame && (_SwapBufferCounter % screenshotEvery) == 0;
 		else
 			wantScreenshot = _SwapBufferCounter == (uint64)_ScreenshotFrame;
 	}
@@ -1510,7 +1517,7 @@ bool CDriverVulkan::swapBuffers()
 	if (wantScreenshot)
 	{
 		vkWaitForFences(_Device, 1, &_Fences[frame], VK_TRUE, UINT64_MAX);
-		if (getenv("NLVK_SCREENSHOT_SEQ"))
+		if (screenshotEvery)
 		{
 			char path[512];
 			snprintf(path, sizeof(path), "%s.%llu.ppm", screenshotPath, (unsigned long long)_SwapBufferCounter);
