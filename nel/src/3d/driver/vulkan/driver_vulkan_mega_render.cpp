@@ -100,6 +100,11 @@ bool CDriverVulkan::canUseMegaPath(bool &cube)
 
 void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 {
+	// Pipelines are render-pass specific: the swapchain pass and the offscreen
+	// pass have different colour formats, so the target selector is part of the
+	// key. Every draw path finishes its key here, hence the assignment here.
+	key.Target = _RenderTargetInfo ? 1 : 0;
+
 	bool cube = false;
 	const bool materialOk = canUseMegaPath(cube);
 	// The mega path is used for every draw when NLVK_MEGA=1 selects it, and
@@ -563,10 +568,28 @@ void CDriverVulkan::stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data)
 		data.uvRouting[i] = (sint32)route;
 	}
 
-	// TexGen is not implemented by this driver yet: stages keep the vertex
-	// attribute passthrough path.
+	// Texture coordinate generation, same mode values as the GL3 driver. The
+	// shadow receiver is the main user: it draws terrain triangles with no UVs
+	// and projects the shadow map through the stage's user texture matrix.
 	for (uint i = 0; i < IDRV_MAT_MAXTEXTURES; ++i)
+	{
 		data.texGenMode[i] = -1;
+		const ITexture *tex = mat.getTexture(i);
+		if (!tex || !mat.getTexCoordGen(i))
+			continue;
+		switch (mat.getTexCoordGenMode(i))
+		{
+		case CMaterial::TexCoordGenReflect:
+			data.texGenMode[i] = tex->isTextureCube() ? 0 /* ReflectionMap */ : 1 /* SphereMap */;
+			break;
+		case CMaterial::TexCoordGenObjectSpace:
+			data.texGenMode[i] = 2; // ObjectLinear
+			break;
+		case CMaterial::TexCoordGenEyeSpace:
+			data.texGenMode[i] = 3; // EyeLinear
+			break;
+		}
+	}
 
 	data.lighting = mat.isLighted() ? 1 : 0;
 	data.vertexColorLighted = (mat.getFlags() & IDRV_MAT_LIGHTED_VERTEX_COLOR) ? 1 : 0;
@@ -838,6 +861,16 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	}
 	vkUpdateDescriptorSets(_Device, writeCount, writes, 0, NULL);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _MegaPipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+
+	// The mega pipelines declare VK_DYNAMIC_STATE_BLEND_CONSTANTS like the
+	// simple ones, so the state must be set on both paths.
+	const float blendConstants[4] = {
+		_BlendConstantColor.R / 255.f,
+		_BlendConstantColor.G / 255.f,
+		_BlendConstantColor.B / 255.f,
+		_BlendConstantColor.A / 255.f,
+	};
+	vkCmdSetBlendConstants(cmd, blendConstants);
 	return true;
 }
 
