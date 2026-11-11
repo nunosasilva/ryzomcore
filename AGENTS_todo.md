@@ -1,16 +1,17 @@
 # Port Ryzom to Vulkan — handoff
 
-_Last updated: 2026-11-11, render targets + shadow maps (branch `vulkan-rendertargets`)_
+_Last updated: 2026-11-11, texgen + fog + bloom/FXAA (branch `vulkan-fog-bloom`)_
 
 ## Status in one line
 
 **`nel_drv_vulkan` runs the live client on Vulkan: the login/character-selection
 screens, the in-game UI, the sky, the landscape, the vegetation and the player
-avatar render, validation-clean.** User vertex programs (nelvp, glsl330v and
-now the `glsl3vi` insert profile used by GPU skinning/MRM geomorph) compile and
-draw. Offscreen render targets exist, so `Shadows = 1` no longer paints the
-shadow pass into the window: the avatar stays textured, and on the mega path the
-shadow is projected on the ground (see the render-target section).
+avatar render, validation-clean, with fog, projected shadows on the default
+(simple) path and bloom + FXAA on the render-target path.** User vertex programs
+(nelvp, glsl330v and the `glsl3vi` insert profile used by GPU skinning/MRM
+geomorph) compile and draw. Offscreen render targets exist, so `Shadows = 1`
+does not paint the shadow pass into the window, and the shadow receiver's
+object-space texgen works on both paths (see the `vulkan-fog-bloom` section).
 
 ## Branch
 
@@ -18,8 +19,9 @@ shadow is projected on the ground (see the render-target section).
 from `origin/atys-n-gl3`, `88e72dc35`) + the Vulkan driver, pushed to `origin`.
 The vertex-program work is on local branch `vulkan-nelvp` (nelvp/glsl330v, not
 pushed), `vulkan-skinning` (glsl3vi insert programs + GPU skinning, based on
-`b7c8b0200`, not pushed) and `vulkan-rendertargets` (render targets + shadow
-maps, based on `6b20a9341`, not pushed).
+`b7c8b0200`, not pushed), `vulkan-rendertargets` (render targets + shadow maps,
+based on `6b20a9341`, not pushed) and `vulkan-fog-bloom` (simple-path texgen +
+fog, bloom/FXAA, based on `d7334636c`, not pushed).
 
 The GL2 and GL3 drivers are kept. `Driver3D="OpenGL3"` was re-tested after the
 Vulkan work: the GL3 mega shaders initialise and the client runs.
@@ -48,6 +50,15 @@ Vulkan work: the GL3 mega shaders initialise and the client runs.
   `getRenderTargetSize`/`copyTargetToTexture`, a shared depth/stencil cache per
   target size, and a LOAD pass to resume the window pass mid-frame. Shadow maps
   write to a real target (`Shadows = 1` is safe). See the render-target section.
+- Per-stage tex-coord generation (object-linear, eye-linear, sphere and
+  reflection map) and user texture matrices in the simple vertex shader, so
+  shadow receivers project the shadow map without `NLVK_MEGA`.
+- Fog (linear / exp / exp2) on both the simple and the mega paths, from the
+  engine fog state (`enableFog`/`setupFog`/`setupFogMode`), using the same
+  eye-space depth and the GL3 black-fog override for additive draws.
+- Bloom and FXAA on the render-target path: `supportBloomEffect()` is true,
+  `stretchRect()` is a scaled `vkCmdBlitImage`, and user pixel programs
+  (FXAA's `glsl300esf`) run on the mega pipeline. See the new section.
 - ~60 fps (vsync) in game on RADV, ~600 draw calls/frame.
 - Validation layer clean. The only remaining message is gamescope's WSI
   `VkSwapchainPresentModeInfoKHR` warning, which comes from the gamescope
@@ -60,9 +71,9 @@ Vulkan work: the GL3 mega shaders initialise and the client runs.
 ## Known gaps
 
 1. **Lightmaps / shader types.** The mega shaders implement `CMaterial::LightMap`,
-   `Specular` and the TexEnv path, but not PPL, water and fog (fog is generated
-   but disabled). Lighting on many meshes is still flat; this is the main
-   remaining rendering work.
+   `Specular` and the TexEnv path, but not PPL and water. Lighting on many
+   meshes is still flat; this is the main remaining rendering work. Fog is
+   implemented on both paths (see the `vulkan-fog-bloom` section).
 2. **Vertex programs.** Implemented on `vulkan-nelvp` and `vulkan-skinning`
    (see the sections below). `glsl3vi` insert programs now compile and draw
    (GPU skinning + MRM geomorph). The avatar still takes the CPU-skinning +
@@ -71,15 +82,16 @@ Vulkan work: the GL3 mega shaders initialise and the client runs.
 3. **Render targets.** Implemented (branch `vulkan-rendertargets`):
    `setRenderTarget`/`getRenderTarget`/`getRenderTargetSize`/`copyTargetToTexture`
    and offscreen `ITexture` images. Shadow maps write to a real target, so
-   `Shadows = 1` is safe again. Bloom/FXAA/water reflection still need engine-
-   side work (`supportBloomEffect()` is still false, `stretchRect` is a stub).
-   See the render-target section.
-4. **Shadow projection in the simple path.** The shadow *receiver* material
-   generates its UVs from object space (`setTexCoordGen(ObjectSpace)` + a user
-   texture matrix); only the mega vertex program implements that. Staged in
-   `stageMegaMaterialUBO()` now, so shadows project on the mega path only. Port
-   tex-coord generation to the simple path (or make the mega path the default)
-   to get shadows in the default configuration.
+   `Shadows = 1` is safe again. Bloom and FXAA are implemented on top of the
+   target path (branch `vulkan-fog-bloom`): `supportBloomEffect()`,
+   `stretchRect()` (scaled blit) and the user pixel-program path for FXAA.
+4. **Shadow projection in the simple path.** Implemented on
+   `vulkan-fog-bloom`: the simple vertex shader does object/eye/sphere/
+   reflection texgen from the per-draw UBO and applies the user texture
+   matrices. The shadow receiver also needed the material zBias to be applied
+   to the viewport depth range (`applyDepthRange()`), otherwise its quad lost
+   the depth test against the terrain. With `Shadows = 1` and no `NLVK_MEGA`,
+   the avatar's shadow is projected on the ground.
 5. **Textures are never evicted** from `_TexturesVulkan` (no `ITextureDrvInfos`
    hook): a per-session leak, and a re-used `ITexture` address could show a
    stale texture.
@@ -628,12 +640,120 @@ torso went from 76% pure black to fully textured (rgb(174,160,126), 0% black),
 same for skirt and legs; ground unchanged as control; no new validation errors.
 Images: `/tmp/opencode/rt/before_2400.png` and `/tmp/opencode/rt/final_2400.png`.
 
+Now fixed on `vulkan-fog-bloom`: the shadow projects on the default (simple)
+path too, and bloom/FXAA run on the render-target path. See the last section.
+
 Still open:
-- Shadow projection in the default (simple) path: the receiver material
-  generates UVs from object space, which only the mega VP implements. Under
-  `NLVK_MEGA=1` the shadow follows the avatar. Next: port tex-coord generation to
-  the simple shader, or finish fog and make the mega path the default.
-- Bloom/FXAA: `supportBloomEffect()` is still false (inert, no black screen).
-  Enabling it needs `supportBloomEffect()`, `stretchRect()` and `CTextureOffscreen`,
-  which can reuse the new render-target path.
 - `copyTargetToTexture()` supports an offscreen source only.
+
+## Simple-path texgen + fog, bloom/FXAA (branch `vulkan-fog-bloom`)
+
+Commit `d7334636c` + the changes on this branch (`vulkan-fog-bloom`, not
+pushed). `nel/src/3d/driver/vulkan/` only.
+
+### Object-space texgen in the simple shader
+
+`SSimpleUniforms` grew from 336 to 1040 bytes (the ring slot follows
+`sizeof`): a `mat4 modelView`, the user texture matrix per stage, the four
+texgen modes, the four plane coefficients per stage and a `specularTexMtx`.
+`buildVertexShader()` now:
+
+- keeps `vUvN` as `vec4` and applies the stage's user texture matrix (the
+  fragment shader divides by q for the projective shadow lookup);
+- implements `ObjectLinear` (`texMatrix * objectPos`, the shadow receiver),
+  `EyeLinear`, `SphereMap` and `ReflectionMap` with the same math and mode
+  values as the mega VP (identity planes, like the GL driver);
+- computes eye-space `modelView * objPos` for the eye-linear mode and for fog.
+
+The shadow receiver's quad also needed `CMaterial::getZBias()`: the Vulkan
+driver ignored it, so the quad lost the depth test against the terrain it
+shadows. `computeViewport()` now applies the NeL depth range and
+`mat.getZBias() * _OODeltaZ` to `minDepth`/`maxDepth`, like GL's
+`glDepthRange`; `setupMaterial()` re-issues the dynamic viewport per material.
+This is what made the shadow appear (same texgen code with and without it).
+
+### Fog on both paths
+
+The simple pixel shader has the same `applyFog()` as the mega PP (linear /
+exp / exp2, `abs(eyePos.y / eyePos.w)`, same colour) fed per draw from
+`enableFog`/`setupFog`/`setupFogMode`. Additive draws use the black fog
+override, matching GL3. The `fogEnabled = 0` override in
+`stageMegaObjectUBO()` is gone: `nlFogEnabled` is now the engine state, so the
+two paths render the same fog.
+
+### Render-target sampling orientation
+
+Vulkan render-target images are stored top-down (viewport row 0 is the top),
+while NeL texture coordinates have V = 0 at the bottom. The driver now sets a
+per-stage flip mask (`SSimpleUniforms::RtFlipMask`, `CObjectUBOData::rtFlipMask`)
+for stages bound to an **offscreen** texture (`ITexture::isOffscreenTexture()`,
+i.e. the render target manager's effect targets), and both pixel programs flip
+V for those stages. Without it the bloom/FXAA result was vertically flipped.
+The shadow maps are `CTextureMem` render targets: the shadow map manager's copy
+pass already produces them for the GL bottom-up convention, so flipping them
+again moved the projected shadow off the receiver (verified).
+
+### Bloom and FXAA
+
+- `supportBloomEffect()` returns true.
+- `stretchRect()` is `stretchRectImage()`: a scaled `vkCmdBlitImage` with NeL
+  rect handling, suspending and resuming the open render pass. Every texture
+  image now has `TRANSFER_SRC` usage so any texture can be a source.
+- `CTextureOffscreen` already came from the render target manager; the target
+  path handles it as before.
+- The bloom blur draws with the engine's `TextureOffset` vertex program. The
+  driver now skips a GLSL source that declares plain uniforms (Vulkan requires
+  blocks) and uses the program's `nelvp` source, so that program compiles via
+  the converter. The pixel stage for user VPs uses `nlRtFlipMask` (above) and
+  the object vertex format now includes texgen stages and the texcoords a
+  converted VP writes, so the four blur taps sample their own coordinates.
+- User pixel programs are implemented (`compilePixelProgram` /
+  `activePixelProgram`): the `glsl300esf` source is assembled with its UBO at
+  binding 5, the sampler at binding 8, an output location and explicit varying
+  locations; the shader replaces the mega pixel stage through a `UserPP` key.
+  FXAA's own vertex program falls back to its `nelvp` source.
+- The full-screen user-PP pass samples a render target, so its varying V is
+  flipped at assembly time (documented in `addVulkanFragmentQualifiers()`).
+
+### Verification (2026-11-11, run dir `ryzom_live_vk2_mega`, 1280x800, X11)
+
+`Shadows = 1`, `Bloom = 1`, `FXAA = 1`, default path (no `NLVK_MEGA`),
+`NLVK_VALIDATION=1`:
+
+- build: `ninja -C build-vulkan -j 6 ryzom_client_dev lib/libnel_drv_vulkan.so`
+  clean.
+- `Vulkan: stretchRect 1280x800 -> 256x256 (scaled blit)` (bloom uses the
+  blit, not the CDriverUser fallback).
+- `Vulkan: compiled user pixel program 'glsl300esf/FXAA_PP/UBO'`;
+  FXAA PP/VP available; bloom's `TextureOffset` VP compiles from `nelvp`
+  (`... uses plain uniforms; using its nelvp source`).
+- No validation errors: the only messages are the pre-existing "vertex
+  attribute not consumed" pipeline warnings (duplicate limit). No black
+  screen, no flip: UI, minimap and world are upright.
+- Images in `/tmp/opencode/fogbloom/`:
+  `simple.ppm.2400.png` is the pre-texgen/zbias control: avatar textured, no
+  shadow under it; `zbias2400.png` is the same spot after texgen + zBias: a
+  soft dark shadow blob left of the feet (this is the shadow-projection
+  evidence). `finalcheck1200.png` is the current build with Shadows = 1 +
+  Bloom = 1 + FXAA = 1 and validation on: upright, fogged, shadow visible as a
+  soft patch under the feet (`finalcheck_feet.png`); `megafinal1200.png` is
+  `NLVK_MEGA=1` with both effects (the post-restriction mega run is
+  `mega_final_build.png`). The sun angle follows the in-game time, so the
+  shadow is obvious only at some times of day (the zbias frame is a good one).
+- `NLVK_MEGA=1` with bloom + FXAA also renders correctly (upright, fogged,
+  validation-clean), so both paths still agree.
+
+Known limitations:
+
+- FXAA does not have its own support flag; `supportBloomEffect()` gates it, and
+  the driver only compiles the `glsl300esf` profile. A pixel program without
+  that profile disables itself with a warning.
+- The user-PP varying flip assumes the program samples a render target (true
+  for FXAA). A future user PP sampling a regular texture through the same
+  varying would be flipped.
+- The bloom blur's four taps now sample their own VP-written coordinates; the
+  visible result is a soft glow. Its quality has not been compared against the
+  GL3 driver side by side.
+- The mega path's sky/backdrop still differs from the simple path (the clear
+  colour shows where the simple path draws the sky texture); this predates
+  this branch.
