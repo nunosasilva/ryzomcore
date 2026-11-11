@@ -591,9 +591,11 @@ private:
 	CViewport				_SavedViewport;
 
 	VkFormat				_DepthFormat;
-	VkImage					_DepthImage;
-	VkDeviceMemory			_DepthMemory;
-	VkImageView				_DepthView;
+	// One depth/stencil image per swapchain image: frames in flight must never
+	// share a depth attachment.
+	std::vector<VkImage>	_DepthImages;
+	std::vector<VkDeviceMemory>	_DepthMemories;
+	std::vector<VkImageView>	_DepthViews;
 
 	VkCommandPool			_CommandPool;
 	std::vector<VkCommandBuffer> _CommandBuffers;

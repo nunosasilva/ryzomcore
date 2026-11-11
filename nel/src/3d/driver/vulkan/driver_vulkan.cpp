@@ -139,9 +139,6 @@ CDriverVulkan::CDriverVulkan()
 	, _RenderTargetBinds(0)
 	, _RenderTargetLogged(false)
 	, _DepthFormat(VK_FORMAT_UNDEFINED)
-	, _DepthImage(VK_NULL_HANDLE)
-	, _DepthMemory(VK_NULL_HANDLE)
-	, _DepthView(VK_NULL_HANDLE)
 	, _CommandPool(VK_NULL_HANDLE)
 	, _FrameIndex(0)
 	, _ImageIndex(0)
@@ -706,55 +703,73 @@ VkFormat CDriverVulkan::findDepthFormat() const
 
 bool CDriverVulkan::createDepthResources()
 {
-	VkImageCreateInfo ici;
-	memset(&ici, 0, sizeof(ici));
-	ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-	ici.imageType = VK_IMAGE_TYPE_2D;
-	ici.extent.width = _SwapchainExtent.width;
-	ici.extent.height = _SwapchainExtent.height;
-	ici.extent.depth = 1;
-	ici.mipLevels = 1;
-	ici.arrayLayers = 1;
-	ici.format = _DepthFormat;
-	ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-	ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-	ici.samples = VK_SAMPLE_COUNT_1_BIT;
-	ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	if (!checkVk(vkCreateImage(_Device, &ici, NULL, &_DepthImage), "vkCreateImage(depth)"))
-		return false;
+	destroyDepthResources();
+	const uint imageCount = (uint)_SwapchainImages.size();
+	_DepthImages.assign(imageCount, VK_NULL_HANDLE);
+	_DepthMemories.assign(imageCount, VK_NULL_HANDLE);
+	_DepthViews.assign(imageCount, VK_NULL_HANDLE);
 
-	VkMemoryRequirements req;
-	vkGetImageMemoryRequirements(_Device, _DepthImage, &req);
-	VkMemoryAllocateInfo mai;
-	memset(&mai, 0, sizeof(mai));
-	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	mai.allocationSize = req.size;
-	mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	if (!checkVk(vkAllocateMemory(_Device, &mai, NULL, &_DepthMemory), "vkAllocateMemory(depth)"))
-		return false;
-	if (!checkVk(vkBindImageMemory(_Device, _DepthImage, _DepthMemory, 0), "vkBindImageMemory(depth)"))
-		return false;
+	for (uint i = 0; i < imageCount; ++i)
+	{
+		VkImageCreateInfo ici;
+		memset(&ici, 0, sizeof(ici));
+		ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		ici.imageType = VK_IMAGE_TYPE_2D;
+		ici.extent.width = _SwapchainExtent.width;
+		ici.extent.height = _SwapchainExtent.height;
+		ici.extent.depth = 1;
+		ici.mipLevels = 1;
+		ici.arrayLayers = 1;
+		ici.format = _DepthFormat;
+		ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+		ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+		ici.samples = VK_SAMPLE_COUNT_1_BIT;
+		ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		if (!checkVk(vkCreateImage(_Device, &ici, NULL, &_DepthImages[i]), "vkCreateImage(depth)"))
+			return false;
 
-	VkImageViewCreateInfo vci;
-	memset(&vci, 0, sizeof(vci));
-	vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-	vci.image = _DepthImage;
-	vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	vci.format = _DepthFormat;
-	vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-	if (_DepthFormat == VK_FORMAT_D24_UNORM_S8_UINT || _DepthFormat == VK_FORMAT_D32_SFLOAT_S8_UINT)
-		vci.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
-	vci.subresourceRange.levelCount = 1;
-	vci.subresourceRange.layerCount = 1;
-	return checkVk(vkCreateImageView(_Device, &vci, NULL, &_DepthView), "vkCreateImageView(depth)");
+		VkMemoryRequirements req;
+		vkGetImageMemoryRequirements(_Device, _DepthImages[i], &req);
+		VkMemoryAllocateInfo mai;
+		memset(&mai, 0, sizeof(mai));
+		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		mai.allocationSize = req.size;
+		mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		if (!checkVk(vkAllocateMemory(_Device, &mai, NULL, &_DepthMemories[i]), "vkAllocateMemory(depth)"))
+			return false;
+		if (!checkVk(vkBindImageMemory(_Device, _DepthImages[i], _DepthMemories[i], 0), "vkBindImageMemory(depth)"))
+			return false;
+
+		VkImageViewCreateInfo vci;
+		memset(&vci, 0, sizeof(vci));
+		vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		vci.image = _DepthImages[i];
+		vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		vci.format = _DepthFormat;
+		vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		if (_DepthFormat == VK_FORMAT_D24_UNORM_S8_UINT || _DepthFormat == VK_FORMAT_D32_SFLOAT_S8_UINT)
+			vci.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+		vci.subresourceRange.levelCount = 1;
+		vci.subresourceRange.layerCount = 1;
+		if (!checkVk(vkCreateImageView(_Device, &vci, NULL, &_DepthViews[i]), "vkCreateImageView(depth)"))
+			return false;
+	}
+
+	return true;
 }
 
 void CDriverVulkan::destroyDepthResources()
 {
-	if (_DepthView) { vkDestroyImageView(_Device, _DepthView, NULL); _DepthView = VK_NULL_HANDLE; }
-	if (_DepthImage) { vkDestroyImage(_Device, _DepthImage, NULL); _DepthImage = VK_NULL_HANDLE; }
-	if (_DepthMemory) { vkFreeMemory(_Device, _DepthMemory, NULL); _DepthMemory = VK_NULL_HANDLE; }
+	for (uint i = 0; i < _DepthViews.size(); ++i)
+		if (_DepthViews[i]) vkDestroyImageView(_Device, _DepthViews[i], NULL);
+	for (uint i = 0; i < _DepthImages.size(); ++i)
+		if (_DepthImages[i]) vkDestroyImage(_Device, _DepthImages[i], NULL);
+	for (uint i = 0; i < _DepthMemories.size(); ++i)
+		if (_DepthMemories[i]) vkFreeMemory(_Device, _DepthMemories[i], NULL);
+	_DepthViews.clear();
+	_DepthImages.clear();
+	_DepthMemories.clear();
 }
 
 bool CDriverVulkan::createFramebuffers()
@@ -762,7 +777,7 @@ bool CDriverVulkan::createFramebuffers()
 	_Framebuffers.resize(_SwapchainViews.size());
 	for (uint i = 0; i < _SwapchainViews.size(); ++i)
 	{
-		VkImageView views[2] = { _SwapchainViews[i], _DepthView };
+		VkImageView views[2] = { _SwapchainViews[i], _DepthViews[i] };
 		VkFramebufferCreateInfo fci;
 		memset(&fci, 0, sizeof(fci));
 		fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -923,6 +938,43 @@ bool CDriverVulkan::initVulkan()
 	if (!createSyncObjects())
 		return false;
 
+	// Put every depth image in the layout the render pass expects, once.
+	if (!_DepthImages.empty())
+	{
+		VkCommandBuffer cmd = _CommandBuffers[0];
+		VkCommandBufferBeginInfo bi;
+		memset(&bi, 0, sizeof(bi));
+		bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		vkBeginCommandBuffer(cmd, &bi);
+		std::vector<VkImageMemoryBarrier> barriers(_DepthImages.size());
+		for (uint i = 0; i < _DepthImages.size(); ++i)
+		{
+			VkImageMemoryBarrier &barrier = barriers[i];
+			memset(&barrier, 0, sizeof(barrier));
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = _DepthImages[i];
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			barrier.subresourceRange.levelCount = 1;
+			barrier.subresourceRange.layerCount = 1;
+			barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		}
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+			0, 0, NULL, 0, NULL, (uint32)barriers.size(), &barriers[0]);
+		vkEndCommandBuffer(cmd);
+		VkSubmitInfo si;
+		memset(&si, 0, sizeof(si));
+		si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		si.commandBufferCount = 1;
+		si.pCommandBuffers = &cmd;
+		vkQueueSubmit(_GraphicsQueue, 1, &si, VK_NULL_HANDLE);
+		vkQueueWaitIdle(_GraphicsQueue);
+	}
+
 	// Pipeline layout: 4 texture stages, one push constant block.
 	{
 		VkDescriptorSetLayoutBinding bindings[5];
@@ -1007,38 +1059,6 @@ bool CDriverVulkan::initVulkan()
 		nlwarning("Vulkan: mega shader resources unavailable, keeping the simple shader path");
 		_MegaEnabled = false;
 		_MegaResourcesReady = false;
-	}
-
-	// Put the depth buffer in the layout the render pass expects once.
-	{
-		VkCommandBuffer cmd = _CommandBuffers[0];
-		VkCommandBufferBeginInfo bi;
-		memset(&bi, 0, sizeof(bi));
-		bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-		bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-		vkBeginCommandBuffer(cmd, &bi);
-		VkImageMemoryBarrier barrier;
-		memset(&barrier, 0, sizeof(barrier));
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = _DepthImage;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-		barrier.subresourceRange.levelCount = 1;
-		barrier.subresourceRange.layerCount = 1;
-		barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-			0, 0, NULL, 0, NULL, 1, &barrier);
-		vkEndCommandBuffer(cmd);
-		VkSubmitInfo si;
-		memset(&si, 0, sizeof(si));
-		si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-		si.commandBufferCount = 1;
-		si.pCommandBuffers = &cmd;
-		vkQueueSubmit(_GraphicsQueue, 1, &si, VK_NULL_HANDLE);
-		vkQueueWaitIdle(_GraphicsQueue);
 	}
 
 	return true;
