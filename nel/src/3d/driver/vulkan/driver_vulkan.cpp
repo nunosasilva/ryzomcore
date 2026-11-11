@@ -252,10 +252,24 @@ CDriverVulkan::CDriverVulkan()
 	_StatsDraws = 0;
 	_StatsDescriptorNs = 0;
 	_StatsIndexNs = 0;
+	_StatsKeyNs = 0;
+	_StatsPipelineNs = 0;
+	_StatsBindNs = 0;
+	_StatsSubmitNs = 0;
+	_StatsCpuNs = 0;
+	_StatsFenceWaitNs = 0;
+	_StatsAcquireNs = 0;
+	_StatsGpuNs = 0;
+	_StatsGpuSamples = 0;
+	_StatsStagingPeak = 0;
+	_FrameCpuStartNs = 0;
 	_StatsTextureCopies = 0;
 	_StatsUploadBytes = 0;
 	_StatsWindowStartNs = 0;
 	_StatsWindowFrames = 0;
+	_GpuTimeQuery = VK_NULL_HANDLE;
+	_GpuTimeEnabled = false;
+	_GpuTimePeriod = 1.0;
 	_VPSpecularOutput = true;
 	_NextUserVPId = 0;
 	_ActiveUserPP = NULL;
@@ -293,6 +307,7 @@ CDriverVulkan::CDriverVulkan()
 	_StagingRingOffset = 0;
 	_StagingRingFrameBase = 0;
 	_StagingRingHalf = 0;
+	_StagingRingIdleFrames = 0;
 	for (uint i = 0; i < 2; ++i)
 	{
 		_MegaLightTableBuffer[i] = VK_NULL_HANDLE;
@@ -946,6 +961,30 @@ bool CDriverVulkan::initVulkan()
 	if (!createSyncObjects())
 		return false;
 
+	// NLVK_STATS: one GPU timestamp pair per frame slot, written around the
+	// frame command buffer. Timestamps need support from the queue family.
+	if (_StatsEnabled)
+	{
+		uint32 qcount = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(_PhysicalDevice, &qcount, NULL);
+		vector<VkQueueFamilyProperties> queues(qcount);
+		vkGetPhysicalDeviceQueueFamilyProperties(_PhysicalDevice, &qcount, &queues[0]);
+		const bool hasTimestamps =
+			_GraphicsFamily < queues.size() && queues[_GraphicsFamily].timestampValidBits > 0;
+		VkQueryPoolCreateInfo qpci;
+		memset(&qpci, 0, sizeof(qpci));
+		qpci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+		qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+		qpci.queryCount = 4;
+		if (hasTimestamps && vkCreateQueryPool(_Device, &qpci, NULL, &_GpuTimeQuery) == VK_SUCCESS)
+		{
+			_GpuTimeEnabled = true;
+			_GpuTimePeriod = _DeviceProps.limits.timestampPeriod;
+			if (_GpuTimePeriod <= 0.0)
+				_GpuTimePeriod = 1.0;
+		}
+	}
+
 	// Put every depth image in the layout the render pass expects, once.
 	if (!_DepthImages.empty())
 	{
@@ -1148,6 +1187,7 @@ void CDriverVulkan::shutdownVulkan()
 		if (_DescriptorSetLayout) { vkDestroyDescriptorSetLayout(_Device, _DescriptorSetLayout, NULL); _DescriptorSetLayout = VK_NULL_HANDLE; }
 		for (uint i = 0; i < 2; ++i)
 			if (_DescriptorPools[i]) { vkDestroyDescriptorPool(_Device, _DescriptorPools[i], NULL); _DescriptorPools[i] = VK_NULL_HANDLE; }
+		if (_GpuTimeQuery) { vkDestroyQueryPool(_Device, _GpuTimeQuery, NULL); _GpuTimeQuery = VK_NULL_HANDLE; }
 
 		// Shaders.
 		for (map<uint32, VkShaderModule>::iterator it = _VertexShaderVariants.begin(); it != _VertexShaderVariants.end(); ++it)
@@ -1461,6 +1501,7 @@ bool CDriverVulkan::beginFrame()
 	}
 
 	uint32 frame = _FrameIndex;
+	const uint64 fenceWaitStart = _StatsEnabled ? nowNs() : 0;
 	VkResult fence = vkWaitForFences(_Device, 1, &_Fences[frame], VK_TRUE, UINT64_MAX);
 	_LastFenceResult = fence;
 	if (fence != VK_SUCCESS)
@@ -1468,6 +1509,24 @@ bool CDriverVulkan::beginFrame()
 		++_SkippedFrames;
 		nlwarning("Vulkan: vkWaitForFences(frame %u) failed (%d %s)", frame, (int)fence, vkResultName(fence));
 		return false;
+	}
+	if (_StatsEnabled)
+		_StatsFenceWaitNs += nowNs() - fenceWaitStart;
+
+	// The GPU timestamps of the submission that just completed on this slot are
+	// readable now: the fence wait above is the synchronisation. Done before
+	// the query pool range is reset for the next frame. The first two frames
+	// have no submission behind them and their queries are still uninitialized.
+	if (_GpuTimeEnabled && _SwapBufferCounter >= 2)
+	{
+		uint64 times[2] = { 0, 0 };
+		const VkResult query = vkGetQueryPoolResults(_Device, _GpuTimeQuery, frame * 2, 2,
+			sizeof(times), times, sizeof(uint64), VK_QUERY_RESULT_64_BIT);
+		if (query == VK_SUCCESS && times[1] >= times[0])
+		{
+			_StatsGpuNs += (uint64)((double)(times[1] - times[0]) * _GpuTimePeriod + 0.5);
+			++_StatsGpuSamples;
+		}
 	}
 
 	// Frame `frame` (and therefore everything recorded for it) is finished.
@@ -1515,9 +1574,12 @@ bool CDriverVulkan::beginFrame()
 		}
 	}
 
+	const uint64 acquireStart = _StatsEnabled ? nowNs() : 0;
 	VkResult acquire = vkAcquireNextImageKHR(_Device, _Swapchain, UINT64_MAX,
 		_ImageAvailable[frame], VK_NULL_HANDLE, &_ImageIndex);
 	_LastAcquireResult = acquire;
+	if (_StatsEnabled && (acquire == VK_SUCCESS || acquire == VK_SUBOPTIMAL_KHR))
+		_StatsAcquireNs += nowNs() - acquireStart;
 	if (acquire == VK_ERROR_OUT_OF_DATE_KHR || acquire == VK_ERROR_SURFACE_LOST_KHR)
 	{
 		// The semaphore was not signalled, but it is only used again after the
@@ -1549,6 +1611,11 @@ bool CDriverVulkan::beginFrame()
 	if (!checkVk(vkBeginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer"))
 		return false;
 
+	if (_GpuTimeEnabled)
+	{
+		vkCmdResetQueryPool(cmd, _GpuTimeQuery, frame * 2, 2);
+		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, _GpuTimeQuery, frame * 2);
+	}
 	beginMainPass(cmd, true);
 
 	// The fence waited above proves that the submission which used the upload
@@ -1591,6 +1658,8 @@ bool CDriverVulkan::beginFrame()
 	if (getenv("NLVK_TEXTEST"))
 		runTextureBlitTest();
 	checkTextureBlitTest();
+	// Everything from here to swapBuffers() is the engine recording the frame.
+	_FrameCpuStartNs = _StatsEnabled ? nowNs() : 0;
 	return true;
 }
 
@@ -1673,8 +1742,23 @@ bool CDriverVulkan::swapBuffers()
 	if (!_FrameOpen && !beginFrame())
 		return false;
 
+	// Time the engine + driver frame recording: beginFrame() set the start
+	// point, and everything up to here is CPU work (the GPU waits are the
+	// fence in beginFrame() and present, not this).
+	if (_StatsEnabled && _FrameCpuStartNs)
+	{
+		_StatsCpuNs += nowNs() - _FrameCpuStartNs;
+		_FrameCpuStartNs = 0;
+	}
+
 	uint32 frame = _FrameIndex;
 	VkCommandBuffer cmd = _CommandBuffers[frame];
+	// Bytes of the staging ring used by this frame, for the peak report and
+	// for the idle shrink.
+	const uint32 stagedBytes = _StagingRingOffset > _StagingRingFrameBase
+		? _StagingRingOffset - _StagingRingFrameBase : 0;
+	if (_StatsEnabled && stagedBytes > _StatsStagingPeak)
+		_StatsStagingPeak = stagedBytes;
 
 	// The engine must always unbind its render targets; recover if it did not,
 	// otherwise the swapchain pass would never be ended.
@@ -1685,6 +1769,8 @@ bool CDriverVulkan::swapBuffers()
 	}
 
 	vkCmdEndRenderPass(cmd);
+	if (_GpuTimeEnabled)
+		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _GpuTimeQuery, frame * 2 + 1);
 
 	bool wantScreenshot = false;
 	// 0 = a single dump at NLVK_SCREENSHOT_FRAME; otherwise dump every N frames
@@ -1739,6 +1825,28 @@ bool CDriverVulkan::swapBuffers()
 	_LastSubmitResult = submit;
 	if (!checkVk(submit, "vkQueueSubmit"))
 		return false;
+
+	// The loading phase can fill the staging ring to tens of MiB in one frame;
+	// in game the texture traffic is a few KiB of font-glyph updates per frame.
+	// Give the memory back after a few seconds below the low-water mark. The
+	// old buffer is retired with the frames that may still read it, so no
+	// stall is involved.
+	const uint32 stagingLowWater = NL_VK_STAGING_RING_INITIAL / 4;
+	if (stagedBytes <= stagingLowWater && _PendingTextureCopies.empty())
+	{
+		// Long enough that the occasional texture burst (a new player entering
+		// the area, a zone prefetch) does not make grow/shrink cycle: a burst
+		// resets the counter.
+		if (++_StagingRingIdleFrames >= 1800)
+		{
+			shrinkStagingRing();
+			_StagingRingIdleFrames = 0;
+		}
+	}
+	else
+	{
+		_StagingRingIdleFrames = 0;
+	}
 
 	if (wantScreenshot)
 	{
@@ -1818,16 +1926,40 @@ bool CDriverVulkan::swapBuffers()
 			const double perFrame = windowMs / (double)_StatsWindowFrames;
 			const double perDraw = _StatsDraws ? (double)_StatsDescriptorNs / 1e3 / (double)_StatsDraws : 0.0;
 			const double perIndex = _StatsDraws ? (double)_StatsIndexNs / 1e3 / (double)_StatsDraws : 0.0;
-			nlinfo("Vulkan stats: %llu frames, %.2f ms/frame (%.1f fps), %llu draws, %.1f us descriptor+draw, %.1f us index copy, %llu texture copies, %.2f MiB staged/frame",
+			const double perKey = _StatsDraws ? (double)_StatsKeyNs / 1e3 / (double)_StatsDraws : 0.0;
+			const double perPipeline = _StatsDraws ? (double)_StatsPipelineNs / 1e3 / (double)_StatsDraws : 0.0;
+			const double perBind = _StatsDraws ? (double)_StatsBindNs / 1e3 / (double)_StatsDraws : 0.0;
+			const double perSubmit = _StatsDraws ? (double)_StatsSubmitNs / 1e3 / (double)_StatsDraws : 0.0;
+			const double cpuMs = (double)_StatsCpuNs / 1e6 / (double)_StatsWindowFrames;
+			const double waitMs = (double)_StatsFenceWaitNs / 1e6 / (double)_StatsWindowFrames;
+			const double acquireMs = (double)_StatsAcquireNs / 1e6 / (double)_StatsWindowFrames;
+			const double gpuMs = _StatsGpuSamples ? (double)_StatsGpuNs / 1e6 / (double)_StatsGpuSamples : 0.0;
+			nlinfo("Vulkan stats: %llu frames, %.2f ms/frame (%.1f fps), %llu draws, %.1f us descriptor+draw, %.1f us index copy",
 				(unsigned long long)_StatsWindowFrames, perFrame, perFrame > 0.0 ? 1000.0 / perFrame : 0.0,
-				(unsigned long long)_StatsDraws, perDraw, perIndex,
+				(unsigned long long)_StatsDraws, perDraw, perIndex);
+			nlinfo("Vulkan stats: cpu %.2f ms record, %.2f ms fence wait, %.2f ms acquire, gpu %.2f ms; %llu texture copies, %.2f MiB staged/frame, peak %.2f MiB/frame, ring %u KiB",
+				cpuMs, waitMs, acquireMs, gpuMs,
 				(unsigned long long)_StatsTextureCopies,
-				(double)_StatsUploadBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames);
+				(double)_StatsUploadBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames,
+				(double)_StatsStagingPeak / (1024.0 * 1024.0),
+				_StagingRingSize / 1024);
+			nlinfo("Vulkan stats: per draw: key %.2f us, pipeline %.2f us, bind %.2f us, submit %.2f us",
+				perKey, perPipeline, perBind, perSubmit);
 			_StatsWindowStartNs = now;
 			_StatsWindowFrames = 0;
 			_StatsDraws = 0;
 			_StatsDescriptorNs = 0;
 			_StatsIndexNs = 0;
+			_StatsKeyNs = 0;
+			_StatsPipelineNs = 0;
+			_StatsBindNs = 0;
+			_StatsSubmitNs = 0;
+			_StatsCpuNs = 0;
+			_StatsFenceWaitNs = 0;
+			_StatsAcquireNs = 0;
+			_StatsGpuNs = 0;
+			_StatsGpuSamples = 0;
+			_StatsStagingPeak = 0;
 			_StatsTextureCopies = 0;
 			_StatsUploadBytes = 0;
 		}

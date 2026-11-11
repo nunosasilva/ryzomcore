@@ -40,6 +40,14 @@
 using namespace std;
 using namespace NLMISC;
 
+/// NLVK_NOCULL is a diagnostic: read it once instead of scanning the
+/// environment for every draw.
+static bool noCullEnabled()
+{
+	static const bool enabled = getenv("NLVK_NOCULL") != NULL;
+	return enabled;
+}
+
 /// Monotonic nanoseconds for the optional NLVK_STATS breakdown.
 static uint64 nowNs()
 {
@@ -1746,7 +1754,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	key.DepthTest = _DepthTestEnabled ? 1 : 0;
 	key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 	key.DepthCompare = _DepthFunc;
-	key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
+	key.CullMode = noCullEnabled() ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
 	key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	key.ColorWriteMask = _ClearColorMask;
 	key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
@@ -1812,12 +1820,13 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	key.DepthTest = _DepthTestEnabled ? 1 : 0;
 	key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 	key.DepthCompare = _DepthFunc;
-	key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
+	key.CullMode = noCullEnabled() ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
 	key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	key.ColorWriteMask = _ClearColorMask;
 	key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 	key.HasTexture0 = _StageTextures[0] ? 1 : 0;
 	fillMegaPipelineKey(key);
+	const uint64 statsKeyEnd = _StatsEnabled ? nowNs() : 0;
 
 	if (_IndexedDrawCount == 0)
 	{
@@ -1832,6 +1841,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	VkPipeline pipeline = getPipeline(key);
 	if (pipeline == VK_NULL_HANDLE)
 		return false;
+	const uint64 statsPipelineEnd = _StatsEnabled ? nowNs() : 0;
 
 	VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -1845,6 +1855,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 		if (!commitPushConstants(key, cmd, *_CurrentVB))
 			return false;
 	}
+	const uint64 statsBindEnd = _StatsEnabled ? nowNs() : 0;
 
 	VkDeviceSize offset = info->currentOffset();
 	VkBuffer vb = info->currentBuffer();
@@ -1860,6 +1871,10 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 		++_StatsDraws;
 		_StatsIndexNs += statsIndexed - statsStart;
 		_StatsDescriptorNs += statsEnd - statsIndexed;
+		_StatsKeyNs += statsKeyEnd - statsIndexed;
+		_StatsPipelineNs += statsPipelineEnd - statsKeyEnd;
+		_StatsBindNs += statsBindEnd - statsPipelineEnd;
+		_StatsSubmitNs += statsEnd - statsBindEnd;
 	}
 	return true;
 }
@@ -2032,7 +2047,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 			key.DepthTest = _DepthTestEnabled ? 1 : 0;
 			key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 			key.DepthCompare = _DepthFunc;
-			key.CullMode = getenv("NLVK_NOCULL") ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
+			key.CullMode = noCullEnabled() ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
 			key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 			key.ColorWriteMask = _ClearColorMask;
 			key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
