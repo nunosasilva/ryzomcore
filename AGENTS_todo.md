@@ -1,6 +1,7 @@
 # Port Ryzom to Vulkan — handoff
 
-_Last updated: 2026-11-11, texgen + fog + bloom/FXAA (branch `vulkan-fog-bloom`)_
+_Last updated: 2026-11-11, `vulkan-transforms-perf` merged and verified in game
+(branch `vulkan-integrate-verify`, see the last section)_
 
 ## Status in one line
 
@@ -20,8 +21,11 @@ from `origin/atys-n-gl3`, `88e72dc35`) + the Vulkan driver, pushed to `origin`.
 The vertex-program work is on local branch `vulkan-nelvp` (nelvp/glsl330v, not
 pushed), `vulkan-skinning` (glsl3vi insert programs + GPU skinning, based on
 `b7c8b0200`, not pushed), `vulkan-rendertargets` (render targets + shadow maps,
-based on `6b20a9341`, not pushed) and `vulkan-fog-bloom` (simple-path texgen +
-fog, bloom/FXAA, based on `d7334636c`, not pushed).
+based on `6b20a9341`, not pushed), `vulkan-fog-bloom` (simple-path texgen +
+fog, bloom/FXAA, based on `d7334636c`, not pushed) and `vulkan-transforms-perf`
+(deferred destroys, batched first-time texture uploads, NLVK_STATS, `glsl3vi`
+opt-in; merged into `vulkan-integrate-verify` on top of `4b7aba749` and verified
+in game, see the last section).
 
 The GL2 and GL3 drivers are kept. `Driver3D="OpenGL3"` was re-tested after the
 Vulkan work: the GL3 mega shaders initialise and the client runs.
@@ -872,3 +876,272 @@ Images (`/tmp/opencode/textcolor/`):
 - The Vulkan login form has a black backdrop where GL3 shows the 3D login
   scene (ring, logo, turtle). Pre-existing (the old driver screenshot is the
   same) and unrelated to this branch.
+
+## Branch `vulkan-transforms-perf` (2026-11-11, unverified in game)
+
+Base `e407be0f8`. Work stopped on request before any run on this branch: the
+account coordination changed mid-session (this task's account is
+`mats006`/`passDOSma`; `mats007` belongs to another agent) and game launches
+were forbidden. **Everything below compiles but has not been run in game.**
+
+### Reported problems and what was found
+
+1. **Avatar equipment (head, hair, gloves) displaced.** Reproduced in the
+   previous branch's captures:
+   `/tmp/opencode/fogbloom/megacheck1200.png` (in game, avatar headless with a
+   face and a hair item floating about one head above) and
+   `/tmp/opencode/ryzomtest/final/skin2400.png` (character selection: same
+   displacement in the 3D scene *and* in the UI portrait). The body itself is
+   correct. In game the body is CPU-skinned (it has blend shapes); the
+   equipment meshes are the ones that take the glsl3vi insert path
+   (`GPU Skinning Insert` / `GPU Skinning Simple Insert`). The likely cause is
+   therefore the GPU-skinning/insert path (bone palette, NlSkeleton staging or
+   the insert snippet), which had only ever been checked for "textured", never
+   for correct placement -- the GL drivers used for comparison run either the
+   legacy OpenGL driver (no glsl3vi at all) or CPU skinning.
+
+   Mitigation in this branch (correctness first): `supportVertexProgram(
+   IProgram::glsl3vi)` now returns **false** by default, so the engine uses the
+   known-correct CPU skinning path for equipment, NPCs and MRM geomorph. Set
+   `NLVK_GPUSKIN=1` to exercise the insert path again. If the avatar is then
+   correct, the insert path is confirmed as the cause and can be debugged in
+   isolation.
+
+2. **Huge tree branches too low.** Not reproduced on this branch (no runs).
+   In `megacheck1200.png` and `ryzomtest/final/final.png` the giant trees
+   render, but their canopies/branches are only ~20-30 m up instead of the
+   ~200 m visible in the reference client. These trees are drawn with the
+   wind-tree user vertex program (`glsl330v/MeshVPWindTree/UBO`, GLSL+UBO) and
+   the MRM geomorph insert path. Both are suspects. With `glsl3vi` disabled the
+   MRM geomorph path is out of the picture for a first A/B; if the branches are
+   still low, the next step is to compare the same spot against
+   `~/Projects/ryzom/ryzom_live` (legacy OpenGL driver, `Driver3D="OpenGL"`).
+   The object UBO staging itself is shared with every other mesh and is
+   correct for the ground/avatar, so a wrong MVP for just this class points at
+   the per-program UBO (wind tree `NlWindTree`) or its attribute setup, not at
+   `stageMegaObjectUBO`.
+
+3. **Flicker during character selection.** Not investigated in game. New
+   `NLVK_SCREENSHOT_EVERY=<n>` (`NLVK_SCREENSHOT=<prefix>.ppm
+   NLVK_SCREENSHOT_FRAME=<first>`) dumps consecutive frames (`prefix.<frame>.ppm`,
+   every `<n>` frames) so a 1-in-40 black frame can be captured and compared.
+   The first suspect is the swapchain/render-target resume path
+   (`beginMainPass(first=false)` uses `_ResumeRenderPass` with
+   `initialLayout=PRESENT_SRC_KHR`), the second is a frame in which a texture
+   upload or a deferred destroy stalls the queue. See the new batching below.
+
+### Performance changes in this branch (compile-verified only)
+
+- `beginFrame()` no longer calls `vkDeviceWaitIdle()`. Deferred texture and
+  buffer destroys are tagged with the swap-buffer frame and released once they
+  are two frames old (two frame slots are in flight, and the slot fence waited
+  at `beginFrame()` proves the older one finished). This removes a device-wide
+  stall whenever any texture or ring was recreated.
+- `stageUserUB()` keeps the ring offset of a block that has not been
+  `Touched` since it was copied. The 12 KiB `NlSkeleton` block is filled once
+  per skeleton and read by every one of its skinned draws; before, it was
+  memcpy'd into the ring for every draw. The cache is dropped when the ring
+  grows and at every `beginFrame()`.
+- First-time texture uploads are batched: newly created images cannot be
+  referenced by an in-flight frame, so their copies are recorded into one
+  upload command buffer and submitted once per `swapBuffers()` with a
+  semaphore, instead of one command buffer + `vkQueueWaitIdle` per texture.
+  In-place updates of an existing image (animated textures) keep the old
+  synchronous path because an in-flight frame may still be sampling it.
+  Staging buffers are freed when the batch fence signals at the start of the
+  next batch. This targets the long loading times.
+- `NLVK_STATS=1` logs every 120 frames: wall-clock ms/frame, drawers per frame,
+  and the average CPU cost of the descriptor+draw and index-copy paths. Use it
+  to produce the before/after numbers the task asks for (the old build did
+  ~12.5 fps at 1280x800 on the moor with ~700 indexed draws/frame; that number
+  includes a per-frame `vkDeviceWaitIdle` and the per-texture waits and is not
+  a clean baseline).
+
+### Next steps for the replacement agent
+
+1. Build with the command in `AGENTS_wip.md` and run the reliable login guard
+   with **`mats006`/`passDOSma`/slot 1**.
+2. Run once without `NLVK_GPUSKIN` and once with it, capturing at the same
+   frame (`NLVK_SCREENSHOT_SEQ=1`, `NLVK_SCREENSHOT_FRAME=2400`). The avatar's
+   head/hair should be correct without it; if so, the insert path is the bug.
+   The first thing to check there is the `NlSkeleton` block: dump the first
+   16 bone matrices and the paletteSkin/weight of a head vertex on both paths
+   (`fillGPUSkinBoneUBO()` is shared, so a difference would be in the driver's
+   `stageUserUB()`/descriptor staging or in the `VK_FORMAT_R8G8B8A8_USCALED`
+   attribute).
+3. Compare the giant-tree spot with `~/Projects/ryzom/ryzom_live` (its
+   `client.cfg` uses `Driver3D="OpenGL"`); take the same frame from both and
+   measure the canopy height. If the wind-tree VP is at fault, look at
+   `meshvp_wind_tree.cpp` (the GLSL UBO body is shared with GL3) and at the
+   `NlWindTree` user UBO staging.
+4. For the flicker, set `NLVK_SCREENSHOT_SEQ=1 NLVK_SCREENSHOT_EVERY=1
+   NLVK_SCREENSHOT_FRAME=2000` during character selection and diff consecutive
+   frames. Also try `NLVK_STATS=1` to see whether the black frame coincides
+   with a device stall.
+5. Validate the new upload batching with `NLVK_VALIDATION=1` (layout
+   transitions are the risk). If anything looks wrong, the fallback is a
+   one-line change: pass `false` from `uploadTextureVulkan()` to
+   `uploadTexturePixels()` to get the old synchronous path back.
+
+## Integration of `vulkan-transforms-perf` + in-game verification (branch `vulkan-integrate-verify`)
+
+Merge commit `4089cdd6b` (`git merge --no-ff vulkan-transforms-perf` on top of
+`4b7aba749`). The only textual conflict was `driver_vulkan_texture.cpp/.h`; both
+sides had rewritten the uploader.
+
+### What was kept from each side
+
+Main (font/colour fix), unchanged semantics:
+- `prepareTexturePixels()` only decompresses compressed formats; an
+  uncompressed bitmap is read where it is, so `CTextureFont`'s Alpha atlas keeps
+  its one coverage byte per texel (no `convertToType()` on the source).
+- `convertRowToRGBA()` / `copyTextureRect()` expand each row from the bitmap's
+  own format (RGBA / Alpha / Luminance / AlphaLuminance) into tightly packed
+  RGBA8, and the staging buffer is filled whole-mip by whole-mip.
+- The partial-rect path: `uploadTextureRegion()` (touchRect / streaming),
+  `setupTextureEx()` sends only the touched rects, or the whole mip chain when
+  the texture was fully invalidated or is mipmapped.
+
+Branch (`vulkan-transforms-perf`):
+- Batched first-time uploads: one upload command buffer per frame, submitted at
+  `swapBuffers()` before the frame, the frame waits on its semaphore
+  (`VK_PIPELINE_STAGE_ALL_COMMANDS_BIT`), so a new texture costs no
+  `vkQueueWaitIdle`.
+- Deferred destroys tagged with the swap-buffer frame (no `vkDeviceWaitIdle` in
+  `beginFrame`).
+- User-UBO ring cache in `stageUserUB()`, `NLVK_STATS`, `NLVK_GPUSKIN`
+  (glsl3vi opt-in, CPU skinning default) and `NLVK_SCREENSHOT_EVERY`.
+
+Resolution: the uploader keeps the new per-format row expansion, which is
+independent of where the copy is recorded. `beginTextureCopy()` /
+`endTextureCopy()` hold the whole decision in one place: a copy for an image no
+in-flight frame can reference (a brand-new image, or one that already has a copy
+in the current batch) is recorded into the per-frame batch; anything else (an
+in-place update of an image a frame may be sampling: animated textures, font
+glyph tiles) stays in the old synchronous one-off command buffer. A resource
+being retired waits for the upload-batch fence before it is freed.
+
+### Fixes that came out of the verification (same branch)
+
+1. `NLVK_SCREENSHOT_EVERY` wrote every dump to the same file (only
+   `NLVK_SCREENSHOT_SEQ` used the `prefix.<frame>.ppm` name). Both now name the
+   file after the frame, and `NLVK_SCREENSHOT_EVERY` overrides the 600-frame
+   period of `SEQ`.
+2. `VUID-vkCmdDraw-None-09600` (pre-existing, also on `4b7aba749`): an image
+   created without pixels (`uploadTextureVulkan(..., upload=false)`, the
+   streaming path) only ever had mip 0 transitioned by `uploadTextureRegion()`,
+   while the view and the sampler cover every mip. The remaining mips stayed in
+   `UNDEFINED`, and every draw sampling the texture was flagged. The image is
+   now transitioned to `SHADER_READ_ONLY_OPTIMAL` for all mips when it is created
+   without pixels.
+3. `VUID-vkDestroyBuffer-buffer-00922` (introduced by the branch's deferred
+   destroy): a resource retired *between* frames can be referenced by the most
+   recent submission, which belongs to the other frame slot, and that slot's
+   fence is not the one waited in `beginFrame()`. Retiring after three swap
+   frames (`tag + 3 <= counter`, and nothing at all during the first three
+   frames) is the first provably safe point. Reproduced at the index-ring growth
+   during startup, gone after the change.
+
+### In-game verification (mats006 / passDOSma, slot 1 = Danilli)
+
+Run directory `/tmp/opencode/iv/run-vk` (data/cfg symlinked to
+`~/Projects/ryzom/ryzom_live`, `Driver3D="Vulkan"`, 1280x800, `Shadows = 0`,
+`InterfaceScaleAuto = 1`). Runner scripts: `/tmp/opencode/iv/{guard,run,gl_run}.sh`.
+Screenshots in `/tmp/opencode/iv/evidence/` (with a `README.txt` naming each
+one; the PPM bursts are in `/var/tmp/iv/`).
+
+**Avatar.** The base build (`4b7aba749`, `glsl3vi` on by default) at character
+selection is exploded: legs on the floor, one arm floating, the clothes above
+the head (`charsel_base_build.png`). With `NLVK_GPUSKIN=1` the merged build
+reproduces exactly that (`charsel_merged_gpuskin.png`), so the insert path is
+confirmed as the cause of the displaced equipment. With the new default
+(`glsl3vi` off, CPU skinning) the avatar is coherent: head with red hair,
+shoulders, arms and hands at the sides, legs and shoes in place
+(`charsel_merged_cpu.png`, in game `ingame_merged_cpu_runA.png`).
+
+Still wrong in game and at character selection: a large beige/tan
+triangulated smear around the body, as if a few vertices of a clothing mesh
+were skinned by a wrong bone or read with the wrong vertex layout
+(`charsel_merged_cpu_crop.png`, `ingame_merged_cpu_crop.png`). It is present
+with and without `NLVK_GPUSKIN`, so it is not the insert path. It is
+Vulkan-only: the same merged binary and the same data render the same
+character perfectly with the OpenGL driver (`p_gl2-wide.png`), and the legacy
+`~/Projects/ryzom/ryzom_live` client shows the same clean avatar. Not a
+regression of this merge (the merge only touches texture upload and deferred
+destroys), but it is the next avatar bug to chase.
+
+Also Vulkan-only, same "some meshes are not drawn" family: the in-game HUD in
+Vulkan only draws the chat and the missions window, while the OpenGL driver of
+the same build draws the top status bar, the quickbar, the compass/minimap and
+the right-hand "Windows/Actions" panel (`p_gl2-wide.png`). Char selection and
+the login form draw their full UI.
+
+`The Bone for the Head is missing` / `The Bone for the Chest 'Bip01 Spine1' is
+missing` in the log are **not** driver-related: the same build logs them with
+the OpenGL driver (182 times) and still renders the avatar correctly. They come
+from `CCharacterCL::computeSomeBoneId()` and only disable the name/look-at
+attachments.
+
+**Giant trees.** Same spot, same camera (default `CameraDistance = 8`, no
+zooming): the merged Vulkan render and the legacy OpenGL client agree on the
+geometry. `trees_zoom_cmp.png` shows the same crop of both: the giant mushroom
+cap, its stem, the giant trunk behind it and the rock spire in the distance are
+at the same screen positions and sizes in both. Cross-correlating the edge maps
+of the two full frames (320x200, search +-10 px) puts the best match at zero
+shift: NCC 0.309 for the CPU-skinning capture and 0.305 for
+`NLVK_GPUSKIN=1` against the reference, and 0.443 for this build's OpenGL
+driver against its Vulkan driver. So the "branches only 20 m up" of
+`megacheck1200.png` is not reproduced on this branch, and the reference client
+draws this spot the same way. The visible difference is fog/haze: the Vulkan
+render is much hazier, so the distant purple canopies wash out to white
+(`trees_side_by_side.png`). `NLVK_GPUSKIN=1` does not change the trees.
+
+**Flicker.** `NLVK_SCREENSHOT_EVERY=1` at character selection, frames 3000-3125
+(126 consecutive driver dumps, `/var/tmp/iv/g_charsel.ppm.*`, analysed with
+`/tmp/opencode/iv/flicker.py`): per-frame mean luminance 51.26..52.17 (28.5% of
+the pixels are the black UI side panel in every frame), no frame below 51, no
+sudden drop against its neighbours. There is no black frame in the driver
+output. Note the burst costs ~450 ms/frame (fence wait + readback per dump).
+
+**Performance** (`NLVK_STATS=1`, 1280x800, RADV, ~1200 indexed draws/frame,
+Debug build):
+
+| | in game | char selection | connect -> in game |
+|---|---|---|---|
+| base `4b7aba749` (glsl3vi on) | 31.0 ms/frame (32.2 fps) | - | 24-25 s |
+| merged, default (CPU skin) | 31.7-32.4 ms/frame (31 fps) | 8.3 ms/frame (120 fps) | 24 s |
+| merged, `NLVK_GPUSKIN=1` | 31.1-36.9 ms/frame (30 fps) | - | - |
+
+The in-game numbers are 600-frame wall-clock deltas from the log (`Vulkan:
+frame N`), the other column is the `NLVK_STATS` report every 120 frames; both
+builds render the same scene at ~1200 indexed draws/frame. The base and the
+merged build are the same within noise. The driver's
+per-draw CPU cost is 3.1 us descriptor+draw + 0.2 us index copy, i.e. ~4 ms of a
+~31 ms frame, so the frame is GPU/engine bound and the removed device waits do
+not show up here. Loading time is identical (24-25 s); texture creation is not
+the bottleneck of that phase in a Debug build. Remaining sync hot spots: every
+in-place texture update (animated textures, one per font glyph tile) still does
+`vkDeviceWaitIdle` + submit + `vkQueueWaitIdle`; batching those needs an
+ordering rule against the previous frame's fence.
+
+**Validation** (`NLVK_VALIDATION=1`, in game, 100 s): clean except
+`VUID-VkSwapchainPresentModeInfoKHR-swapchainCount-*` (gamescope WSI, known) and
+`VUID-vkCreateDevice-ppEnabledExtensionNames-01387` (gamescope's
+`VK_EXT_surface_maintenance1`, known). The two real VUIDs found and fixed are
+described above.
+
+### Left to do
+
+- The beige smear on the avatar (Vulkan only, not the insert path). First
+  experiment: `NLVK_NOVP=1` to see whether it is a user-program draw, then dump
+  the vertex layout hash and attributes of the smeared draw; it looks like a
+  skinning/vertex-layout problem for one clothing mesh.
+- In-game HUD windows missing in Vulkan with the same build/data (draws that
+  never reach the screen). Same investigation style as above.
+- Fog/haze is much stronger in Vulkan than in the OpenGL client at the same
+  spot (`trees_side_by_side.png`), so distant vegetation washes out.
+- In-place texture updates still stall the device (see above).
+- `WM_DELETE_WINDOW` shutdown: the Vulkan client starts releasing but then hits
+  `vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed` while recreating the
+  swapchain during teardown and has to be killed. Use Escape -> Quit Ryzom ->
+  Quit Now for a clean logout (the logout packet is only sent on that path).
