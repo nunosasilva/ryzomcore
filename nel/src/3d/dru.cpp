@@ -73,6 +73,10 @@ extern IDriver* createGlDriverInstance ();
 extern IDriver* createGl3DriverInstance ();
 #endif
 
+#ifdef NL_VULKAN_AVAILABLE
+extern IDriver* createVulkanDriverInstance ();
+#endif
+
 #if defined(NL_OS_WINDOWS) && defined(NL_DIRECT3D_AVAILABLE)
 extern IDriver* createD3DDriverInstance ();
 #endif
