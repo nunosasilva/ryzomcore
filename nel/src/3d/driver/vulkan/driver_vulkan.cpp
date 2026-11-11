@@ -396,16 +396,42 @@ bool CDriverVulkan::createSwapchain()
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PhysicalDevice, _Surface, &formatCount, NULL);
 	vector<VkSurfaceFormatKHR> formats(formatCount);
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PhysicalDevice, _Surface, &formatCount, &formats[0]);
+	// The GL3 driver renders into a non-sRGB default framebuffer: shader
+	// output is already in display space and goes to the screen unchanged.
+	// Prefer the matching UNORM surface here too. An _SRGB swapchain would
+	// apply the sRGB encode a second time and make every texture brighter
+	// than in the OpenGL client.
 	VkSurfaceFormatKHR chosen = formats[0];
+	bool chosenUnorm = false;
 	for (uint i = 0; i < formats.size(); ++i)
 	{
-		if (formats[i].format == VK_FORMAT_B8G8R8A8_UNORM || formats[i].format == VK_FORMAT_B8G8R8A8_SRGB)
+		if (formats[i].format == VK_FORMAT_B8G8R8A8_UNORM)
 		{
 			chosen = formats[i];
+			chosenUnorm = true;
 			break;
 		}
 	}
+	if (!chosenUnorm)
+	{
+		for (uint i = 0; i < formats.size(); ++i)
+		{
+			if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB)
+			{
+				chosen = formats[i];
+				nlwarning("Vulkan: surface offers no B8G8R8A8_UNORM; using sRGB swapchain (colours will be brighter than GL3)");
+				break;
+			}
+		}
+	}
 	_SwapchainFormat = chosen.format;
+	if (_SwapchainFormat != VK_FORMAT_B8G8R8A8_UNORM && _SwapchainFormat != VK_FORMAT_B8G8R8A8_SRGB)
+		nlwarning("Vulkan: swapchain format %d is not B8G8R8A8; colours and screenshots assume BGRA", (int)_SwapchainFormat);
+	nlinfo("Vulkan: swapchain format %d (%s), %u surface format(s) offered",
+		(int)_SwapchainFormat,
+		_SwapchainFormat == VK_FORMAT_B8G8R8A8_UNORM ? "B8G8R8A8_UNORM" :
+		_SwapchainFormat == VK_FORMAT_B8G8R8A8_SRGB ? "B8G8R8A8_SRGB" : "other",
+		formatCount);
 
 	uint32 imageCount = caps.minImageCount + 1;
 	if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount)
