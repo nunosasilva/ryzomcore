@@ -1864,3 +1864,10 @@ Two agents are working on it:
 **Merge rule (user):** only merge into `main/atys-live-n-vulkan` once
 Auto/OpenGL/Vulkan have all been verified working at the same time from the
 same binary. Auto may prefer Vulkan when available.
+
+## Config tool — Vulkan option (in progress)
+
+Agent `vulkan-config-tool` (worktree `f1fb99/vulkan-config-tool`, base
+`f26c0167f`, no game account) is adding a Vulkan choice to
+`ryzom_configuration_qt` so it writes `Driver3D = "Vulkan";` (and checking the
+OpenGL3 option too), building with Qt5 and verifying the written config.
