@@ -1255,21 +1255,18 @@ void CUnifiedNetwork::sleepUntilDataAvailable( TTime msecMax )
 	if ( msecMax > 999 ) // limit not told in Linux man but here: http://docs.hp.com/en/B9106-90009/select.2.html
 		msecMax = 999;
 
-	// Prepare for select()
-	fd_set readers;
-	FD_ZERO( &readers );
-	FD_SET( _MainDataAvailablePipe[PipeRead], &readers );
-	SOCKET descmax = _MainDataAvailablePipe[PipeRead] + 1;
-
-	// Select
-	timeval tv;
-	tv.tv_sec = 0;
-	tv.tv_usec = msecMax * 1000;
-	//nldebug( "Select %u ms", (uint)msecMax );
+	// Wait with poll() rather than select(): the main data-available pipe can
+	// be beyond FD_SETSIZE in a process that keeps many descriptors open, and
+	// FD_SET() must not be used for it.
+	struct pollfd pfd;
+	pfd.fd = _MainDataAvailablePipe[PipeRead];
+	pfd.events = POLLIN;
+	pfd.revents = 0;
+	//nldebug( "Poll %u ms", (uint)msecMax );
 	//TTime before = CTime::getLocalTime();
-	int res = ::select( descmax+1, &readers, NULL, NULL, &tv );
+	int res = ::poll( &pfd, 1, (int)msecMax );
 	if ( res == -1 )
-		nlwarning( "HNETL5: Select failed in sleepUntilDataAvailable");
+		nlwarning( "HNETL5: Poll failed in sleepUntilDataAvailable");
 	//nldebug( "Slept %u ms", (uint)(CTime::getLocalTime()-before) );
 }
 #elif defined(NL_OS_WINDOWS)

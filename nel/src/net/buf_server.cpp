@@ -483,17 +483,19 @@ void	CBufServer::sleepUntilDataAvailable( uint usecMax )
 	if ( usecMax > 999999 ) // limit not told in Linux man but here: http://docs.hp.com/en/B9106-90009/select.2.html
 		usecMax = 999999;
 
-	fd_set readers;
-	timeval tv;
 	do
 	{
-		FD_ZERO( &readers );
-		FD_SET( _DataAvailablePipeHandle[PipeRead], &readers );
-		tv.tv_sec = 0;
-		tv.tv_usec = usecMax;
-		int res = ::select( _DataAvailablePipeHandle[PipeRead]+1, &readers, NULL, NULL, &tv );
+		// poll() instead of select() so that the wait cannot abort in FD_SET()
+		// if the pipe descriptor is invalid or beyond FD_SETSIZE.
+		struct pollfd pfd;
+		pfd.fd = _DataAvailablePipeHandle[PipeRead];
+		pfd.events = POLLIN;
+		pfd.revents = 0;
+		int res = ::poll( &pfd, 1, (usecMax + 999) / 1000 );
 		if ( res == -1 )
-			nlerror( "LNETL1: Select failed in sleepUntilDataAvailable (code %u)", CSock::getLastError() );
+			nlerror( "LNETL1: Poll failed in sleepUntilDataAvailable (code %u)", CSock::getLastError() );
+		if ( pfd.revents & POLLNVAL )
+			return;
 	}
 	while ( ! dataAvailable() ); // will loop if only a connection/disconnection event was read
 }
@@ -766,6 +768,15 @@ void CListenTask::run()
 			LNETL1_DEBUG( "LNETL1: Waiting incoming connection..." );
 			// Get and setup the new socket
 #ifdef NL_OS_UNIX
+			// FD_SET() aborts when a descriptor does not fit in an fd_set.
+			// Report the condition instead of crashing the listen thread.
+			if ( _ListenSock.descriptor() < 0 || _ListenSock.descriptor() >= FD_SETSIZE
+				|| _WakeUpPipeHandle[PipeRead] < 0 || _WakeUpPipeHandle[PipeRead] >= FD_SETSIZE )
+			{
+				nlwarning( "LNETL1: listen socket descriptor is out of select() range (FD_SETSIZE=%d)", FD_SETSIZE );
+				nlSleep( 100 );
+				continue;
+			}
 			FD_ZERO( &readers );
 			FD_SET( _ListenSock.descriptor(), &readers );
 			FD_SET( _WakeUpPipeHandle[PipeRead], &readers );
@@ -1005,6 +1016,7 @@ void CServerReceiveTask::run()
 		FD_ZERO( &readers );
 		bool skip;
 		bool alldisconnected = true;
+		bool fdOutOfRange = false;
 		CConnections::iterator ipb;
 		{
 			// Lock _Connections
@@ -1023,28 +1035,57 @@ void CServerReceiveTask::run()
 					// Copy _Connections element
 					connections_copy.push_back( *ipb );
 
+					SOCKET sock = (*ipb)->Sock->descriptor();
+#ifdef NL_OS_UNIX
+					// FD_SET() aborts when the descriptor does not fit in an
+					// fd_set. Fail the wait gracefully instead of crashing;
+					// select() is not usable for this socket set.
+					if ( sock < 0 || sock >= FD_SETSIZE )
+					{
+						fdOutOfRange = true;
+						break;
+					}
+#endif
+
 					// Add socket descriptor to the select array
-					FD_SET( (*ipb)->Sock->descriptor(), &readers );
+					FD_SET( sock, &readers );
 
 					// Calculate descmax for select
-					if ( (*ipb)->Sock->descriptor() > descmax )
+					if ( sock > descmax )
 					{
-						descmax = (*ipb)->Sock->descriptor();
+						descmax = sock;
 					}
 				}
 			}
 
 #ifdef NL_OS_UNIX
 			// Add the wake-up pipe into the select array
-			FD_SET( _WakeUpPipeHandle[PipeRead], &readers );
-			if ( _WakeUpPipeHandle[PipeRead]>descmax )
+			SOCKET wakeUpSock = _WakeUpPipeHandle[PipeRead];
+			if ( wakeUpSock < 0 || wakeUpSock >= FD_SETSIZE )
 			{
-				descmax = _WakeUpPipeHandle[PipeRead];
+				fdOutOfRange = true;
+			}
+			else
+			{
+				FD_SET( wakeUpSock, &readers );
+				if ( wakeUpSock>descmax )
+				{
+					descmax = wakeUpSock;
+				}
 			}
 #endif
 
 			// Unlock _Connections, use connections_copy instead
 		}
+
+#ifdef NL_OS_UNIX
+		if ( fdOutOfRange )
+		{
+			nlwarning( "LNETL1: socket descriptor is out of select() range (FD_SETSIZE=%d)", FD_SETSIZE );
+			nlSleep( 100 );
+			continue;
+		}
+#endif
 
 #ifndef NL_OS_UNIX
 		// Avoid select if there is no connection (Windows only)

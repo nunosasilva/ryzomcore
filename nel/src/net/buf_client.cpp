@@ -231,17 +231,19 @@ void	CBufClient::sleepUntilDataAvailable( uint usecMax )
 	if ( usecMax > 999999 ) // limit not told in Linux man but here: http://docs.hp.com/en/B9106-90009/select.2.html
 		usecMax = 999999;
 
-	fd_set readers;
-	timeval tv;
 	do
 	{
-		FD_ZERO( &readers );
-		FD_SET( _DataAvailablePipeHandle[PipeRead], &readers );
-		tv.tv_sec = 0;
-		tv.tv_usec = usecMax;
-		int res = ::select( _DataAvailablePipeHandle[PipeRead]+1, &readers, NULL, NULL, &tv );
+		// poll() instead of select() so that the wait cannot abort in FD_SET()
+		// if the pipe descriptor is invalid or beyond FD_SETSIZE.
+		struct pollfd pfd;
+		pfd.fd = _DataAvailablePipeHandle[PipeRead];
+		pfd.events = POLLIN;
+		pfd.revents = 0;
+		int res = ::poll( &pfd, 1, (usecMax + 999) / 1000 );
 		if ( res == -1 )
-			nlerror( "LNETL1: Select failed in sleepUntilDataAvailable (code %u)", CSock::getLastError() );
+			nlerror( "LNETL1: Poll failed in sleepUntilDataAvailable (code %u)", CSock::getLastError() );
+		if ( pfd.revents & POLLNVAL )
+			return;
 	}
 	while ( ! dataAvailable() ); // will loop if only a connection/disconnection event was read
 }

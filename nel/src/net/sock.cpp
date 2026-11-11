@@ -46,6 +46,7 @@
 #	include <arpa/inet.h>
 #	include <netdb.h>
 #	include <fcntl.h>
+#	include <poll.h>
 #	include <cerrno>
 
 #	define SOCKET_ERROR -1
@@ -411,6 +412,34 @@ void CSock::connect( const CInetAddress& addr )
  */
 bool CSock::dataAvailable()
 {
+	// A disconnection callback can close the socket while the caller is still
+	// polling it (CNetworkConnection processes a server disconnection inside
+	// its receive loop and then checks the socket again). select() cannot
+	// represent INVALID_SOCKET: FD_SET(-1) trips glibc's fd_set bounds check
+	// and aborts the process. There is no data on a closed socket.
+	if ( _Sock == INVALID_SOCKET )
+		return false;
+
+#ifdef NL_OS_UNIX
+	// Use poll() instead of select(): a valid descriptor may be >= FD_SETSIZE
+	// when the process keeps many files open, and FD_SET() must not be used
+	// for it. poll() has no such limit and reports a stale descriptor as
+	// POLLNVAL instead of writing outside the fd_set.
+	struct pollfd pfd;
+	pfd.fd = _Sock;
+	pfd.events = POLLIN;
+	pfd.revents = 0;
+	long timeoutMs = _TimeoutS * 1000 + _TimeoutUs / 1000;
+	if ( timeoutMs > 0x7fffffffL )
+		timeoutMs = 0x7fffffffL;
+
+	int res = ::poll( &pfd, 1, (int)timeoutMs );
+	if ( res == -1 )
+		throw ESocket( "CSock::dataAvailable(): poll failed" );
+	if ( res == 0 )
+		return false;
+	return ( pfd.revents & POLLNVAL ) == 0;
+#else
 	fd_set fdset;
 	FD_ZERO( &fdset );
 	FD_SET( _Sock, &fdset );
@@ -426,6 +455,7 @@ bool CSock::dataAvailable()
 		case -1 : throw ESocket( "CSock::dataAvailable(): select failed" );
 		default : return true;
 	}
+#endif
 }
 
 

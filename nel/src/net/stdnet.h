@@ -68,6 +68,8 @@
 #	endif
 #	include <WinSock2.h>
 #	include <Windows.h>
+#elif defined NL_OS_UNIX
+#	include <poll.h>
 #endif
 
 #endif
