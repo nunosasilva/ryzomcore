@@ -1136,32 +1136,93 @@ described above.
 
 ### Left to do
 
-- The beige smear on the avatar (Vulkan only, not the insert path). First
-  experiment: `NLVK_NOVP=1` to see whether it is a user-program draw, then dump
-  the vertex layout hash and attributes of the smeared draw; it looks like a
-  skinning/vertex-layout problem for one clothing mesh.
-- In-game HUD windows missing in Vulkan with the same build/data (draws that
-  never reach the screen). Same investigation style as above.
+- ~~The beige smear on the avatar~~: fixed by the per-frame vertex ring, see the
+  memory section below. It was not a vertex-format problem: the avatar's
+  CPU-skinned vertices were rewritten into the same mapped VkBuffer that draws
+  of unsubmitted frames still referenced.
+- ~~In-game HUD windows missing~~: same cause, fixed by the same change.
 - Fog/haze is much stronger in Vulkan than in the OpenGL client at the same
-  spot (`trees_side_by_side.png`), so distant vegetation washes out.
+  spot (`trees_side_by_side.png`), so distant vegetation washes out; the scene
+  is also darker/warmer than GL3.
 - In-place texture updates still stall the device (see above).
 - `WM_DELETE_WINDOW` shutdown: the Vulkan client starts releasing but then hits
   `vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed` while recreating the
   swapchain during teardown and has to be killed. Use Escape -> Quit Ryzom ->
   Quit Now for a clean logout (the logout packet is only sent on that path).
 
-## Open issue: memory usage (user report, 2026-11-11)
+## Memory, DXTC and the dynamic-buffer races — fixed (branch `vulkan-memory-hud`)
 
-The game now uses >3 GB resident RAM, roughly 3x the original client. Suspects:
-- `_TexturesVulkan` never evicts textures (every distinct ITexture keeps its
-  VkImage/ImageView/Sampler/Memory for the whole session; also a stale-texture
-  hazard when an ITexture address is recycled);
-- per-draw uniform/index rings only grow (`_UniformRingSize *= 2`, 16 MB index
-  ring) and old buffer allocations may be kept;
-- deferred-destroy lists and the upload-batch fence paths;
-- two frames in flight with full descriptor pools per frame (4096 sets each).
-Validate with NLVK_VALIDATION=1 and measure RSS at fixed points (login,
-character selection, in game after N minutes, after moving between areas).
-Implement texture eviction (`ITexture::TextureDrvShare` / ITextureDrvInfos) and
-check for double allocations. This is a task that can run concurrently with
-rendering work.
+Commit `596557f25`. The >3 GB RSS, the beige smear around the avatar and the
+missing HUD windows all came from the same class of bug: per-draw data was
+written into buffers that recorded draws of the current or previous frame still
+referenced.
+
+**Dynamic buffers.** The uniform and index rings restarted at offset 0 every
+frame while the previous frame (2 frames in flight) could still be reading its
+blocks, so a draw could pick up another draw's uniforms/indices. Each ring now
+has one half per frame. CVertexBuffers the CPU rewrites (`FullStream`,
+`SmallStream`) go through a new per-frame vertex ring, and `FullRewrite`
+(skinning, water) keeps two persisted copies that alternate when the current
+one was drawn with. This is what made the whole HUD draw again (the UI issues
+several `drawQuads` batches per frame into one engine VB) and put the avatar's
+clothing and hair back on the body.
+
+**Textures.** The driver now implements `ITextureDrvInfos` / `CTextureDrvShare`
+like GL3: one `CTextureDrvInfosVulkan` per texture (or per share name for
+shared textures), created on first use and destroyed with its last `ITexture`.
+A recycled `ITexture` address can no longer show a stale image, shared files
+upload once, and `profileAllocatedTextureMemory()` / `getUsedTextureMemory()`
+work. DXTC1/1A/3/5 bitmaps are no longer decompressed to RGBA in place on
+upload: when the device reports `textureCompressionBC` they are uploaded as
+BC1/BC2/BC3 (raw mip chain, block-aligned region path for
+`CAsyncTextureManager`), which removes the 4-8x CPU expansion and 4x device
+memory of the RGBA upload. The uncompressed fallback keeps the old conversion.
+
+**Sizes.** Uniform ring 128 MB -> 4 MB and index ring 64 MB -> 2 MB (grown on
+demand, per-frame halves), descriptor pools sized for the 4096-set layout
+instead of 64k samplers, and the frame log prints the live texture memory.
+
+Measurements (`mats005`, gamescope 1280x800, Debug, RSS from
+`/proc/<pid>/status` every 2 s; VRAM from
+`/sys/class/drm/card1/device/mem_info_vram_used`, which includes the ~1.45 GB
+desktop baseline):
+
+| point | before (`c9e6828cf`) | after (`596557f25`) | GL3, same build |
+|---|---|---|---|
+| login screen | 224 MB | 220 MB | - |
+| character selection | 452 MB | not re-measured | - |
+| in game, 1 min | 3380 MB | 1143 MB | - |
+| in game, 5 min | 3380 MB | 1127 MB (peak 1158 MB) | 965 MB |
+| city, slot 0 | not measured | 1300 MB | - |
+| VRAM in game | 3090 MB | 1740 MB | 1950 MB |
+
+The character-selection point on the final build was not captured (the account
+was still online when the run started); the final build's login number is the
+same as before, and the in-game/city points above are final-build numbers. The
+remaining +160 MB over GL3 is the two-copy FullRewrite VBOs, the three rings,
+the descriptor pools and driver-internal objects; RSS is flat over five
+minutes and over a city load (no per-frame growth).
+
+**Visual verification.** In game and in the city the HUD is complete (stats,
+action bar, compass, missions, windows panel, chat) and the avatar, clothing
+and hair are correct; screenshots `/tmp/opencode/mem/out/vk-smoke.png` and
+`vk-city-2400.png` next to the GL3 reference `gl3-final-gshot.png`. The city
+interior was checked with `NLVK_MEGA=1` (slot 0, Matsfive): the log reports
+`Vulkan: LightMap mega path active: 1 lightmaps in 1 pass(es), 7 per pass`, and
+the wooden interior/NPC are lit and textured.
+
+**Validation** (`NLVK_VALIDATION=1`, final build, city + mega path): only the
+known gamescope `VkSwapchainPresentModeInfoKHR` and
+`vkCreateDevice-ppEnabledExtensionNames` VUIDs.
+
+Still open:
+- Fog/colour parity with GL3 (the Vulkan scene is darker and warmer).
+- `ForceDXTC` compression of RGBA source textures is still a no-op.
+- Blitting from a BC texture in `stretchRect()` is untested (FXAA/bloom only
+  use RGBA render targets today).
+- The FullRewrite two-copy rotation assumes one write per buffer per frame
+  (true for the skin manager); a third write to the same VB in one frame could
+  still be seen by an earlier recorded draw.
+- In-place (non-first-time) texture updates still do a device wait + submit.
+- `WM_DELETE_WINDOW` shutdown still fails while recreating the swapchain; use
+  Escape -> Quit Ryzom -> Quit Now.
