@@ -1376,3 +1376,132 @@ Ryzom's day/night cycle is about 1 hour of wall time. In a debug build
 (`-DFINAL_VERSION=OFF`) `/setLightHour 12` (or the equivalent Lua call) pins the
 client at noon. Use it for colour/fog/transparency comparisons so both drivers
 render the same lighting, and take captures at the same pinned hour.
+
+## Texture upload performance + BC stretchRect (branch `vulkan-texperf`)
+
+Worktree `f1fb99/vulkan-texperf`, based on `fb6e5b5e5`, branch `vulkan-texperf`.
+`nel/src/3d/driver/vulkan/` only; GL/GL3 drivers untouched. Verified in game
+with `mats006` (slot 1, Danilli).
+
+### The stall that was removed
+
+`uploadTexturePixels()` / `uploadTextureRegion()` (in-place updates: animated
+textures, and **one per font glyph tile**, i.e. ~20-70 per frame in game) did:
+
+    vkDeviceWaitIdle(device)  ->  allocate cmd buffer  ->  vkQueueSubmit
+    ->  vkQueueWaitIdle       ->  free cmd buffer, destroy staging buffer
+
+per update. Every one of those waits for the previous frame to finish on the
+GPU, so the CPU and the GPU were fully serialised around each texture update,
+and each update allocated a `VkBuffer` + `VkDeviceMemory`.
+
+### The new path
+
+One **upload command buffer per frame slot** (`_UploadCommandBuffers[2]`,
+`_CommandBuffers[2..3]`) is reset in `beginFrame()` (after the frame fence for
+that slot has been waited) and submitted **in the same `vkQueueSubmit` as the
+frame, ahead of it**:
+
+    vkQueueSubmit({ uploadCmd[frame], frameCmd })   // one fence, no semaphore
+
+* The copies and their layout transitions therefore execute before any draw of
+  the frame; the frame sees every texture in its final layout and content.
+* The first barrier of each copy (`SHADER_READ`/`TRANSFER_WRITE` ->
+  `TRANSFER_WRITE`, src stage VERTEX|FRAGMENT|TRANSFER) is ordered against the
+  *previous* frame's sampling by submission order on the same queue, which is
+  what replaces the `vkDeviceWaitIdle()`. No CPU wait remains at all, and the
+  frame's own fence covers the uploads.
+* Updating the same image twice in one frame is just two copies in the same
+  buffer, in recording order - no wait is needed (the task's "wait when the
+  same texture is updated twice in a frame" case does not arise, because the
+  copies are not interleaved with the frame's draws).
+* Copies requested between two frames (the engine can set textures up outside a
+  frame) are queued in `_PendingTextureCopies` and replayed by the next
+  `beginFrame()`.
+* Staging: new **host-visible staging ring** (`_StagingRing`, 8 MiB, one half
+  per frame in flight, 16-byte aligned slices, grows by doubling up to 64 MiB).
+  No more per-upload `VkBuffer`/`VkDeviceMemory` allocation and no more
+  `_UploadStaging` list; uploads that do not fit in a ring half get one
+  dedicated buffer that is retired with the frame (`deferDestroyBuffer`).
+* `_UploadFence`, `_UploadDone`, `beginTextureCopy()`, `endTextureCopy()`,
+  `isImageInUploadBatch()` and the extra `vkWaitForFences(upload)` in
+  `beginFrame()` are gone. Remaining device waits in the driver are startup,
+  shutdown, swapchain recreation and the one-shot `getWhiteTexture()`.
+
+Important detail found the hard way: the upload command buffer **must be per
+frame slot**. With one buffer for both slots, frame N+1 reset it while frame
+N's submission (which contains it) could still be executing -> immediate
+`VK_ERROR_DEVICE_LOST`. The rule is the same as for the draw command buffers.
+
+### BC in `stretchRect()`
+
+`vkCmdBlitImage` cannot read or write a block-compressed image (no driver
+reports `BLIT_SRC`/`BLIT_DST` for BC formats), and it also requires both images
+to have the same format. `stretchRectImage()` now:
+
+* returns false, with a one-time warning, when the formats differ (the engine's
+  `CDriverUser::stretchRect()` then draws its textured quad, which handles any
+  format);
+* uses `vkCmdCopyImage` when both sides are compressed and the rects are
+  identical and block-aligned (a real BC copy);
+* returns false when a compressed image would have to be scaled;
+* keeps the filtered blit for uncompressed formats (bloom/FXAA).
+
+`NLVK_TEXTEST=1` runs a one-shot self-test at frame 2 (inert without the
+variable): it builds a 64x64 solid-red DXT1 texture, asks `stretchRect()` for a
+1:1 copy and for a scaled copy, reads the destination block back and checks it.
+In game: `same size -> true, scaled -> false` and
+`PASS, destination block colour0 = 0xf800`.
+
+### Measurements (RADV 840M, Debug, 1280x800, same client binary, driver `.so`
+swapped; `NLVK_STATS=1`; another agent's client was running on `mats005` during
+all runs, so the absolute numbers are loaded, the comparison is fair)
+
+In game, mean over `NLVK_STATS` windows with >1000 draws/frame:
+
+| build | ms/frame | fps | texture copies | upload submits | device time in upload waits |
+|---|---|---|---|---|---|
+| `fb6e5b5e5` (before) | 35.9 / 35.1 (two runs) | 27.8 / 28.5 | 25/frame | 25/frame (one each) | **2.1 ms/frame** |
+| `vulkan-texperf` | 29.0 / 30.0 / 30.3 (three runs) | 34.5 / 33.3 / 33.1 | 20/frame | 0 | **0** |
+
+=> ~16% shorter frames, ~+19% fps; the in-game `u` window counter reads
+**FPS: 33** (vs the 33.1 measured by `NLVK_STATS` in the same run).
+Per-draw CPU cost is unchanged (3.0-3.1 us descriptor+draw, 0.2 us index copy),
+so the gain is entirely the removed device waits/serialisation.
+
+### Verification
+
+* Build: `ninja -C build-vulkan -j 4 ryzom_client_dev lib/libnel_drv_vulkan.so`
+  clean (the usual warnings only).
+* In game, `NLVK_VALIDATION=1 NLVK_TEXTEST=1 NLVK_STATS=1`: no VUIDs apart from
+  the known gamescope `VkSwapchainPresentModeInfoKHR` ones, the known
+  `VK_EXT_surface_maintenance1` one and the benign "vertex attribute not
+  consumed" pipeline warnings. `TEXTEST: PASS`.
+* Rendering unchanged: HUD complete (status bar, quickbar, compass, missions,
+  chat, windows panel), font glyphs crisp (the atlas is the hot path this
+  change touches), avatar textured. Screenshots:
+  `/tmp/opencode/texperf/out/{final-perf,before-u}-*.png`, `after3-6300.png`
+  (the `u` window), `after-val-*.png` (login screen).
+* Clean logout (`Quit`/WM_DELETE) in every run; no `*.dmp`.
+
+### Remaining hot spots (measured)
+
+1. **Per-draw descriptor set**: one `vkAllocateDescriptorSets` +
+   `vkUpdateDescriptorSets` per draw costs **3.0-3.1 us/draw**, ~3.5 ms of a
+   29 ms frame at 1170 draws. Caching sets per (material, texture set, light
+   table) would be the next CPU win.
+2. **GPU**: ~1170 draws/frame with the landscape and vegetation; the frame is
+   GPU bound (the CPU side is ~5 ms of the 29 ms).
+3. **Texture upload traffic** is ~20 copies/frame and ~0.02 MiB/frame in game -
+   negligible now, but the staging ring has to grow to 64 MiB during loading
+   (single large textures of 1.4 MB plus lightmap tiles); in-game usage stays
+   around 32 MiB/half.
+4. **Depth buffer** is still shared by both frames in flight (pre-existing).
+
+### Still open
+
+- `ForceDXTC` compression of RGBA source textures is still a no-op.
+- Fog/colour parity with GL3 (the Vulkan scene is darker and warmer).
+- The FullRewrite two-copy rotation assumes one write per buffer per frame.
+- Depth buffer shared by both frames in flight.
+- The character-selection "black frame" is not reproducible from the driver.

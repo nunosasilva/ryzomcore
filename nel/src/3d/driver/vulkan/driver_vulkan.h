@@ -32,6 +32,7 @@
 #include "nel/3d/pixel_program.h"
 #include "nel/3d/program.h"
 #include "nel/3d/uniform_buffer.h"
+#include "nel/3d/texture_mem.h"
 #include "nel/misc/bitmap.h"
 #include "nel/misc/event_emitter.h"
 
@@ -741,11 +742,14 @@ private:
 	CUniformBuffer			*_UserUBStageCache[UBBindingCount];
 	uint32					_UserUBStageOffset[UBBindingCount];
 	uint32					_UserUBStageSize[UBBindingCount];
-	/// NLVK_STATS=1: per-draw CPU cost counters, logged every 600 frames.
+	/// NLVK_STATS=1: per-draw CPU cost counters, logged every 120 frames.
 	bool					_StatsEnabled;
 	uint64					_StatsDraws;
 	uint64					_StatsDescriptorNs;
 	uint64					_StatsIndexNs;
+	/// Texture copies recorded and bytes staged, per NLVK_STATS window.
+	uint64					_StatsTextureCopies;
+	uint64					_StatsUploadBytes;
 	uint64					_StatsWindowStartNs;
 	uint64					_StatsWindowFrames;
 	/// Compile a glsl3vi snippet into the mega VP variants it can select.
@@ -855,44 +859,99 @@ private:
 	std::vector<std::pair<uint64, CTextureVulkan> >	_PendingTextureDestroy;
 	std::vector<std::pair<uint64, std::pair<VkBuffer, VkDeviceMemory> > >	_PendingBufferDestroy;
 
-	// --- Deferred first-time texture uploads ---
-	// Newly created images cannot be referenced by a frame that is already in
-	// flight, so their pixel copies are recorded into one upload command buffer
-	// and submitted once per frame instead of one submit + wait per texture.
-	// In-place updates of an existing image stay synchronous: an in-flight
-	// frame may still be sampling it.
-	VkCommandBuffer			_UploadCommandBuffer;
-	VkFence					_UploadFence;
-	VkSemaphore				_UploadDone;
+	// --- Texture uploads ---
+	// Every texture copy (the pixels of a new image, an in-place update of an
+	// animated texture, one font glyph tile) is recorded into the upload command
+	// buffer of the frame being recorded, which is submitted in the same
+	// vkQueueSubmit as the frame, ahead of its draw commands. Consequences:
+	//  - the copies execute before any draw of that frame, so an image is in its
+	//    final layout and has its final content when the frame starts;
+	//  - the pipeline barriers in the buffer are ordered against the previous
+	//    frame's sampling (submission order on the graphics queue), which is what
+	//    used to cost a vkDeviceWaitIdle + submit + vkQueueWaitIdle per update;
+	//  - no CPU wait is needed at all: the frame's own fence covers the uploads.
+	// Updating the same image twice in one frame is simply two copies in the
+	// same buffer, in recording order; the frame sees the last one.
+	// One command buffer per frame in flight: beginFrame() waits for that slot's
+	// fence, which is what makes it safe to reuse.
+	VkCommandBuffer			_UploadCommandBuffers[2];
 	bool					_UploadRecording;
-	bool					_UploadSubmitted;
-	std::vector<std::pair<VkBuffer, VkDeviceMemory> >	_UploadStaging;
-	/// Images with a copy recorded in the current upload batch. A second copy
-	/// of the same image must join the batch too, so that both layout
-	/// transitions execute in recording order.
-	std::vector<VkImage>	_UploadBatchImages;
+	/// Copies recorded in the current command buffer (0 = nothing to submit).
+	uint32					_UploadCopyCount;
+	/// Mip levels one copy command can span (16 covers any texture the engine
+	/// can produce: 2^16 texels are not representable anyway).
+	static const uint		MaxTextureCopyRegions = 16;
+	/// One image copy: layout transitions around a vkCmdCopyBufferToImage, or a
+	/// layout-only transition when RegionCount is 0.
+	struct STextureCopy
+	{
+		STextureCopy()
+			: Image(VK_NULL_HANDLE), OldLayout(VK_IMAGE_LAYOUT_UNDEFINED), BaseLevel(0), LevelCount(1)
+			, Staging(VK_NULL_HANDLE), StagingBytes(0), RegionCount(0) {}
+		VkImage			Image;
+		VkImageLayout	OldLayout;
+		uint32			BaseLevel;
+		uint32			LevelCount;
+		VkBuffer		Staging;
+		/// Bytes copied out of Staging (0 for a layout-only transition).
+		VkDeviceSize	StagingBytes;
+		uint32			RegionCount;
+		VkBufferImageCopy	Regions[MaxTextureCopyRegions];
+	};
+	/// Copies requested while no frame was open (the engine sets textures up
+	/// between two frames); beginFrame() replays them.
+	std::vector<STextureCopy>	_PendingTextureCopies;
+	/// Upload staging ring: host visible, written by the CPU and read by the
+	/// copy commands, one half per frame in flight. A slice stays valid until
+	/// the submission that reads it has finished, i.e. until the same frame slot
+	/// comes round again (beginFrame() waits for that fence).
+	VkBuffer				_StagingRing;
+	VkDeviceMemory			_StagingRingMemory;
+	void					*_StagingRingMapped;
+	uint32					_StagingRingSize;
+	uint32					_StagingRingOffset;
+	uint32					_StagingRingFrameBase;
+	uint32					_StagingRingHalf;
+	/// Staging memory for one upload.
+	struct STextureStaging
+	{
+		VkBuffer		Buffer;
+		/// Dedicated allocation (too large for the ring) to retire with the
+		/// frame; VK_NULL_HANDLE when Buffer is a slice of the ring.
+		VkDeviceMemory	Dedicated;
+		VkDeviceSize	Offset;
+		void			*Mapped;
+	};
 	bool					beginUploadBatch();
+	/// End the upload command buffer. Returns true when it holds copies and has
+	/// to be submitted with the frame.
 	bool					submitUploadBatch();
-	/// Free the staging buffers of a finished upload batch.
-	void					freeUploadStaging();
-	/// True when `image` already has a copy recorded in the current batch.
-	bool					isImageInUploadBatch(VkImage image) const;
-	/// Pick the command buffer a texture copy is recorded into. A copy for an
-	/// image no in-flight frame can reference (`firstTime`, or one that is
-	/// already in the batch) goes to the batch; anything else is synchronous.
-	VkCommandBuffer			beginTextureCopy(VkImage image, bool firstTime, bool &deferred);
-	/// Submit (or keep batched) the copy `cmd` was recording for `image`.
-	bool					endTextureCopy(VkCommandBuffer cmd, bool deferred, VkImage image,
-								VkBuffer staging, VkDeviceMemory stagingMemory);
-	/// Upload all mip levels of the bitmap. `deferred` sends the copies to the
-	/// per-frame upload batch (only valid for a brand-new image, or an image
-	/// that already has a copy in that batch).
-	bool					uploadTexturePixels(ITexture &tex, CTextureVulkan &out, bool deferred);
+	/// Record one copy, or queue it for the next beginUploadBatch().
+	bool					recordTextureCopy(const STextureCopy &copy);
+	/// Reserve upload staging for `size` bytes in the current frame.
+	bool					allocTextureStaging(VkDeviceSize size, STextureStaging &out);
+	/// Host visible buffer for texture traffic that does not go through the
+	/// staging ring: uploads too large for it (TRANSFER_SRC) and the one-shot
+	/// BC self-test readback (TRANSFER_DST).
+	VkBuffer				createStagingBuffer(VkDeviceSize size, VkDeviceMemory *memory, void **mapped,
+								VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+	bool					growStagingRing(uint32 required);
+	/// Upload all mip levels of the bitmap.
+	bool					uploadTexturePixels(ITexture &tex, CTextureVulkan &out);
 	/// Upload a sub-rectangle of one mip level, leaving the rest of the image
 	/// intact (used by touchRect() and uploadTexture()).
 	bool					uploadTextureRegion(ITexture &tex, CTextureVulkan &out, const NLMISC::CRect &rect, uint mipLevel);
 	/// stretchRect() implementation: scaled image blit between two NeL textures.
 	bool					stretchRectImage(ITexture *srcText, NLMISC::CRect &srcRect, ITexture *destText, NLMISC::CRect &destRect);
+	/// NLVK_TEXTEST=1: one-shot check of the compressed stretchRect paths (see
+	/// driver_vulkan_target.cpp). Stage 0 = to run, 1 = waiting for the copy to
+	/// complete, 2 = done.
+	int						_BlitTestStage;
+	bool					_BlitTestRequestOk;
+	CTextureMem				_BlitTestSrc;
+	CTextureMem				_BlitTestDst;
+	void					runTextureBlitTest();
+	void					checkTextureBlitTest();
 	std::map<uint32, std::vector<VkVertexInputAttributeDescription> >	_VertexLayouts;
 
 	// Per-frame index upload ring.

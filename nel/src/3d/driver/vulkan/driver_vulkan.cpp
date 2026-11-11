@@ -252,6 +252,8 @@ CDriverVulkan::CDriverVulkan()
 	_StatsDraws = 0;
 	_StatsDescriptorNs = 0;
 	_StatsIndexNs = 0;
+	_StatsTextureCopies = 0;
+	_StatsUploadBytes = 0;
 	_StatsWindowStartNs = 0;
 	_StatsWindowFrames = 0;
 	_VPSpecularOutput = true;
@@ -278,11 +280,19 @@ CDriverVulkan::CDriverVulkan()
 	memset(_MegaPassSelfIllumination, 0, sizeof(_MegaPassSelfIllumination));
 	_MegaPassZeroLightFactors = false;
 	_MegaPassFogBlack = false;
-	_UploadCommandBuffer = VK_NULL_HANDLE;
-	_UploadFence = VK_NULL_HANDLE;
-	_UploadDone = VK_NULL_HANDLE;
+	_UploadCommandBuffers[0] = VK_NULL_HANDLE;
+	_UploadCommandBuffers[1] = VK_NULL_HANDLE;
 	_UploadRecording = false;
-	_UploadSubmitted = false;
+	_UploadCopyCount = 0;
+	_BlitTestStage = 0;
+	_BlitTestRequestOk = false;
+	_StagingRing = VK_NULL_HANDLE;
+	_StagingRingMemory = VK_NULL_HANDLE;
+	_StagingRingMapped = NULL;
+	_StagingRingSize = 0;
+	_StagingRingOffset = 0;
+	_StagingRingFrameBase = 0;
+	_StagingRingHalf = 0;
 	for (uint i = 0; i < 2; ++i)
 	{
 		_MegaLightTableBuffer[i] = VK_NULL_HANDLE;
@@ -803,16 +813,19 @@ bool CDriverVulkan::createCommands()
 	if (!checkVk(vkCreateCommandPool(_Device, &pci, NULL, &_CommandPool), "vkCreateCommandPool"))
 		return false;
 
-	_CommandBuffers.resize(3);
+	_CommandBuffers.resize(4);
 	VkCommandBufferAllocateInfo cbi;
 	memset(&cbi, 0, sizeof(cbi));
 	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	cbi.commandPool = _CommandPool;
 	cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	cbi.commandBufferCount = 3;
+	cbi.commandBufferCount = 4;
 	if (!checkVk(vkAllocateCommandBuffers(_Device, &cbi, &_CommandBuffers[0]), "vkAllocateCommandBuffers"))
 		return false;
-	_UploadCommandBuffer = _CommandBuffers[2];
+	// 0/1: the two frames in flight. 2/3: the texture upload command buffer of
+	// each frame, submitted ahead of it.
+	_UploadCommandBuffers[0] = _CommandBuffers[2];
+	_UploadCommandBuffers[1] = _CommandBuffers[3];
 	return true;
 }
 
@@ -834,15 +847,10 @@ bool CDriverVulkan::createSyncObjects()
 		if (!checkVk(vkCreateSemaphore(_Device, &sci, NULL, &_ImageAvailable[i]), "vkCreateSemaphore"))
 			return false;
 	}
-	// Upload batch: the fence starts signaled so the first batch has nothing to
-	// wait for; the semaphore orders the frame's commands after the uploads.
-	if (!checkVk(vkCreateFence(_Device, &fci, NULL, &_UploadFence), "vkCreateFence(upload)"))
-		return false;
-	if (!checkVk(vkCreateSemaphore(_Device, &sci, NULL, &_UploadDone), "vkCreateSemaphore(upload)"))
-		return false;
+	// Uploads are submitted with the frame command buffer (see swapBuffers()),
+	// so they need no fence or semaphore of their own.
 	return true;
 }
-
 void CDriverVulkan::destroySwapchain()
 {
 	if (!_Device)
@@ -1093,7 +1101,7 @@ void CDriverVulkan::shutdownVulkan()
 		}
 		_PendingTextureDestroy.clear();
 		_PendingBufferDestroy.clear();
-		freeUploadStaging();
+		_PendingTextureCopies.clear();
 	}
 
 	// Destroy the window system objects first: the swapchain must go before the
@@ -1101,8 +1109,6 @@ void CDriverVulkan::shutdownVulkan()
 	// once the swapchain that waits on them is gone.
 	destroySwapchain();
 
-	if (_UploadFence) { vkDestroyFence(_Device, _UploadFence, NULL); _UploadFence = VK_NULL_HANDLE; }
-	if (_UploadDone) { vkDestroySemaphore(_Device, _UploadDone, NULL); _UploadDone = VK_NULL_HANDLE; }
 	for (uint i = 0; i < _Fences.size(); ++i)
 		if (_Fences[i]) vkDestroyFence(_Device, _Fences[i], NULL);
 	for (uint i = 0; i < _ImageAvailable.size(); ++i)
@@ -1157,6 +1163,8 @@ void CDriverVulkan::shutdownVulkan()
 		if (_IndexRingMemory) { vkFreeMemory(_Device, _IndexRingMemory, NULL); _IndexRingMemory = VK_NULL_HANDLE; }
 		if (_VertexRing) { vkDestroyBuffer(_Device, _VertexRing, NULL); _VertexRing = VK_NULL_HANDLE; }
 		if (_VertexRingMemory) { vkFreeMemory(_Device, _VertexRingMemory, NULL); _VertexRingMemory = VK_NULL_HANDLE; }
+		if (_StagingRing) { vkDestroyBuffer(_Device, _StagingRing, NULL); _StagingRing = VK_NULL_HANDLE; }
+		if (_StagingRingMemory) { vkFreeMemory(_Device, _StagingRingMemory, NULL); _StagingRingMemory = VK_NULL_HANDLE; }
 		if (_ScreenshotBuffer) { vkDestroyBuffer(_Device, _ScreenshotBuffer, NULL); _ScreenshotBuffer = VK_NULL_HANDLE; }
 		if (_ScreenshotMemory) { vkFreeMemory(_Device, _ScreenshotMemory, NULL); _ScreenshotMemory = VK_NULL_HANDLE; }
 
@@ -1468,15 +1476,6 @@ bool CDriverVulkan::beginFrame()
 	// below), so they are freed here without a device-wide wait.
 	vkResetDescriptorPool(_Device, _DescriptorPools[frame], 0);
 	{
-		// A resource retired here can be referenced by the upload batch of an
-		// earlier frame, so make sure that batch has finished before freeing
-		// anything: it is a tiny copy-only submission, normally long done.
-		if (_UploadSubmitted && (!_PendingTextureDestroy.empty() || !_PendingBufferDestroy.empty()))
-		{
-			vkWaitForFences(_Device, 1, &_UploadFence, VK_TRUE, UINT64_MAX);
-			_UploadSubmitted = false;
-			freeUploadStaging();
-		}
 		// Retire a resource once three swap-buffer frames have passed since it
 		// was retired (tag + 3 <= counter). Two frames are not enough: a resource
 		// can be retired between frames (a vertex buffer destroyed by the game
@@ -1484,6 +1483,8 @@ bool CDriverVulkan::beginFrame()
 		// submission belongs to the *other* slot, whose fence is not the one
 		// waited above. Nothing is freed during the first three frames, when the
 		// counter is too small for any tag to be provably unused.
+		// Texture uploads are part of the frame submission, so the fence waited
+		// above already covers the staging buffers they read.
 		for (size_t i = 0; i < _PendingTextureDestroy.size(); )
 		{
 			if (_PendingTextureDestroy[i].first + 3 > _SwapBufferCounter)
@@ -1550,11 +1551,25 @@ bool CDriverVulkan::beginFrame()
 
 	beginMainPass(cmd, true);
 
+	// The fence waited above proves that the submission which used the upload
+	// command buffer last has finished, so it can be reset and filled with this
+	// frame's texture copies. It is submitted ahead of the frame command buffer.
+	// Started after the frame command buffer, so that a failure above leaves no
+	// half-recorded upload buffer behind.
+	beginUploadBatch();
+
 	_FrameOpen = true;
 	_RenderTargetTexture = NULL;
 	_RenderTargetInfo = NULL;
 	_IndexRingFrameBase = _FrameIndex * _IndexRingHalf;
 	_IndexRingOffset = _IndexRingFrameBase;
+	// The texture staging ring may already hold data allocated between the
+	// previous frame and this one (a texture the engine set up outside a frame);
+	// those copies are replayed into this frame, so their bytes must survive.
+	_StagingRingFrameBase = _FrameIndex * _StagingRingHalf;
+	if (_StagingRingOffset < _StagingRingFrameBase ||
+		_StagingRingOffset >= _StagingRingFrameBase + _StagingRingHalf)
+		_StagingRingOffset = _StagingRingFrameBase;
 	_VertexRingFrameBase = _FrameIndex * _VertexRingHalf;
 	_VertexRingOffset = _VertexRingFrameBase;
 	_UniformRingFrameBase = _FrameIndex * _UniformRingHalf;
@@ -1571,6 +1586,11 @@ bool CDriverVulkan::beginFrame()
 
 	if (getenv("NLVK_TESTTRI"))
 		drawTestTriangle(cmd);
+	// NLVK_TEXTEST=1: one-shot compressed stretchRect check (see
+	// driver_vulkan_target.cpp). Inert unless the variable is set.
+	if (getenv("NLVK_TEXTEST"))
+		runTextureBlitTest();
+	checkTextureBlitTest();
 	return true;
 }
 
@@ -1691,25 +1711,28 @@ bool CDriverVulkan::swapBuffers()
 	if (!checkVk(vkEndCommandBuffer(cmd), "vkEndCommandBuffer"))
 		return false;
 
-	// Submit the deferred first-time texture uploads first; the frame waits on
-	// their completion semaphore, so no CPU stall is needed.
+	// End the texture upload command buffer. It is submitted ahead of the frame
+	// in the same vkQueueSubmit: the copies and their barriers execute before
+	// any draw of the frame, ordered against the previous frame by submission
+	// order, and the frame fence covers them (no semaphore, no CPU wait).
 	const bool uploadsPending = submitUploadBatch();
+	VkCommandBuffer commandBuffers[2];
+	uint32 commandBufferCount = 0;
+	if (uploadsPending)
+		commandBuffers[commandBufferCount++] = _UploadCommandBuffers[frame];
+	commandBuffers[commandBufferCount++] = cmd;
 
-	VkPipelineStageFlags waitStages[2];
+	VkPipelineStageFlags waitStages[1];
 	waitStages[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	waitStages[1] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-	VkSemaphore waitSemaphores[2];
-	waitSemaphores[0] = _ImageAvailable[frame];
-	waitSemaphores[1] = _UploadDone;
 
 	VkSubmitInfo si;
 	memset(&si, 0, sizeof(si));
 	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	si.waitSemaphoreCount = uploadsPending ? 2 : 1;
-	si.pWaitSemaphores = waitSemaphores;
+	si.waitSemaphoreCount = 1;
+	si.pWaitSemaphores = &_ImageAvailable[frame];
 	si.pWaitDstStageMask = waitStages;
-	si.commandBufferCount = 1;
-	si.pCommandBuffers = &cmd;
+	si.commandBufferCount = commandBufferCount;
+	si.pCommandBuffers = commandBuffers;
 	si.signalSemaphoreCount = 1;
 	si.pSignalSemaphores = &_RenderFinished[_ImageIndex];
 	VkResult submit = vkQueueSubmit(_GraphicsQueue, 1, &si, _Fences[frame]);
@@ -1795,14 +1818,18 @@ bool CDriverVulkan::swapBuffers()
 			const double perFrame = windowMs / (double)_StatsWindowFrames;
 			const double perDraw = _StatsDraws ? (double)_StatsDescriptorNs / 1e3 / (double)_StatsDraws : 0.0;
 			const double perIndex = _StatsDraws ? (double)_StatsIndexNs / 1e3 / (double)_StatsDraws : 0.0;
-			nlinfo("Vulkan stats: %llu frames, %.2f ms/frame (%.1f fps), %llu draws, %.1f us descriptor+draw, %.1f us index copy",
+			nlinfo("Vulkan stats: %llu frames, %.2f ms/frame (%.1f fps), %llu draws, %.1f us descriptor+draw, %.1f us index copy, %llu texture copies, %.2f MiB staged/frame",
 				(unsigned long long)_StatsWindowFrames, perFrame, perFrame > 0.0 ? 1000.0 / perFrame : 0.0,
-				(unsigned long long)_StatsDraws, perDraw, perIndex);
+				(unsigned long long)_StatsDraws, perDraw, perIndex,
+				(unsigned long long)_StatsTextureCopies,
+				(double)_StatsUploadBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames);
 			_StatsWindowStartNs = now;
 			_StatsWindowFrames = 0;
 			_StatsDraws = 0;
 			_StatsDescriptorNs = 0;
 			_StatsIndexNs = 0;
+			_StatsTextureCopies = 0;
+			_StatsUploadBytes = 0;
 		}
 	}
 
