@@ -1359,3 +1359,13 @@ Still open:
 - The character-selection/"present-level" black frame is not reproducible from
   the driver side; check with `NLVK_PRESENT_LOG=1` if it is seen again.
 
+
+## Character-selection flicker — presumed fixed (user, 2026-11-11)
+
+The user reports the flicker was already gone after the RAM/dynamic-buffer fix
+merge (`cc519718f`). Keep `NLVK_PRESENT_LOG=1` for the next sighting; no action
+otherwise. The remaining open items are being worked by two agents:
+- `vulkan-color-fog` (mats005): fog/colour parity with GL3 and ForceDXTC of RGBA
+  sources.
+- `vulkan-texperf` (mats006): in-place texture-update device waits, BC blits in
+  stretchRect and remaining per-frame sync/stalls.
