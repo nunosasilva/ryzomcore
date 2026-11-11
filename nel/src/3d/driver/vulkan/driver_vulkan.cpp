@@ -377,6 +377,8 @@ void CDriverVulkan::setPolygonMode(TPolygonMode mode)
 // Factory
 // ---------------------------------------------------------------------------
 
+#ifndef NL_STATIC
+
 extern "C"
 {
 
@@ -391,6 +393,8 @@ uint32 NL3D_interfaceVersion()
 }
 
 }
+
+#endif // !NL_STATIC
 
 // ---------------------------------------------------------------------------
 // Vulkan setup
@@ -2165,3 +2169,23 @@ void CDriverVulkan::recordFrameCommands(VkCommandBuffer cmd)
 }
 
 } /* namespace NLVULKAN */
+
+// ---------------------------------------------------------------------------
+// Static driver entry point
+// ---------------------------------------------------------------------------
+
+#ifdef NL_STATIC
+
+namespace NL3D {
+
+/// Entry point used by CDRU::createVkDriver() when the drivers are linked
+/// into the executable (WITH_STATIC_DRIVERS); mirrors createGl3DriverInstance()
+/// in the GL3 driver. The shared-driver build keeps NL3D_createIDriverInstance.
+IDriver *createVulkanDriverInstance()
+{
+	return new NLVULKAN::CDriverVulkan;
+}
+
+} // namespace NL3D
+
+#endif // NL_STATIC
