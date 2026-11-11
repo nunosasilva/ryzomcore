@@ -94,7 +94,8 @@ static const char *s_UniformBlockGLSL =
 	"    mat4 texMatrix[4];\n"              // 656
 	"    mat4 specularTexMtx;\n"            // 912
 	"    mat4 modelView;\n"                 // 976
-	"} nl;\n";                              // 1040
+	"    vec4 texEnvConstant[4];\n"         // 1040 (TexEnv stage constant colours)
+	"} nl;\n";                              // 1104
 
 static std::string buildVertexShader(uint32 flags)
 {
@@ -151,32 +152,47 @@ static std::string buildVertexShader(uint32 flags)
 		"    vFogDepth = abs(eyePos.y / eyePos.w);\n"
 		"    // Lit materials use the diffuse colour (like the mega vertex program),\n"
 		"    // unlit materials use the material colour.\n"
-		"    vec4 vcol = ((nl.flags & 32) != 0) ? nl.diffuse : nl.color;\n";
-	if (hasColor)
-		src +=
-		"    // The primary color only replaces the material color on unlit draws\n"
-		"    // (mega VP behaviour); when lighting is on it is used only when the\n"
-		"    // material opts into pre-lit vertex colors. CPU-skinned meshes carry\n"
-		"    // an uninitialised or black primary color otherwise, which used to\n"
-		"    // make them render as black silhouettes.\n"
-		"    if ((nl.flags & 32) == 0)\n"
-		"        vcol = attrColor;\n"
-		"    else if ((nl.flags & 64) != 0)\n"
-		"        vcol *= attrColor;\n";
+		"    vec4 vcol;\n"
+		"    if ((nl.flags & 32) != 0) {\n";
 	if (hasNormal)
+	{
 		src +=
-		"    if ((nl.flags & 32) != 0) {\n"
-		"        vec3 n = normalize(nl.normalMatrix * attrNormal);\n"
-		"        vec3 lit = nl.ambient.rgb;\n"
-		"        for (int i = 0; i < nl.lightCount && i < 4; ++i) {\n"
-		"            if (nl.lightDirOrPos[i].w < 0.5) {\n"
-		"                vec3 ldir = normalize(-nl.lightDirOrPos[i].xyz);\n"
-		"                lit += nl.lightDiffuse[i].rgb * max(dot(n, ldir), 0.0);\n"
-		"            }\n"
-		"        }\n"
-		"        vcol.rgb *= lit;\n"
-		"    }\n";
-	src += "    vColor = vcol;\n";
+			"        vec3 n = normalize(nl.normalMatrix * attrNormal);\n"
+			"        vec3 lit = vec3(0.0);\n"
+			"        for (int i = 0; i < nl.lightCount && i < 4; ++i) {\n"
+			"            if (nl.lightDirOrPos[i].w < 0.5) {\n"
+			"                vec3 ldir = normalize(-nl.lightDirOrPos[i].xyz);\n"
+			"                lit += nl.lightDiffuse[i].rgb * max(dot(n, ldir), 0.0);\n"
+			"            }\n"
+			"        }\n"
+			"        // Same split as the mega vertex program: the material diffuse\n"
+			"        // modulates the lights only, the self-illumination term (ambient\n"
+			"        // times material ambient, plus emissive) is added afterwards.\n"
+			"        vec4 effectiveDiffuse = ((nl.flags & 64) != 0) ? vec4(1.0) : nl.diffuse;\n"
+			"        vcol = vec4(effectiveDiffuse.rgb * lit + nl.ambient.rgb, 1.0);\n";
+		if (hasColor)
+			src +=
+			"        if ((nl.flags & 64) != 0)\n"
+			"            vcol *= attrColor;\n";
+		src +=
+			"        vcol = clamp(vcol, 0.0, 1.0);\n";
+	}
+	else
+	{
+		src +=
+			"        // No normal: GL3 disables lighting for this draw.\n"
+			"        vcol = nl.color;\n";
+		if (hasColor)
+			src += "        vcol = attrColor;\n";
+	}
+	src +=
+		"    } else {\n"
+		"        vcol = nl.color;\n";
+	if (hasColor)
+		src += "        vcol = attrColor;\n";
+	src +=
+		"    }\n"
+		"    vColor = vcol;\n";
 	if (hasNormal)
 		src +=
 		"    // Eye-space reflection vector, shared by the reflection/sphere texgen modes.\n"
@@ -332,10 +348,10 @@ static const std::string s_FragmentShader =
 	"}\n"
 	"void main() {\n"
 	"    vec4 frag = vColor;\n"
-	"    if ((nl.flags & 1) != 0) frag = applyTexEnv(nl.texEnv0, texture(tex0, uvOfStage(vUv0, nl.rtFlipMask & 1u)), frag, vColor, vColor);\n"
-	"    if ((nl.flags & 2) != 0) frag = applyTexEnv(nl.texEnv1, texture(tex1, uvOfStage(vUv1, nl.rtFlipMask & 2u)), frag, vColor, vColor);\n"
-	"    if ((nl.flags & 4) != 0) frag = applyTexEnv(nl.texEnv2, texture(tex2, uvOfStage(vUv2, nl.rtFlipMask & 4u)), frag, vColor, vColor);\n"
-	"    if ((nl.flags & 8) != 0) frag = applyTexEnv(nl.texEnv3, texture(tex3, uvOfStage(vUv3, nl.rtFlipMask & 8u)), frag, vColor, vColor);\n"
+	"    if ((nl.flags & 1) != 0) frag = applyTexEnv(nl.texEnv0, texture(tex0, uvOfStage(vUv0, nl.rtFlipMask & 1u)), frag, vColor, nl.texEnvConstant[0]);\n"
+	"    if ((nl.flags & 2) != 0) frag = applyTexEnv(nl.texEnv1, texture(tex1, uvOfStage(vUv1, nl.rtFlipMask & 2u)), frag, vColor, nl.texEnvConstant[1]);\n"
+	"    if ((nl.flags & 4) != 0) frag = applyTexEnv(nl.texEnv2, texture(tex2, uvOfStage(vUv2, nl.rtFlipMask & 4u)), frag, vColor, nl.texEnvConstant[2]);\n"
+	"    if ((nl.flags & 8) != 0) frag = applyTexEnv(nl.texEnv3, texture(tex3, uvOfStage(vUv3, nl.rtFlipMask & 8u)), frag, vColor, nl.texEnvConstant[3]);\n"
 	"    if ((nl.flags & 16) != 0 && frag.a < nl.alphaRef) discard;\n"
 	"    if (nl.fogEnabled != 0) frag = applyFog(frag);\n"
 	"    fragColor = frag;\n"
@@ -1504,11 +1520,27 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 		u.Diffuse[3] = u.Color[3];
 	}
 
-	CRGBA matAmbient = _CurrentMaterial ? _CurrentMaterial->getAmbient() : CRGBA(255, 255, 255, 255);
-	CRGBA ambient = (_ObjectAmbient.A || _ObjectAmbient.R || _ObjectAmbient.G || _ObjectAmbient.B) ? _ObjectAmbient : _AmbientColor;
-	u.Ambient[0] = (ambient.R / 255.f) * (matAmbient.R / 255.f);
-	u.Ambient[1] = (ambient.G / 255.f) * (matAmbient.G / 255.f);
-	u.Ambient[2] = (ambient.B / 255.f) * (matAmbient.B / 255.f);
+	// Self-illumination staged exactly like the mega object UBO: the global
+	// ambient plus the per-light ambient (light table ambient for this object
+	// in table mode) modulates the material ambient, then the material
+	// emissive is added. The vertex program adds this term after the lights,
+	// so it must not be multiplied by the material diffuse.
+	CRGBAF selfIllumination(_AmbientColor);
+	if (_CurrentMaterial)
+	{
+		if (_LightTableMode)
+			selfIllumination += CRGBAF(_ObjectAmbient);
+		else
+			for (uint i = 0; i < 8; ++i)
+				if (_Lights[i].Enabled)
+					selfIllumination += CRGBAF(_Lights[i].Ambient);
+		selfIllumination *= CRGBAF(_CurrentMaterial->getAmbient());
+		if (_CurrentMaterial->getShader() != CMaterial::LightMap)
+			selfIllumination += CRGBAF(_CurrentMaterial->getEmissive());
+	}
+	u.Ambient[0] = selfIllumination.R;
+	u.Ambient[1] = selfIllumination.G;
+	u.Ambient[2] = selfIllumination.B;
 	u.Ambient[3] = 1.f;
 
 	u.AlphaRef = _MaterialAlphaRef;
@@ -1526,7 +1558,17 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	u.Flags = flags;
 
 	for (uint stage = 0; stage < 4; ++stage)
+	{
 		u.TexEnv[stage] = _TexEnv[stage];
+		if (_CurrentMaterial)
+		{
+			const CRGBA &constant = _CurrentMaterial->_TexEnvs[stage].ConstantColor;
+			u.TexEnvConstant[stage][0] = constant.R / 255.f;
+			u.TexEnvConstant[stage][1] = constant.G / 255.f;
+			u.TexEnvConstant[stage][2] = constant.B / 255.f;
+			u.TexEnvConstant[stage][3] = constant.A / 255.f;
+		}
+	}
 
 	u.UvRouting = 0;
 	const uint8 *routing = vb.getUVRouting();
@@ -1564,7 +1606,8 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 			if (index < 0 || (uint)index >= _LightTableSize)
 				continue;
 			const SLightState &light = _LightTable[index];
-			float factor = _LightFactors[i] / 255.f;
+			// Same expansion as the mega object UBO: 0..255 -> 0..1 in 1/256 steps.
+			float factor = (float)(_LightFactors[i] + (_LightFactors[i] >> 7)) / 256.f;
 			// The shader lights eye-space normals, so transform the world-space
 			// light data exactly like the mega vertex program's viewMatrix does.
 			const CVector lightEye = light.Mode == CLight::DirectionalLight
@@ -2191,7 +2234,6 @@ void CDriverVulkan::setLight(uint8 num, const CLight &light)
 		_Lights[num].Ambient = light.getAmbiant();
 		_Lights[num].Enabled = true;
 		packLightToEntry(_Lights[num].Entry, light);
-		_MegaLightTableStaged = false;
 	}
 }
 
@@ -2200,7 +2242,6 @@ void CDriverVulkan::enableLight(uint8 num, bool enable)
 	if (num < 8)
 	{
 		_Lights[num].Enabled = enable;
-		_MegaLightTableStaged = false;
 	}
 }
 
@@ -2220,13 +2261,11 @@ void CDriverVulkan::setLightMapDynamicLight(bool enable, const CLight &light)
 void CDriverVulkan::enableLightTableMode(bool enable)
 {
 	_LightTableMode = enable;
-	_MegaLightTableStaged = false;
 }
 
 void CDriverVulkan::setLightTableSize(uint count)
 {
 	_LightTableSize = std::min(count, 128u);
-	_MegaLightTableStaged = false;
 }
 
 void CDriverVulkan::setLightTableEntry(uint index, const CLight &light)
@@ -2239,7 +2278,6 @@ void CDriverVulkan::setLightTableEntry(uint index, const CLight &light)
 		_LightTable[index].Ambient = light.getAmbiant();
 		_LightTable[index].Enabled = true;
 		packLightToEntry(_LightTable[index].Entry, light);
-		_MegaLightTableStaged = false;
 	}
 }
 
@@ -2259,7 +2297,6 @@ void CDriverVulkan::setLights(const sint16 *tableIndices, const uint8 *factors, 
 		_LightFactors[i] = factors[i];
 	}
 	_ObjectAmbient = ambient;
-	_MegaLightTableStaged = false;
 }
 
 // ---------------------------------------------------------------------------
