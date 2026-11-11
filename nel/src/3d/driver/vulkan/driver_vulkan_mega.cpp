@@ -152,6 +152,33 @@ static const char *s_TexGenAccess[4] = {
 	"nlTexGenMode.x", "nlTexGenMode.y", "nlTexGenMode.z", "nlTexGenMode.w"
 };
 
+/// The engine's glsl3vi snippets are shared with the GL drivers and use
+/// gl_VertexID, which Vulkan GLSL spells gl_VertexIndex. Translate the token
+/// here so the engine source stays portable.
+static std::string translateInsertForVulkan(const char *insertSource)
+{
+	const std::string from = "gl_VertexID";
+	const std::string to = "gl_VertexIndex";
+	std::string out(insertSource);
+	size_t at = 0;
+	while ((at = out.find(from, at)) != std::string::npos)
+	{
+		const bool leftOk = at == 0 || !(isalnum((unsigned char)out[at - 1]) || out[at - 1] == '_');
+		const size_t after = at + from.size();
+		const bool rightOk = after >= out.size() || !(isalnum((unsigned char)out[after]) || out[after] == '_');
+		if (leftOk && rightOk)
+		{
+			out.replace(at, from.size(), to);
+			at += to.size();
+		}
+		else
+		{
+			at = after;
+		}
+	}
+	return out;
+}
+
 static bool identifierIsUsed(const std::string &src, const char *name)
 {
 	const std::string n(name);
@@ -338,11 +365,14 @@ const char *VulkanMaterialHeader =
 // Vertex program
 // ---------------------------------------------------------------------------
 
-void megavkVPGenerate(std::string &result, bool fogOrPpl)
+void megavkVPGenerate(std::string &result, bool fogOrPpl, const char *insertSource)
 {
 	std::stringstream ss;
 	ss << "#version 450" << std::endl;
-	ss << "// Vulkan Megashader Vertex Program (fogOrPpl=" << (int)fogOrPpl << ")" << std::endl;
+	ss << "// Vulkan Megashader Vertex Program (fogOrPpl=" << (int)fogOrPpl;
+	if (insertSource)
+		ss << ", insert";
+	ss << ")" << std::endl;
 	ss << std::endl;
 
 	// NlCamera, NlLightTable, NlModel and NlMaterial blocks are prepended by
@@ -383,6 +413,16 @@ void megavkVPGenerate(std::string &result, bool fogOrPpl)
 	ss << "layout(location = " << VaryingLocationDiffuseColor << ") smooth out vec4 diffuseColor;" << std::endl;
 	ss << "layout(location = " << VaryingLocationSpecularColor << ") smooth out vec4 specularColor;" << std::endl;
 	ss << std::endl;
+
+	// VP insert source: the glsl3vi snippet (UBO blocks are prepended by
+	// assembleMegaSource() from the insert program's UniformBufferFormats).
+	if (insertSource)
+	{
+		ss << "// --- VP Insert ---" << std::endl;
+		ss << translateInsertForVulkan(insertSource) << std::endl;
+		ss << "// --- End VP Insert ---" << std::endl;
+		ss << std::endl;
+	}
 
 	// Light computation function (handles all modes via switch)
 	ss << "void computeLight(int lightMode, vec3 dirOrPos, vec4 colDiff, vec4 colSpec, float shininess," << std::endl;
@@ -430,6 +470,12 @@ void megavkVPGenerate(std::string &result, bool fogOrPpl)
 	ss << "  vec4 nlPos = v" << s_MegaAttribNames[Position] << ";" << std::endl;
 	ss << "  vec3 nlNorm = v" << s_MegaAttribNames[Normal] << ".xyz;" << std::endl;
 	ss << "  vec4 nlTC0 = v" << s_MegaAttribNames[TexCoord0] << ";" << std::endl;
+	ss << "  vec4 nlTangent = v" << s_MegaAttribNames[Tangent] << ";" << std::endl;
+	if (insertSource)
+	{
+		// GPU skinning / MRM geomorph hook, same contract as the GL3 mega VP.
+		ss << "  nlPreTransform(nlPos, nlNorm, nlTC0, nlTangent);" << std::endl;
+	}
 	ss << std::endl;
 
 	ss << "  gl_Position = modelViewProjection * nlPos;" << std::endl;
