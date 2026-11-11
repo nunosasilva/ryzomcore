@@ -325,7 +325,7 @@ const char *VulkanObjectHeader =
 	"    int   nlWorldSpacePosition;\n"
 	"    int   nlNumPerPixelLights;\n"
 	"    int   nlFogEnabled;\n"
-	"    int   _nlObjPad0;\n"
+	"    int   nlRtFlipMask;\n" // V flip for render-target texture stages
 	"};\n";
 
 const char *VulkanMaterialHeader =
@@ -923,11 +923,15 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 				ss << "    tc = texCoord0.st;" << std::endl;
 		}
 
-		// Sample
+		// Sample. Render-target stages are stored top-down and NeL UVs have
+		// V = 0 at the bottom, so flip V for them (same rule as the simple path).
 		if (cube && i == 1)
 			ss << "    texel" << i << " = texture(sampler" << i << ", texCoord" << i << ".stp);" << std::endl;
 		else
+		{
+			ss << "    if ((nlRtFlipMask & " << (1 << i) << ") != 0) tc.y = 1.0 - tc.y;" << std::endl;
 			ss << "    texel" << i << " = texture(sampler" << i << ", tc);" << std::endl;
+		}
 
 		if (i == 1) // Close UserColor else block
 			ss << "    }" << std::endl;
@@ -960,6 +964,7 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "      vec4 t" << i << " = texel" << i << ";" << std::endl;
 		ss << "      if (prevEMBM) {" << std::endl;
 		ss << "        vec2 rtc = ((nlVertexFormat & NL_PP_TEXCOORD" << i << "_FLAG) != 0) ? texCoord" << i << ".st : texCoord0.st;" << std::endl;
+		ss << "        if ((nlRtFlipMask & " << (1 << i) << ") != 0) rtc.y = 1.0 - rtc.y;" << std::endl;
 		if (cube && i == 1)
 			ss << "        t" << i << " = texture(sampler" << i << ", vec3(rtc + embmOfs, 0.0));" << std::endl;
 		else

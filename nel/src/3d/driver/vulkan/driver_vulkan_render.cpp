@@ -46,24 +46,47 @@ namespace NLVULKAN {
 // Shaders
 // ---------------------------------------------------------------------------
 
+// Texture coordinate generation modes, the same values the mega vertex
+// program receives in nlTexGenMode (and the GL3 driver in TexGenModeVP).
+enum TSimpleTexGenMode
+{
+	SimpleTexGenReflectionMap = 0,	// GL_REFLECTION_MAP_ARB (cube texture)
+	SimpleTexGenSphereMap = 1,		// GL_SPHERE_MAP (2D texture)
+	SimpleTexGenObjectLinear = 2,	// GL_OBJECT_LINEAR
+	SimpleTexGenEyeLinear = 3,		// GL_EYE_LINEAR
+};
+
+// std140 layout, matching CDriverVulkan::SSimpleUniforms member for member.
+// Implicit padding is part of the contract (marked with the C offsets).
 static const char *s_UniformBlockGLSL =
 	"layout(set = 0, binding = 4) uniform NlSimple {\n"
-	"    mat4 mvp;\n"
-	"    mat3 normalMatrix;\n"
-	"    vec4 color;\n"
-	"    vec4 diffuse;\n"
-	"    vec4 ambient;\n"
-	"    float alphaRef;\n"
-	"    int flags;\n"
-	"    uint texEnv0;\n"
-	"    uint texEnv1;\n"
-	"    uint texEnv2;\n"
-	"    uint texEnv3;\n"
-	"    uint uvRouting;\n"
-	"    vec4 lightDirOrPos[4];\n"
-	"    vec4 lightDiffuse[4];\n"
-	"    int lightCount;\n"
-	"} nl;\n";
+	"    mat4 mvp;\n"                       // 0
+	"    mat3 normalMatrix;\n"              // 64
+	"    vec4 color;\n"                     // 112
+	"    vec4 diffuse;\n"                   // 128
+	"    vec4 ambient;\n"                   // 144
+	"    float alphaRef;\n"                 // 160
+	"    int flags;\n"                      // 164
+	"    uint texEnv0;\n"                   // 168
+	"    uint texEnv1;\n"                   // 172
+	"    uint texEnv2;\n"                   // 176
+	"    uint texEnv3;\n"                   // 180
+	"    uint uvRouting;\n"                 // 184
+	"    uint rtFlipMask;\n"                // 188 (render targets are stored top-down)
+	"    vec4 lightDirOrPos[4];\n"          // 192
+	"    vec4 lightDiffuse[4];\n"           // 256
+	"    int lightCount;\n"                 // 320
+	"    ivec4 texGenMode;\n"               // 336 (12 bytes of std140 padding above)
+	"    vec4 fogColor;\n"                  // 352
+	"    vec2 fogParams;\n"                 // 368 (start, end)
+	"    float fogDensity;\n"               // 376
+	"    int fogMode;\n"                    // 380
+	"    int fogEnabled;\n"                 // 384
+	"    vec4 texGenPlane[4][4];\n"         // 400 (12 bytes of std140 padding above)
+	"    mat4 texMatrix[4];\n"              // 656
+	"    mat4 specularTexMtx;\n"            // 912
+	"    mat4 modelView;\n"                 // 976
+	"} nl;\n";                              // 1040
 
 static std::string buildVertexShader(uint32 flags)
 {
@@ -88,30 +111,36 @@ static std::string buildVertexShader(uint32 flags)
 	}
 	src += s_UniformBlockGLSL;
 	src += "layout(location = 0) out vec4 vColor;\n";
-	src += "layout(location = 1) out vec2 vUv0;\n";
-	src += "layout(location = 2) out vec2 vUv1;\n";
-	src += "layout(location = 3) out vec2 vUv2;\n";
-	src += "layout(location = 4) out vec2 vUv3;\n";
-	src += "vec2 selectUv(uint routing) {\n";
+	src += "layout(location = 1) out vec4 vUv0;\n";
+	src += "layout(location = 2) out vec4 vUv1;\n";
+	src += "layout(location = 3) out vec4 vUv2;\n";
+	src += "layout(location = 4) out vec4 vUv3;\n";
+	src += "layout(location = 5) out float vFogDepth;\n";
+	src += "vec4 selectUv(uint routing) {\n";
 	bool anyUv = false;
 	for (uint i = 0; i < 4; ++i)
 	{
 		if (flags & (CVertexBuffer::TexCoord0Flag << i))
 		{
 			char line[96];
-			snprintf(line, sizeof(line), "    if (routing == %u) return attrTexCoord%u;\n", i, i);
+			snprintf(line, sizeof(line), "    if (routing == %u) return vec4(attrTexCoord%u, 0.0, 1.0);\n", i, i);
 			src += line;
 			anyUv = true;
 		}
 	}
 	if (!anyUv)
-		src += "    // no vertex buffer texture coordinates: always the white fallback\n";
-	src += "    return vec2(0.0);\n";
+		src += "    // no vertex buffer texture coordinates: texgen or the white fallback\n";
+	src += "    return vec4(0.0, 0.0, 0.0, 1.0);\n";
 	src += "}\n";
 	src += "void main() {\n"
-		"    vec4 pos = nl.mvp * vec4(attrPosition, 1.0);\n"
+		"    vec4 objPos = vec4(attrPosition, 1.0);\n"
+		"    vec4 pos = nl.mvp * objPos;\n"
 		"    pos.z = (pos.z + pos.w) * 0.5;\n"
 		"    gl_Position = pos;\n"
+		"    // Eye-space position: fog depth and the eye-linear texgen modes use it\n"
+		"    // exactly like the mega vertex program (NeL eye space is Y = into screen).\n"
+		"    vec4 eyePos = nl.modelView * objPos;\n"
+		"    vFogDepth = abs(eyePos.y / eyePos.w);\n"
 		"    // Lit materials use the diffuse colour (like the mega vertex program),\n"
 		"    // unlit materials use the material colour.\n"
 		"    vec4 vcol = ((nl.flags & 32) != 0) ? nl.diffuse : nl.color;\n";
@@ -140,10 +169,61 @@ static std::string buildVertexShader(uint32 flags)
 		"        vcol.rgb *= lit;\n"
 		"    }\n";
 	src += "    vColor = vcol;\n";
+	if (hasNormal)
+		src +=
+		"    // Eye-space reflection vector, shared by the reflection/sphere texgen modes.\n"
+		"    vec3 reflR = vec3(0.0, 0.0, -1.0);\n"
+		"    {\n"
+		"        vec3 n = normalize(nl.normalMatrix * attrNormal);\n"
+		"        vec3 u = normalize(eyePos.xyz);\n"
+		"        reflR = reflect(u, n);\n"
+		"    }\n";
+	else
+		src += "    vec3 reflR = vec3(0.0, 0.0, -1.0);\n";
 	for (uint i = 0; i < 4; ++i)
 	{
-		char line[96];
-		snprintf(line, sizeof(line), "    vUv%u = selectUv((nl.uvRouting >> %u) & 0xFu);\n", i, i * 4);
+		char line[2048];
+		snprintf(line, sizeof(line),
+			"    {\n"
+			"        vec4 uv = selectUv((nl.uvRouting >> %u) & 0xFu);\n"
+			"        if (nl.texGenMode[%u] == %d)\n"
+			"        {\n"
+			"            // Object-linear, the shadow receiver's mode: the planes are the\n"
+			"            // GL defaults (object position), then the stage's texture matrix.\n"
+			"            vec4 tg = vec4(dot(nl.texGenPlane[%u][0], objPos), dot(nl.texGenPlane[%u][1], objPos),\n"
+			"                           dot(nl.texGenPlane[%u][2], objPos), dot(nl.texGenPlane[%u][3], objPos));\n"
+			"            uv = nl.texMatrix[%u] * tg;\n"
+			"        }\n"
+			"        else if (nl.texGenMode[%u] == %d)\n"
+			"        {\n"
+			"            vec4 tg = vec4(dot(nl.texGenPlane[%u][0], eyePos), dot(nl.texGenPlane[%u][1], eyePos),\n"
+			"                           dot(nl.texGenPlane[%u][2], eyePos), dot(nl.texGenPlane[%u][3], eyePos));\n"
+			"            uv = nl.texMatrix[%u] * tg;\n"
+			"        }\n"
+			"        else if (nl.texGenMode[%u] == %d)\n"
+			"        {\n"
+			"            float m = 2.0 * sqrt(reflR.x * reflR.x + reflR.y * reflR.y + (reflR.z + 1.0) * (reflR.z + 1.0));\n"
+			"            uv = nl.texMatrix[%u] * vec4(reflR.x / m + 0.5, reflR.y / m + 0.5, 0.0, 1.0);\n"
+			"        }\n"
+			"        else if (nl.texGenMode[%u] == %d)\n"
+			"        {\n"
+			"            uv = nl.specularTexMtx * vec4(reflR, 0.0);\n"
+			"        }\n"
+			"        else\n"
+			"        {\n"
+			"            uv = nl.texMatrix[%u] * uv;\n"
+			"        }\n"
+			"        vUv%u = uv;\n"
+			"    }\n",
+			i * 4,
+			i, (int)SimpleTexGenObjectLinear,
+			i, i, i, i, i,
+			i, (int)SimpleTexGenEyeLinear,
+			i, i, i, i, i,
+			i, (int)SimpleTexGenSphereMap, i,
+			i, (int)SimpleTexGenReflectionMap,
+			i,
+			i);
 		src += line;
 	}
 	src += "}\n";
@@ -156,10 +236,11 @@ static std::string buildVertexShader(uint32 flags)
 static const std::string s_FragmentShader =
 	std::string("#version 450\n")
 	+ "layout(location = 0) in vec4 vColor;\n"
-	"layout(location = 1) in vec2 vUv0;\n"
-	"layout(location = 2) in vec2 vUv1;\n"
-	"layout(location = 3) in vec2 vUv2;\n"
-	"layout(location = 4) in vec2 vUv3;\n"
+	"layout(location = 1) in vec4 vUv0;\n"
+	"layout(location = 2) in vec4 vUv1;\n"
+	"layout(location = 3) in vec4 vUv2;\n"
+	"layout(location = 4) in vec4 vUv3;\n"
+	"layout(location = 5) in float vFogDepth;\n"
 	"layout(binding = 0) uniform sampler2D tex0;\n"
 	"layout(binding = 1) uniform sampler2D tex1;\n"
 	"layout(binding = 2) uniform sampler2D tex2;\n"
@@ -225,13 +306,30 @@ static const std::string s_FragmentShader =
 	"  return vec4(combRGB(opRGB, a0r, a1r, a2r, texel, prev, diff, cnst),\n"
 	"              combA(opA, a0a, a1a, a2a, texel, prev, diff, cnst));\n"
 	"}\n"
+	"// Texgen and the user texture matrices are projective: divide by q.\n"
+	"vec2 uvOf(vec4 uv) { return uv.xy / (uv.w != 0.0 ? uv.w : 1.0); }\n"
+	"// Render targets are stored top-down (Vulkan row 0 is the top), while NeL\n"
+	"// texture coordinates have V = 0 at the bottom: flip V for those stages.\n"
+	"vec2 uvOfStage(vec4 uv, uint flip) { vec2 st = uvOf(uv); return (flip != 0u) ? vec2(st.x, 1.0 - st.y) : st; }\n"
+	"// Same fog equation and eye-space depth as the mega pixel program.\n"
+	"vec4 applyFog(vec4 col) {\n"
+	"    float z = vFogDepth;\n"
+	"    float fogFactor;\n"
+	"    if (nl.fogMode == 1) fogFactor = clamp(exp(-nl.fogDensity * z), 0.0, 1.0);\n"
+	"    else if (nl.fogMode == 2) fogFactor = clamp(exp(-nl.fogDensity * nl.fogDensity * z * z), 0.0, 1.0);\n"
+	"    else fogFactor = clamp((nl.fogParams.y - z) / (nl.fogParams.y - nl.fogParams.x), 0.0, 1.0);\n"
+	"    vec4 fColor = mix(nl.fogColor, col, fogFactor);\n"
+	"    fColor.a = col.a;\n"
+	"    return fColor;\n"
+	"}\n"
 	"void main() {\n"
 	"    vec4 frag = vColor;\n"
-	"    if ((nl.flags & 1) != 0) frag = applyTexEnv(nl.texEnv0, texture(tex0, vUv0), frag, vColor, vColor);\n"
-	"    if ((nl.flags & 2) != 0) frag = applyTexEnv(nl.texEnv1, texture(tex1, vUv1), frag, vColor, vColor);\n"
-	"    if ((nl.flags & 4) != 0) frag = applyTexEnv(nl.texEnv2, texture(tex2, vUv2), frag, vColor, vColor);\n"
-	"    if ((nl.flags & 8) != 0) frag = applyTexEnv(nl.texEnv3, texture(tex3, vUv3), frag, vColor, vColor);\n"
+	"    if ((nl.flags & 1) != 0) frag = applyTexEnv(nl.texEnv0, texture(tex0, uvOfStage(vUv0, nl.rtFlipMask & 1u)), frag, vColor, vColor);\n"
+	"    if ((nl.flags & 2) != 0) frag = applyTexEnv(nl.texEnv1, texture(tex1, uvOfStage(vUv1, nl.rtFlipMask & 2u)), frag, vColor, vColor);\n"
+	"    if ((nl.flags & 4) != 0) frag = applyTexEnv(nl.texEnv2, texture(tex2, uvOfStage(vUv2, nl.rtFlipMask & 4u)), frag, vColor, vColor);\n"
+	"    if ((nl.flags & 8) != 0) frag = applyTexEnv(nl.texEnv3, texture(tex3, uvOfStage(vUv3, nl.rtFlipMask & 8u)), frag, vColor, vColor);\n"
 	"    if ((nl.flags & 16) != 0 && frag.a < nl.alphaRef) discard;\n"
+	"    if (nl.fogEnabled != 0) frag = applyFog(frag);\n"
 	"    fragColor = frag;\n"
 	"}\n";
 
@@ -473,7 +571,22 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 		{
 			vertexShader = getMegaVertexShader();
 		}
-		fragmentShader = getMegaPixelShader(key.MegaCube != 0, key.MegaSpecular != 0);
+		if (key.UserPP != 0)
+		{
+			// Active user pixel program (FXAA): it replaces the mega pixel
+			// stage and reads the mega descriptor set for its UBO and samplers.
+			std::map<uint32, VkShaderModule>::iterator ppIt = _UserPPShaders.find(key.UserPP);
+			fragmentShader = ppIt != _UserPPShaders.end() ? ppIt->second : VK_NULL_HANDLE;
+			if (fragmentShader == VK_NULL_HANDLE)
+			{
+				nlwarning("Vulkan: user pixel program %u is no longer compiled", key.UserPP);
+				return VK_NULL_HANDLE;
+			}
+		}
+		else
+		{
+			fragmentShader = getMegaPixelShader(key.MegaCube != 0, key.MegaSpecular != 0);
+		}
 		pipelineLayout = _MegaPipelineLayout;
 	}
 	else
@@ -993,6 +1106,9 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 	_MaterialLightedVertexColor = (mat.getFlags() & IDRV_MAT_LIGHTED_VERTEX_COLOR) != 0;
 	_MaterialAlphaTest = (mat.getFlags() & IDRV_MAT_ALPHA_TEST) != 0;
 	_MaterialAlphaRef = mat.getAlphaTestThreshold();
+	// Same conversion as the GL3 driver: getZBias() is in NDC units, the
+	// viewport depth range is what actually moves the geometry.
+	_MaterialZBias = mat.getZBias() * _OODeltaZ;
 	_MaterialShader = mat.getShader();
 	_MaterialColor = mat.getColor();
 	// Lightmapped and specular materials ignore the material colour: the
@@ -1022,6 +1138,10 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 bool CDriverVulkan::setupMaterial(CMaterial &mat)
 {
 	updateMaterialState(mat);
+	// The depth range is part of the dynamic viewport state in Vulkan. It is
+	// re-issued for every material because the material zBias changes it.
+	if (_FrameOpen)
+		applyDepthRange(_CommandBuffers[_FrameIndex]);
 	return true;
 }
 
@@ -1237,6 +1357,22 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 		u.UvRouting |= ((uint32)(route & 0xF)) << (stage * 4);
 	}
 
+	// A render target image is sampled with V = 0 at the top, while NeL texture
+	// coordinates put V = 0 at the bottom. Every stage bound to a target is
+	// flipped in the pixel shader (the bloom passes and the final scene blit
+	// would otherwise be upside down).
+	u.RtFlipMask = 0;
+	for (uint stage = 0; stage < 4; ++stage)
+	{
+		const ITexture *texture = _CurrentMaterial->getTexture(stage);
+		// Only NeL offscreen textures. CTextureMem render targets (shadow maps
+		// and their blur textures) go through the shadow map manager's copy
+		// pass, which already accounts for the GL bottom-up convention; flipping
+		// them here moves the projected shadow off the receiver.
+		if (texture && texture->getRenderTarget() && texture->isOffscreenTexture())
+			u.RtFlipMask |= (1u << stage);
+	}
+
 	// Resolve up to four lights for this object (std140: separate vec4 arrays).
 	uint lightCount = 0;
 	if (_LightTableMode && _LightCount > 0)
@@ -1286,8 +1422,62 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	}
 	u.LightCount = (int)lightCount;
 
+	// Eye-space position (texgen, fog) and the reflection lookup matrix.
+	memcpy(u.ModelView, _ModelViewMatrix.get(), sizeof(u.ModelView));
+	memcpy(u.SpecularTexMtx, stageMegaCameraUBO().specularTexMtx, sizeof(u.SpecularTexMtx));
+
+	// Texture coordinate generation and user texture matrices. The shadow
+	// receiver is the main user of object-space generation: it draws meshes
+	// with no vertex UVs and projects the shadow map through a user matrix.
+	const uint uintTexMatMask = (uint)(_CurrentMaterial->getFlags() & IDRV_MAT_USER_TEX_MAT_ALL) >> IDRV_MAT_USER_TEX_FIRST_BIT;
+	static const float identityPlane[4][4] =
+	{
+		{ 1.f, 0.f, 0.f, 0.f },
+		{ 0.f, 1.f, 0.f, 0.f },
+		{ 0.f, 0.f, 1.f, 0.f },
+		{ 0.f, 0.f, 0.f, 1.f },
+	};
+	for (uint stage = 0; stage < 4; ++stage)
+	{
+		sint32 texGenMode = -1;
+		const ITexture *texture = _CurrentMaterial->getTexture(stage);
+		if (texture && _CurrentMaterial->getTexCoordGen(stage))
+		{
+			switch (_CurrentMaterial->getTexCoordGenMode(stage))
+			{
+			case CMaterial::TexCoordGenReflect:
+				texGenMode = texture->isTextureCube() ? SimpleTexGenReflectionMap : SimpleTexGenSphereMap;
+				break;
+			case CMaterial::TexCoordGenObjectSpace:
+				texGenMode = SimpleTexGenObjectLinear;
+				break;
+			case CMaterial::TexCoordGenEyeSpace:
+				texGenMode = SimpleTexGenEyeLinear;
+				break;
+			}
+		}
+		u.TexGenMode[stage] = texGenMode;
+		memcpy(u.TexGenPlane[stage], identityPlane, sizeof(identityPlane));
+		if (uintTexMatMask & (1u << stage))
+			memcpy(u.TexMatrix[stage], _CurrentMaterial->getUserTexMat(stage).get(), 16 * sizeof(float));
+		else
+			memcpy(u.TexMatrix[stage], CMatrix::Identity.get(), 16 * sizeof(float));
+	}
+
+	// Fog, with the same additive-blend black override as the mega path.
+	CRGBA fogColor = _FogColorOverrideBlack ? CRGBA(0, 0, 0, 0) : _FogColor;
+	u.FogColor[0] = fogColor.R / 255.f;
+	u.FogColor[1] = fogColor.G / 255.f;
+	u.FogColor[2] = fogColor.B / 255.f;
+	u.FogColor[3] = fogColor.A / 255.f;
+	u.FogParams[0] = _FogStart;
+	u.FogParams[1] = _FogEnd;
+	u.FogDensity = _FogDensity;
+	u.FogMode = (sint32)_FogMode;
+	u.FogEnabled = _FogEnabled ? 1 : 0;
+
 	// Upload into the per-frame uniform ring.
-	const uint32 slot = 512;
+	const uint32 slot = (sizeof(u) + 15) & ~15u;
 	if (_UniformRingOffset + slot > _UniformRingSize)
 	{
 		if (!growUniformRing(slot))
@@ -1884,6 +2074,8 @@ void CDriverVulkan::setFrustum(float left, float right, float bottom, float top,
 		_GLProjMat.frustum(left, right, bottom, top, znear, zfar);
 	else
 		_GLProjMat.ortho(left, right, bottom, top, znear, zfar);
+	if (zfar != znear)
+		_OODeltaZ = 1.f / (zfar - znear);
 	_MegaCameraDirty = true;
 }
 
@@ -1926,21 +2118,9 @@ CMatrix CDriverVulkan::getViewMatrix() const
 void CDriverVulkan::setupViewport(const CViewport &viewport)
 {
 	_Viewport = viewport;
-	// NeL viewports are normalized (0..1) relative to the render target.
-	VkExtent2D extent = currentTargetExtent();
-	float x = viewport.getX() * extent.width;
-	float y = viewport.getY() * extent.height;
-	float w = viewport.getWidth() * extent.width;
-	float h = viewport.getHeight() * extent.height;
 	if (_FrameOpen)
 	{
-		VkViewport vk;
-		vk.x = x;
-		vk.y = extent.height - y;
-		vk.width = w;
-		vk.height = -h; // GL-like bottom-up
-		vk.minDepth = 0.f;
-		vk.maxDepth = 1.f;
+		VkViewport vk = computeViewport(currentTargetExtent());
 		vkCmdSetViewport(_CommandBuffers[_FrameIndex], 0, 1, &vk);
 	}
 }
