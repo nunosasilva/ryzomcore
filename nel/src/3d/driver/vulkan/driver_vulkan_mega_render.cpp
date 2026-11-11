@@ -771,6 +771,9 @@ bool CDriverVulkan::growUniformRing(uint32 required)
 	_UniformRingMapped = mapped;
 	_UniformRingSize = newSize;
 	_UniformRingOffset = 0;
+	// Cached user-block offsets referred to the old buffer.
+	memset(_UserUBStageCache, 0, sizeof(_UserUBStageCache));
+	memset(_UserUBStageSize, 0, sizeof(_UserUBStageSize));
 	nlinfo("Vulkan: uniform ring grown to %u bytes", newSize);
 	return true;
 }
