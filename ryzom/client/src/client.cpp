@@ -172,11 +172,10 @@ int main(int argc, char **argv)
 
 	INelContext::getInstance().setWindowedApplication(true);
 
-#ifndef NL_DEBUG
+	// Keep stdout for warnings, errors and asserts. The debug and info streams
+	// are written to client.log by the file displayer added in initLog().
 	INelContext::getInstance().getDebugLog()->removeDisplayer("DEFAULT_SD");
 	INelContext::getInstance().getInfoLog()->removeDisplayer("DEFAULT_SD");
-	INelContext::getInstance().getWarningLog()->removeDisplayer("DEFAULT_SD");
-#endif // NL_DEBUG
 
 	Args.setVersion(getDisplayVersion());
 	Args.setDescription("Ryzom client");
