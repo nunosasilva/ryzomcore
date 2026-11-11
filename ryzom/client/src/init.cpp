@@ -907,6 +907,60 @@ void initLog()
 }
 
 //---------------------------------------------------
+// Driver selection
+//---------------------------------------------------
+
+static const char *getDriverName(UDriver::TDriver driver)
+{
+	switch (driver)
+	{
+		case UDriver::Direct3d: return "Direct3D";
+		case UDriver::OpenGl: return "OpenGL";
+		case UDriver::OpenGlEs: return "OpenGLES";
+		case UDriver::OpenGl3: return "OpenGL3";
+		case UDriver::OpenGlEs3: return "OpenGLES3";
+		case UDriver::Vulkan: return "Vulkan";
+		default: return "unknown";
+	}
+}
+
+// Candidate drivers for Driver3D = "Auto", best first. Vulkan is the
+// renderer this client targets, OpenGL3 is the previous default on 64-bit
+// builds, and the legacy OpenGL driver is the last resort.
+static void getAutoDriverCandidates(std::vector<UDriver::TDriver> &candidates)
+{
+#ifdef NL_VULKAN_AVAILABLE
+	candidates.push_back(UDriver::Vulkan);
+#endif
+#if INTPTR_MAX == INT64_MAX
+#	ifdef NL_OPENGL3_AVAILABLE
+	candidates.push_back(UDriver::OpenGl3);
+#	endif
+#endif
+#if defined(NL_OS_WINDOWS) && defined(NL_DIRECT3D_AVAILABLE)
+	candidates.push_back(UDriver::Direct3d);
+#endif
+#ifdef NL_OPENGL_AVAILABLE
+	candidates.push_back(UDriver::OpenGl);
+#endif
+}
+
+// Create a driver, turning the exceptions of the shared-driver path (missing
+// or incompatible library) into a NULL result so Auto can try the next one.
+static UDriver *createDriverSafe(uintptr_t icon, UDriver::TDriver driver)
+{
+	try
+	{
+		return UDriver::createDriver(icon, driver);
+	}
+	catch (const std::exception &e)
+	{
+		nlwarning("3D: cannot create the %s driver: %s", getDriverName(driver), e.what());
+	}
+	return NULL;
+}
+
+//---------------------------------------------------
 // prelogInit :
 // Initialize the application before login
 // if the init fails, call nlerror
@@ -1054,6 +1108,7 @@ void prelogInit()
 		ProgressBar.newMessage ( ClientCfg.buildLoadingString(nmsg) );
 
 		UDriver::TDriver driver = UDriver::OpenGl;
+		std::vector<UDriver::TDriver> autoDrivers;
 
 #ifdef NL_OS_WINDOWS
 		uintptr_t icon = (uintptr_t)LoadIcon(HInstance, MAKEINTRESOURCE(IDI_MAIN_ICON));
@@ -1064,13 +1119,9 @@ void prelogInit()
 		switch(ClientCfg.Driver3D)
 		{
 			case CClientConfig::DrvAuto:
-#if INTPTR_MAX == INT64_MAX && defined(NL_OPENGL3_AVAILABLE)
-				driver = UDriver::OpenGl3;
-#elif defined(NL_OS_WINDOWS) && defined(NL_DIRECT3D_AVAILABLE)
-				driver = UDriver::Direct3d;
-#else
-				driver = UDriver::OpenGl;
-#endif
+				getAutoDriverCandidates(autoDrivers);
+				if (!autoDrivers.empty())
+					driver = autoDrivers[0];
 			break;
 #ifdef NL_OS_WINDOWS
 			case CClientConfig::Direct3D:
@@ -1093,7 +1144,21 @@ void prelogInit()
 			break;
 		}
 
-		Driver = UDriver::createDriver(icon, driver);
+		uint autoDriverIndex = 0;
+		if (ClientCfg.Driver3D == CClientConfig::DrvAuto)
+		{
+			Driver = NULL;
+			for (uint i = 0; i < autoDrivers.size() && Driver == NULL; ++i)
+			{
+				Driver = createDriverSafe(icon, autoDrivers[i]);
+				if (Driver != NULL)
+				{
+					autoDriverIndex = i;
+				}
+			}
+		}
+		else
+			Driver = UDriver::createDriver(icon, driver);
 
 		if(Driver == NULL)
 		{
@@ -1172,7 +1237,31 @@ void prelogInit()
 		}
 
 		// Set the mode of the window.
-		if (!Driver->setDisplay (mode, false))
+		bool displayCreated = Driver->setDisplay (mode, false);
+		if (!displayCreated && ClientCfg.Driver3D == CClientConfig::DrvAuto)
+		{
+			// The driver exists but cannot drive the display (for example
+			// Vulkan on a machine without a usable Vulkan device): try the
+			// next compiled-in driver instead of giving up.
+			for (uint i = autoDriverIndex + 1; i < autoDrivers.size() && !displayCreated; ++i)
+			{
+				UDriver *fallback = createDriverSafe(icon, autoDrivers[i]);
+				if (fallback == NULL)
+					continue;
+				if (fallback->setDisplay(mode, false))
+				{
+					nlwarning("3D: the %s driver could not create the display, using %s",
+						getDriverName(autoDrivers[autoDriverIndex]), getDriverName(autoDrivers[i]));
+					delete Driver;
+					Driver = fallback;
+					autoDriverIndex = i;
+					displayCreated = true;
+				}
+				else
+					delete fallback;
+			}
+		}
+		if (!displayCreated)
 		{
 			string msg;
 			if (mode.Windowed)
@@ -1190,6 +1279,9 @@ void prelogInit()
 			// ExitClientError() call exit() so the code after is never called
 			return;
 		}
+
+		nlinfo("3D: display created with the %s driver",
+			getDriverName(ClientCfg.Driver3D == CClientConfig::DrvAuto ? autoDrivers[autoDriverIndex] : driver));
 
 		// Enable or disable VSync
 		if (ClientCfg.WaitVBL)
