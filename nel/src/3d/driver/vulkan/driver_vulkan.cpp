@@ -220,6 +220,7 @@ CDriverVulkan::CDriverVulkan()
 	_MaterialAlphaRef = 0.f;
 	_MaterialTwoSided = false;
 	_MaterialShader = CMaterial::Normal;
+	_ForceDXTCCompression = false;
 	_FogColorOverrideBlack = false;
 	_TexturesDirty = false;
 	_ClearColorMask = 0xF;
@@ -263,7 +264,6 @@ CDriverVulkan::CDriverVulkan()
 	_MegaDescriptorSetLayout = VK_NULL_HANDLE;
 	_MegaPipelineLayout = VK_NULL_HANDLE;
 	_MegaVertexShader = VK_NULL_HANDLE;
-	_MegaLightTableStaged = false;
 	_MegaUserBuffer = VK_NULL_HANDLE;
 	_MegaUserBufferMemory = VK_NULL_HANDLE;
 	_MegaCameraDirty = true;
@@ -293,13 +293,6 @@ CDriverVulkan::CDriverVulkan()
 	_StagingRingOffset = 0;
 	_StagingRingFrameBase = 0;
 	_StagingRingHalf = 0;
-	for (uint i = 0; i < 2; ++i)
-	{
-		_MegaLightTableBuffer[i] = VK_NULL_HANDLE;
-		_MegaLightTableMemory[i] = VK_NULL_HANDLE;
-		_MegaLightTableMapped[i] = NULL;
-	}
-
 
 	// X right, Y into the screen, Z up (NeL) -> X right, Y up, Z back (graphics eye space).
 	{
@@ -1577,7 +1570,6 @@ bool CDriverVulkan::beginFrame()
 	// Cached user-block offsets point into this frame's half of the ring.
 	memset(_UserUBStageCache, 0, sizeof(_UserUBStageCache));
 	memset(_UserUBStageSize, 0, sizeof(_UserUBStageSize));
-	_MegaLightTableStaged = false;
 	if (_SwapBufferCounter == 0)
 	{
 		const char *dumpFrame = getenv("NLVK_SCREENSHOT_FRAME");

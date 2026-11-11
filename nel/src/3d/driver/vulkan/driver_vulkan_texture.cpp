@@ -360,6 +360,142 @@ static uint32 compressedBlockBytes(VkFormat format)
 	}
 }
 
+/// Bytes of the BC3 image of a mip level (4x4 blocks, 16 bytes each).
+static uint32 bc3DataSize(uint32 width, uint32 height)
+{
+	return ((width + 3) / 4) * ((height + 3) / 4) * 16;
+}
+
+/// Pack an 8-bit RGB triple into a 565 endpoint.
+static uint16 toRGB565(uint32 r, uint32 g, uint32 b)
+{
+	return (uint16)(((r * 31 + 127) / 255) << 11 | ((g * 63 + 127) / 255) << 5 | ((b * 31 + 127) / 255));
+}
+
+/// Encode one 4x4 RGBA block as BC3 (DXT5): an 8-byte interpolation alpha
+/// block followed by an 8-byte colour block. Edge blocks replicate the last
+/// row/column, which is what the GPU reads back for a partial block.
+///
+/// The endpoints are the per-block bounding box (min/max per channel), the
+/// classic simple encoder. It is not the highest-quality DXT encoder, but it
+/// is deterministic, symmetric and good enough for the ForceDXTC request:
+/// the client asks for a memory reduction, not for offline DDS quality.
+static void compressBlockBC3(const uint8 *src, uint32 srcStride, uint32 srcWidth, uint32 srcHeight,
+	uint32 blockX, uint32 blockY, uint8 *dst)
+{
+	uint8 block[16 * 4];
+	for (uint y = 0; y < 4; ++y)
+	{
+		const uint32 sy = std::min(blockY + y, srcHeight - 1);
+		const uint8 *row = src + (size_t)sy * srcStride;
+		for (uint x = 0; x < 4; ++x)
+		{
+			const uint32 sx = std::min(blockX + x, srcWidth - 1);
+			memcpy(block + (y * 4 + x) * 4, row + (size_t)sx * 4, 4);
+		}
+	}
+
+	// --- Alpha: 8-value palette between the block minimum and maximum ---
+	uint32 minA = 255, maxA = 0;
+	for (uint i = 0; i < 16; ++i)
+	{
+		const uint32 a = block[i * 4 + 3];
+		minA = std::min(minA, a);
+		maxA = std::max(maxA, a);
+	}
+	uint8 alpha[8];
+	alpha[0] = (uint8)maxA;
+	alpha[1] = (uint8)minA;
+	if (maxA != minA)
+		for (uint i = 2; i < 8; ++i)
+			alpha[i] = (uint8)(((8 - i) * maxA + (i - 1) * minA) / 7);
+	else
+		for (uint i = 2; i < 8; ++i)
+			alpha[i] = (uint8)maxA;
+
+	dst[0] = alpha[0];
+	dst[1] = alpha[1];
+	uint64 alphaBits = 0;
+	for (uint i = 0; i < 16; ++i)
+	{
+		const uint8 a = block[i * 4 + 3];
+		uint32 best = 0;
+		uint32 bestDist = 0xFFFFFFFFu;
+		for (uint p = 0; p < 8; ++p)
+		{
+			const uint32 d = (uint32)abs((int)a - (int)alpha[p]);
+			if (d < bestDist) { bestDist = d; best = p; }
+		}
+		alphaBits |= (uint64)best << (i * 3);
+	}
+	for (uint i = 0; i < 6; ++i)
+		dst[2 + i] = (uint8)(alphaBits >> (i * 8));
+
+	// --- Colour: bounding box endpoints in 565, 4-value mode ---
+	uint32 minR = 255, minG = 255, minB = 255;
+	uint32 maxR = 0, maxG = 0, maxB = 0;
+	for (uint i = 0; i < 16; ++i)
+	{
+		const uint8 *p = block + i * 4;
+		minR = std::min(minR, (uint32)p[0]); maxR = std::max(maxR, (uint32)p[0]);
+		minG = std::min(minG, (uint32)p[1]); maxG = std::max(maxG, (uint32)p[1]);
+		minB = std::min(minB, (uint32)p[2]); maxB = std::max(maxB, (uint32)p[2]);
+	}
+	uint16 c0 = toRGB565(maxR, maxG, maxB);
+	uint16 c1 = toRGB565(minR, minG, minB);
+	if (c0 < c1)
+		std::swap(c0, c1); // 4-colour mode requires c0 > c1
+
+	// Expand the endpoints back to 8 bits, then the two interpolated colours.
+	uint32 pal[4][3];
+	const uint32 r0 = ((c0 >> 11) & 0x1F) * 255 / 31, g0 = ((c0 >> 5) & 0x3F) * 255 / 63, b0 = (c0 & 0x1F) * 255 / 31;
+	const uint32 r1 = ((c1 >> 11) & 0x1F) * 255 / 31, g1 = ((c1 >> 5) & 0x3F) * 255 / 63, b1 = (c1 & 0x1F) * 255 / 31;
+	pal[0][0] = r0; pal[0][1] = g0; pal[0][2] = b0;
+	pal[1][0] = r1; pal[1][1] = g1; pal[1][2] = b1;
+	pal[2][0] = (2 * r0 + r1) / 3; pal[2][1] = (2 * g0 + g1) / 3; pal[2][2] = (2 * b0 + b1) / 3;
+	pal[3][0] = (r0 + 2 * r1) / 3; pal[3][1] = (g0 + 2 * g1) / 3; pal[3][2] = (b0 + 2 * b1) / 3;
+
+	dst[8] = (uint8)c0;
+	dst[9] = (uint8)(c0 >> 8);
+	dst[10] = (uint8)c1;
+	dst[11] = (uint8)(c1 >> 8);
+	uint32 colorBits = 0;
+	for (uint i = 0; i < 16; ++i)
+	{
+		const uint8 *p = block + i * 4;
+		uint32 best = 0;
+		uint32 bestDist = 0xFFFFFFFFu;
+		for (uint q = 0; q < 4; ++q)
+		{
+			const int dr = (int)p[0] - (int)pal[q][0];
+			const int dg = (int)p[1] - (int)pal[q][1];
+			const int db = (int)p[2] - (int)pal[q][2];
+			const uint32 d = (uint32)(dr * dr + dg * dg + db * db);
+			if (d < bestDist) { bestDist = d; best = q; }
+		}
+		colorBits |= best << (i * 2);
+	}
+	dst[12] = (uint8)colorBits;
+	dst[13] = (uint8)(colorBits >> 8);
+	dst[14] = (uint8)(colorBits >> 16);
+	dst[15] = (uint8)(colorBits >> 24);
+}
+
+/// Compress a whole RGBA mip level to BC3.
+static void compressRGBAtoBC3(const uint8 *src, uint32 width, uint32 height, uint8 *dst)
+{
+	const uint32 blocksX = (width + 3) / 4;
+	const uint32 blocksY = (height + 3) / 4;
+	for (uint by = 0; by < blocksY; ++by)
+	{
+		for (uint bx = 0; bx < blocksX; ++bx)
+		{
+			compressBlockBC3(src, width * 4, width, height, bx * 4, by * 4,
+				dst + ((size_t)by * blocksX + bx) * 16);
+		}
+	}
+}
+
 /// Bytes per texel of an uncompressed CBitmap format, or 0 for a format that
 /// has to be converted before it can be read (the compressed ones).
 static uint sourcePixelSize(CBitmap::TType format)
@@ -488,12 +624,26 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	VkFormat format = VK_FORMAT_UNDEFINED;
 	if (!renderTarget && tex.getUploadFormat() == ITexture::Auto)
 		format = compressedTextureFormat(tex.getPixelFormat());
-	const bool compressed = (format != VK_FORMAT_UNDEFINED);
+	bool compressed = (format != VK_FORMAT_UNDEFINED);
+
+	// ForceDXTCCompression: the client asks for runtime DXT compression of
+	// uncompressed RGBA textures (client.cfg ForceDXTC). The engine has no
+	// RGBA->DXT compressor (CBitmap::convertToDXTC5 only rewrites DXT1 data),
+	// so the driver encodes BC3 here when the device can sample BC images.
+	bool compressFromRGBA = false;
+	if (!renderTarget && !compressed && _ForceDXTCCompression && _SupportsBC &&
+		tex.getUploadFormat() == ITexture::Auto && tex.getPixelFormat() == CBitmap::RGBA &&
+		tex.allowDegradation())
+	{
+		format = VK_FORMAT_BC3_UNORM_BLOCK;
+		compressed = true;
+		compressFromRGBA = true;
+	}
 
 	uint mipCount = 1;
 	if (!renderTarget && tex.mipMapOn())
 	{
-		if (compressed)
+		if (compressed && !compressFromRGBA)
 		{
 			// DDS files ship their mip chain; CBitmap::buildMipMaps() only
 			// works on RGBA data and would decompress the whole texture.
@@ -519,7 +669,10 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 
 	out.HasAlpha = true;
 	out.Compressed = compressed;
+	out.CompressFromRGBA = compressFromRGBA;
 	out.SourceFormat = tex.getPixelFormat();
+	if (compressFromRGBA)
+		nlinfo("Vulkan: ForceDXTC: compressing RGBA texture %ux%u (%u mips) to BC3", width, height, mipCount);
 
 	if (renderTarget)
 		return true;
@@ -777,6 +930,7 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out)
 
 	// Compressed textures are copied straight from the CBitmap: its mip chain
 	// is already DXT data, so nothing is converted or generated on the CPU.
+	// ForceDXTC textures are compressed from their RGBA mips in the loop below.
 	if (!out.Compressed && !prepareTexturePixels(tex))
 		return false;
 
@@ -784,7 +938,9 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out)
 	VkDeviceSize totalSize = 0;
 	for (uint i = 0; i < mipCount; ++i)
 	{
-		if (out.Compressed)
+		if (out.CompressFromRGBA)
+			totalSize += bc3DataSize(tex.getWidth(i), tex.getHeight(i));
+		else if (out.Compressed)
 			totalSize += tex.getPixels(i).size();
 		else
 			totalSize += (VkDeviceSize)tex.getWidth(i) * tex.getHeight(i) * 4;
@@ -809,7 +965,12 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out)
 		uint w = tex.getWidth(i);
 		uint h = tex.getHeight(i);
 		VkDeviceSize size;
-		if (out.Compressed)
+		if (out.CompressFromRGBA)
+		{
+			size = bc3DataSize(w, h);
+			compressRGBAtoBC3((const uint8 *)tex.getPixels(i).getPtr(), w, h, (uint8 *)staging.Mapped + offset);
+		}
+		else if (out.Compressed)
 		{
 			size = tex.getPixels(i).size();
 			memcpy((uint8 *)staging.Mapped + offset, tex.getPixels(i).getPtr(), (size_t)size);
@@ -848,6 +1009,11 @@ bool CDriverVulkan::uploadTextureRegion(ITexture &tex, CTextureVulkan &out, cons
 {
 	if (out.Image == VK_NULL_HANDLE || tex.getWidth(mipLevel) == 0 || tex.getHeight(mipLevel) == 0)
 		return false;
+
+	// A ForceDXTC texture is RGBA on the CPU and BC3 on the GPU: a rectangle
+	// would have to be recompressed in place, so just re-upload every mip.
+	if (out.CompressFromRGBA)
+		return uploadTexturePixels(tex, out);
 
 	STextureCopy copy;
 	copy.Image = out.Image;
