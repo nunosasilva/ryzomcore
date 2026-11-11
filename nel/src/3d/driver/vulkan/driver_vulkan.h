@@ -742,7 +742,10 @@ private:
 	std::map<ITexture *, CTextureVulkan>	_TexturesVulkan;
 	std::vector<CTextureVulkan>				_PendingTextureDestroy;
 	std::vector<std::pair<VkBuffer, VkDeviceMemory> >	_PendingBufferDestroy;
-	bool					uploadTexturePixels(ITexture &tex, CTextureVulkan &out, CBitmap::TType sourceFormat);
+	bool					uploadTexturePixels(ITexture &tex, CTextureVulkan &out);
+	/// Upload a sub-rectangle of one mip level, leaving the rest of the image
+	/// intact (used by touchRect() and uploadTexture()).
+	bool					uploadTextureRegion(ITexture &tex, CTextureVulkan &out, const NLMISC::CRect &rect, uint mipLevel);
 	/// stretchRect() implementation: scaled image blit between two NeL textures.
 	bool					stretchRectImage(ITexture *srcText, NLMISC::CRect &srcRect, ITexture *destText, NLMISC::CRect &destRect);
 	std::map<uint32, std::vector<VkVertexInputAttributeDescription> >	_VertexLayouts;

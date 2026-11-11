@@ -772,3 +772,103 @@ Known limitations:
 - The mega path's sky/backdrop still differs from the simple path (the clear
   colour shows where the simple path draws the sky texture); this predates
   this branch.
+
+## Vulkan text corruption and colour parity (branch `vulkan-text-color`)
+
+Started from `e407be0f8`. Two user-reported problems: garbled/missing text
+everywhere, and every texture a little brighter than in the OpenGL client.
+
+### Text: the driver was converting CTextureFont's Alpha atlas in place
+
+`uploadTextureVulkan()` / `uploadTexturePixels()` called
+`tex.convertToType(CBitmap::RGBA)` on every non-RGBA texture. `ITexture`
+derives from `CBitmap`, so this rewrites the *source* bitmap: a
+`CTextureFont` atlas (1 coverage byte per texel, `_Data[0][y*W+x]`) became a
+4-byte RGBA buffer. `CTextureFont::copyGlyphBitmap()` / `repackAtlas()` /
+`clearAtlas()` keep writing 1-byte coverage at 1-byte atlas offsets, so from
+the first upload on every newly rendered glyph landed at a quarter of its
+intended offset and in the wrong channels (R/G/B of neighbouring texels).
+Strings rendered before the first upload looked fine; anything rendered later
+(typed login name, chat, HUD updates) was garbled. That is why it "worked
+partially".
+
+Fix in `driver_vulkan_texture.cpp`:
+
+- New `prepareTexturePixels()` only decompresses *compressed* textures in
+  place (DXTC file data, one-time). Alpha / Luminance / AlphaLuminance / RGBA
+  are now read where they are and expanded into the staging buffer by
+  `convertRowToRGBA()`; the source texture is never mutated.
+- `uploadTextureRegion()` uploads a clipped sub-rect of one mip level,
+  preserving the rest of the image (`oldLayout` = the image's actual layout,
+  `imageOffset` = rect origin).
+- `setupTextureEx()` no longer re-uploads the whole texture on every
+  `touchRect()`: a touched non-mipmapped texture uploads only
+  `tex._ListInvalidRect`; a full invalidation (or a mipmapped texture, whose
+  mip chain is rebuilt from the whole bitmap) still does a full upload. This
+  is the font atlas hot path (one glyph tile at a time), and it also removes
+  the stale-overwrite risk of the old full re-upload.
+- `uploadTexture()` (shape bank / async texture manager) now creates the image
+  without pixels and uploads exactly the requested rect and mip, instead of
+  re-uploading the unsent rest of the bitmap.
+
+Texture lifetime was checked but is NOT the cause here: the font atlas lives
+in `CFontManager` for the whole run. The driver still has no texture free
+path (`_TexturesVulkan` is only cleared at device shutdown), so freed
+`ITexture`s leak their VkImage and a new texture allocated at a recycled
+address can inherit a cached image. That is a separate piece of work; the
+font texture is not affected.
+
+### Colour: the swapchain was an _SRGB surface
+
+The surface-format choice took the first `B8G8R8A8_UNORM` **or**
+`B8G8R8A8_SRGB`. Mesa offers the sRGB variant first, so the swapchain was
+`sRGB` and the hardware applied the sRGB transfer function to shader output
+that was already in display space (GL3 renders into a non-sRGB default
+framebuffer and never enables `GL_FRAMEBUFFER_SRGB`). `createSwapchain()` now
+prefers `B8G8R8A8_UNORM`, falls back to `_SRGB` with a warning, and logs the
+chosen format. Textures are still uploaded as `R8G8B8A8_UNORM` (GL3 uses
+`GL_RGBA8`), so the whole path now matches GL3.
+
+Pixel proof on the same UI element (login form CONNECT button fill,
+1280x800): Vulkan before = RGB(65,143,65), Vulkan after = RGB(13,70,13),
+GL3 = RGB(13,70,13). 143 is exactly the sRGB encode of 70 and 65 of 13, i.e.
+the old Vulkan image was the GL3 image with one extra sRGB encode. The login
+form's flat UI colours are pixel-identical between the fixed Vulkan driver
+and GL3 (the five most common fill colours of the CONNECT button match
+exactly); the remaining form-area difference is the 3D backdrop around it.
+
+### Verification
+
+Build: `ninja -C build-vulkan -j 4 ryzom_client_dev lib/libnel_drv_vulkan.so`
+clean. `NLVK_VALIDATION=1` on the login screen and on the "already online"
+error screen: only the pre-existing gamescope WSI
+`VkSwapchainPresentModeInfoKHR` warnings and the pre-existing
+`VK_EXT_surface_maintenance1` warning; no image/upload/texture VUID.
+
+Images (`/tmp/opencode/textcolor/`):
+
+- `before-login.png` (old driver) vs `after-login2.png` (fixed): same login
+  screen. `before-login-user.png` / `after-login-user.png` are 4x crops of
+  the login field: before, `mats007` is overlapped/garbled; after it is
+  clean. Other labels happened to render before the first upload, which is
+  why they looked fine in the old build.
+- `gl3-form-host.png`: the GL3 driver on the same login form, the colour
+  reference.
+- `vk-ingame2.ppm.3000.png`: fixed driver, multi-line wrapped
+  "account is already in online state" UI text, fully readable. This run was
+  meant to reach the in-game chat/HUD, but the live account was taken by
+  another agent at the same time ("You were disconnected by the server"),
+  and the replacement run hit the 30 s online-state error. In-game
+  chat/HUD verification is therefore still open; the same font atlas and
+  material are used by the login UI and the HUD.
+
+### Remaining
+
+- In-game chat/HUD screenshot with the fixed driver (blocked by the live
+  account collision; needs a dedicated account).
+- Texture lifetime: implement per-texture driver objects through
+  `ITexture::TextureDrvShare` so `~ITexture` frees the VkImage and the cache
+  entry. Not the text bug, but the leak/stale-reuse is real.
+- The Vulkan login form has a black backdrop where GL3 shows the 3D login
+  scene (ring, logo, turtle). Pre-existing (the old driver screenshot is the
+  same) and unrelated to this branch.
