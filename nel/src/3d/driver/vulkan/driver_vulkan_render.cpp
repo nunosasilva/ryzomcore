@@ -1314,20 +1314,35 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 		_MappedUV[stage] = 0xFF;
 	for (uint stage = 0; stage < IDRV_PROGRAM_MAXSAMPLERS; ++stage)
 	{
-		_StageTextures[stage] = NULL;
 		ITexture *texture = (stage < IDRV_MAT_MAXTEXTURES) ? mat.getTexture(stage) : NULL;
-		if (texture)
+		// Fast path: this stage still holds the image of that texture and the
+		// engine has not touched it since. setupTextureEx() would rebuild the
+		// share name (two allocations) and look it up under the driver lock
+		// for every draw, which the profile shows as the driver's main cost.
+		if (texture && texture == _StageTextureSrc[stage] &&
+			_StageTextures[stage] && _StageTextures[stage] == _StageTextureVk[stage] &&
+			_StageTextureGen[stage] == _TextureGeneration && !texture->touched())
+			continue;
+		_StageTextures[stage] = NULL;
+		_StageTextureSrc[stage] = NULL;
+		_StageTextureVk[stage] = NULL;
+		if (!texture)
+			continue;
+		bool allUploaded = false;
+		if (setupTextureEx(*texture, true, allUploaded, false))
 		{
-			bool allUploaded = false;
-			if (setupTextureEx(*texture, true, allUploaded, false))
+			_StageTextures[stage] = getTextureVulkan(*texture);
+			if (_StageTextures[stage])
 			{
-				_StageTextures[stage] = getTextureVulkan(*texture);
-				if (_UsedTextureMemorySumEnabled)
-				{
-					CTextureDrvInfosVulkan *info = findTextureDrvInfos(*texture);
-					if (info)
-						_TextureUsed.insert(info);
-				}
+				_StageTextureSrc[stage] = texture;
+				_StageTextureVk[stage] = _StageTextures[stage];
+				_StageTextureGen[stage] = _TextureGeneration;
+			}
+			if (_UsedTextureMemorySumEnabled)
+			{
+				CTextureDrvInfosVulkan *info = findTextureDrvInfos(*texture);
+				if (info)
+					_TextureUsed.insert(info);
 			}
 		}
 	}
@@ -1733,6 +1748,8 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	dsai.pSetLayouts = &_DescriptorSetLayout;
 	if (vkAllocateDescriptorSets(_Device, &dsai, &descriptorSet) != VK_SUCCESS)
 		return false;
+	if (_StatsEnabled)
+		++_StatsDescriptorSets;
 
 	VkDescriptorImageInfo infos[4];
 	for (uint stage = 0; stage < 4; ++stage)
@@ -1761,19 +1778,43 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	writes[4].pBufferInfo = &bufferInfo;
 	vkUpdateDescriptorSets(_Device, 5, writes, 0, NULL);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _PipelineLayout, 0, 1, &descriptorSet, 0, NULL);
-	const float blendConstants[4] = {
-		_BlendConstantColor.R / 255.f,
-		_BlendConstantColor.G / 255.f,
-		_BlendConstantColor.B / 255.f,
-		_BlendConstantColor.A / 255.f,
-	};
-	vkCmdSetBlendConstants(cmd, blendConstants);
+	setBlendConstants(cmd);
 	return true;
 }
 
 // ---------------------------------------------------------------------------
 // Draws
 // ---------------------------------------------------------------------------
+
+/// vkCmdSetBlendConstants() only when the value differs from the one already
+/// set in this command buffer; most consecutive draws share it.
+void CDriverVulkan::setBlendConstants(VkCommandBuffer cmd)
+{
+	const float value[4] = {
+		_BlendConstantColor.R / 255.f,
+		_BlendConstantColor.G / 255.f,
+		_BlendConstantColor.B / 255.f,
+		_BlendConstantColor.A / 255.f,
+	};
+	if (_BlendConstantsSet && memcmp(value, _BlendConstants, sizeof(value)) == 0)
+		return;
+	vkCmdSetBlendConstants(cmd, value);
+	memcpy(_BlendConstants, value, sizeof(value));
+	_BlendConstantsSet = true;
+}
+
+/// vkCmdBindPipeline() only when it differs from the pipeline already bound in
+/// this command buffer. Pipelines are render-pass compatible by construction
+/// (the key carries the target), so the skip is always valid.
+void CDriverVulkan::bindPipeline(VkCommandBuffer cmd, VkPipeline pipeline)
+{
+	if (pipeline == _LastPipeline)
+		return;
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+	_LastPipeline = pipeline;
+	if (_StatsEnabled)
+		++_StatsPipelineBinds;
+}
 
 bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count, VkPrimitiveTopology topo)
 {
@@ -1809,7 +1850,14 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 		return false;
 
 	VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+	bindPipeline(cmd, pipeline);
+	if (_StatsEnabled)
+	{
+		for (uint stage = 0; stage < 4; ++stage)
+			if (_StageTextures[stage])
+				++_StatsTextureBinds;
+		countVertexFormat(key.VertexFlags, key.VertexStride);
+	}
 	if (key.Mega)
 	{
 		if (!bindMegaDescriptors(cmd, *_CurrentVB))
@@ -1887,7 +1935,14 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	const uint64 statsPipelineEnd = _StatsEnabled ? nowNs() : 0;
 
 	VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+	bindPipeline(cmd, pipeline);
+	if (_StatsEnabled)
+	{
+		for (uint stage = 0; stage < 4; ++stage)
+			if (_StageTextures[stage])
+				++_StatsTextureBinds;
+		countVertexFormat(key.VertexFlags, key.VertexStride);
+	}
 	if (key.Mega)
 	{
 		if (!bindMegaDescriptors(cmd, *_CurrentVB))
@@ -2105,7 +2160,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 			}
 
 			VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
-			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+			bindPipeline(cmd, pipeline);
 			if (key.Mega)
 			{
 				if (!bindMegaDescriptors(cmd, *_CurrentVB))
@@ -2241,6 +2296,7 @@ static void packLightToEntry(CLightTableUBOEntry &e, const CLight &light)
 
 void CDriverVulkan::setLight(uint8 num, const CLight &light)
 {
+	_MegaLightTableValid = false;
 	if (num < 8)
 	{
 		_Lights[num].Mode = (uint8)light.getMode();
@@ -2275,16 +2331,19 @@ void CDriverVulkan::setLightMapDynamicLight(bool enable, const CLight &light)
 
 void CDriverVulkan::enableLightTableMode(bool enable)
 {
+	_MegaLightTableValid = false;
 	_LightTableMode = enable;
 }
 
 void CDriverVulkan::setLightTableSize(uint count)
 {
+	_MegaLightTableValid = false;
 	_LightTableSize = std::min(count, 128u);
 }
 
 void CDriverVulkan::setLightTableEntry(uint index, const CLight &light)
 {
+	_MegaLightTableValid = false;
 	if (index < 128)
 	{
 		_LightTable[index].Mode = (uint8)light.getMode();
