@@ -28,35 +28,44 @@
 
 #include "nel/3d/texture_cube.h"
 
+#include <chrono>
+
 using namespace std;
 using namespace NLMISC;
 using namespace NL3D;
 
 namespace NLVULKAN {
 
+/// Monotonic nanoseconds for the NLVK_STATS upload counters.
+static uint64 uploadNowNs()
+{
+	return (uint64)std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-static VkBuffer createStagingBuffer(VkDevice device, VkPhysicalDevice physical, VkDeviceSize size,
-	VkDeviceMemory *memory, void **mapped)
+VkBuffer CDriverVulkan::createStagingBuffer(VkDeviceSize size, VkDeviceMemory *memory, void **mapped,
+	VkBufferUsageFlags usage)
 {
 	VkBufferCreateInfo bci;
 	memset(&bci, 0, sizeof(bci));
 	bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 	bci.size = size;
-	bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+	bci.usage = usage;
 	bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
 	VkBuffer buffer = VK_NULL_HANDLE;
-	if (vkCreateBuffer(device, &bci, NULL, &buffer) != VK_SUCCESS)
+	if (vkCreateBuffer(_Device, &bci, NULL, &buffer) != VK_SUCCESS)
 		return VK_NULL_HANDLE;
 
 	VkMemoryRequirements req;
-	vkGetBufferMemoryRequirements(device, buffer, &req);
+	vkGetBufferMemoryRequirements(_Device, buffer, &req);
 
 	VkPhysicalDeviceMemoryProperties memProps;
-	vkGetPhysicalDeviceMemoryProperties(physical, &memProps);
+	vkGetPhysicalDeviceMemoryProperties(_PhysicalDevice, &memProps);
 	uint32 typeIndex = 0;
 	bool found = false;
 	for (uint32 i = 0; i < memProps.memoryTypeCount; ++i)
@@ -72,7 +81,7 @@ static VkBuffer createStagingBuffer(VkDevice device, VkPhysicalDevice physical, 
 	}
 	if (!found)
 	{
-		vkDestroyBuffer(device, buffer, NULL);
+		vkDestroyBuffer(_Device, buffer, NULL);
 		return VK_NULL_HANDLE;
 	}
 
@@ -81,14 +90,14 @@ static VkBuffer createStagingBuffer(VkDevice device, VkPhysicalDevice physical, 
 	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	mai.allocationSize = req.size;
 	mai.memoryTypeIndex = typeIndex;
-	if (vkAllocateMemory(device, &mai, NULL, memory) != VK_SUCCESS)
+	if (vkAllocateMemory(_Device, &mai, NULL, memory) != VK_SUCCESS)
 	{
-		vkDestroyBuffer(device, buffer, NULL);
+		vkDestroyBuffer(_Device, buffer, NULL);
 		return VK_NULL_HANDLE;
 	}
-	vkBindBufferMemory(device, buffer, *memory, 0);
+	vkBindBufferMemory(_Device, buffer, *memory, 0);
 	if (mapped)
-		vkMapMemory(device, *memory, 0, VK_WHOLE_SIZE, 0, mapped);
+		vkMapMemory(_Device, *memory, 0, VK_WHOLE_SIZE, 0, mapped);
 	return buffer;
 }
 
@@ -223,7 +232,7 @@ VkImageView CDriverVulkan::getWhiteTexture()
 		VkBuffer staging = VK_NULL_HANDLE;
 		VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
 		void *mapped = NULL;
-		staging = createStagingBuffer(_Device, _PhysicalDevice, 4, &stagingMemory, &mapped);
+		staging = createStagingBuffer(4, &stagingMemory, &mapped);
 		if (staging == VK_NULL_HANDLE)
 			return VK_NULL_HANDLE;
 		memcpy(mapped, white, 4);
@@ -526,68 +535,158 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 		// level and the sampler may read any of them, while a region upload
 		// only ever transitions the level it writes, so put the whole image in
 		// the shader-read layout now. The contents are undefined either way.
-		bool batched = false;
-		VkCommandBuffer cmd = beginTextureCopy(out.Image, true, batched);
-		if (cmd == VK_NULL_HANDLE)
+		STextureCopy copy;
+		copy.Image = out.Image;
+		copy.OldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		copy.BaseLevel = 0;
+		copy.LevelCount = mipCount;
+		if (!recordTextureCopy(copy))
 			return false;
-		VkImageMemoryBarrier barrier;
-		memset(&barrier, 0, sizeof(barrier));
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = out.Image;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.levelCount = mipCount;
-		barrier.subresourceRange.layerCount = 1;
-		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-			0, 0, NULL, 0, NULL, 1, &barrier);
 		out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		out.Uploaded = true;
-		return endTextureCopy(cmd, batched, out.Image, VK_NULL_HANDLE, VK_NULL_HANDLE);
+		return true;
 	}
 
-	return uploadTexturePixels(tex, out, true);
+	return uploadTexturePixels(tex, out);
 }
 
-void CDriverVulkan::freeUploadStaging()
+// ---------------------------------------------------------------------------
+// Upload staging ring
+// ---------------------------------------------------------------------------
+
+bool CDriverVulkan::growStagingRing(uint32 required)
 {
-	for (uint i = 0; i < _UploadStaging.size(); ++i)
+	// One copy cannot be split over two buffers, so the ring must have a half
+	// that fits it. Very large textures get a dedicated staging buffer instead
+	// (see allocTextureStaging()), which keeps the ring small.
+	const uint32 maxRingSize = 64u * 1024u * 1024u;
+	uint32 newSize = _StagingRingSize ? _StagingRingSize : 8u * 1024u * 1024u;
+	// Always double: the ring grew because this frame's slice did not fit, not
+	// necessarily because one copy is bigger than the current half.
+	while (newSize / 2 < required || newSize <= _StagingRingSize)
 	{
-		vkDestroyBuffer(_Device, _UploadStaging[i].first, NULL);
-		vkFreeMemory(_Device, _UploadStaging[i].second, NULL);
+		if (newSize >= maxRingSize)
+			return false;
+		newSize *= 2;
 	}
-	_UploadStaging.clear();
+
+	VkBufferCreateInfo bci;
+	memset(&bci, 0, sizeof(bci));
+	bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bci.size = newSize;
+	bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+	bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	VkBuffer buffer = VK_NULL_HANDLE;
+	if (vkCreateBuffer(_Device, &bci, NULL, &buffer) != VK_SUCCESS)
+		return false;
+	VkMemoryRequirements req;
+	vkGetBufferMemoryRequirements(_Device, buffer, &req);
+	VkMemoryAllocateInfo mai;
+	memset(&mai, 0, sizeof(mai));
+	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	mai.allocationSize = req.size;
+	mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	VkDeviceMemory memory = VK_NULL_HANDLE;
+	if (vkAllocateMemory(_Device, &mai, NULL, &memory) != VK_SUCCESS)
+	{
+		vkDestroyBuffer(_Device, buffer, NULL);
+		return false;
+	}
+	vkBindBufferMemory(_Device, buffer, memory, 0);
+	void *mapped = NULL;
+	if (vkMapMemory(_Device, memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS)
+	{
+		vkDestroyBuffer(_Device, buffer, NULL);
+		vkFreeMemory(_Device, memory, NULL);
+		return false;
+	}
+
+	// Copies already recorded reference the old buffer: retire it at a frame
+	// boundary like every other ring.
+	if (_StagingRing)
+		deferDestroyBuffer(_StagingRing, _StagingRingMemory);
+	_StagingRing = buffer;
+	_StagingRingMemory = memory;
+	_StagingRingMapped = mapped;
+	_StagingRingSize = newSize;
+	_StagingRingHalf = newSize / 2;
+	_StagingRingFrameBase = _FrameIndex * _StagingRingHalf;
+	_StagingRingOffset = _StagingRingFrameBase;
+	nlinfo("Vulkan: texture staging ring grown to %u bytes (%u bytes needed)", newSize, required);
+	return true;
 }
+
+bool CDriverVulkan::allocTextureStaging(VkDeviceSize size, STextureStaging &out)
+{
+	out.Buffer = VK_NULL_HANDLE;
+	out.Dedicated = VK_NULL_HANDLE;
+	out.Offset = 0;
+	out.Mapped = NULL;
+	if (size == 0 || size > 0xFFFFFFFFu)
+		return false;
+
+	// BC blocks are at most 16 bytes and RGBA texels 4, so 16-byte alignment
+	// satisfies every bufferOffset requirement of vkCmdCopyBufferToImage.
+	const VkDeviceSize alignment = 16;
+	if (_StagingRingHalf)
+	{
+		// Uploads can also arrive between two frames, when the frame index has
+		// already moved to the next slot but its ring half has not been set up.
+		const uint32 frameBase = _FrameIndex * _StagingRingHalf;
+		if (_StagingRingOffset < frameBase || _StagingRingOffset >= frameBase + _StagingRingHalf)
+			_StagingRingOffset = frameBase;
+	}
+	VkDeviceSize offset = ((VkDeviceSize)_StagingRingOffset + alignment - 1) & ~(alignment - 1);
+	if (_StagingRing == VK_NULL_HANDLE || offset + size > (VkDeviceSize)_StagingRingFrameBase + _StagingRingHalf)
+	{
+		if (!growStagingRing((uint32)size))
+		{
+			// Too large for the ring: one dedicated allocation, retired with the
+			// frame that reads it.
+			void *mapped = NULL;
+			VkDeviceMemory memory = VK_NULL_HANDLE;
+			out.Buffer = createStagingBuffer(size, &memory, &mapped);
+			if (out.Buffer == VK_NULL_HANDLE)
+				return false;
+			out.Dedicated = memory;
+			out.Mapped = mapped;
+			return true;
+		}
+		offset = ((VkDeviceSize)_StagingRingOffset + alignment - 1) & ~(alignment - 1);
+	}
+	out.Buffer = _StagingRing;
+	out.Offset = offset;
+	out.Mapped = (uint8 *)_StagingRingMapped + offset;
+	_StagingRingOffset = (uint32)(offset + size);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Upload recording
+// ---------------------------------------------------------------------------
 
 bool CDriverVulkan::beginUploadBatch()
 {
-	// The previous batch may still be executing: wait for its fence (a tiny
-	// copy-only submission, usually already done) before reusing the command
-	// buffer and freeing its staging buffers.
-	if (_UploadSubmitted)
-	{
-		vkWaitForFences(_Device, 1, &_UploadFence, VK_TRUE, UINT64_MAX);
-		_UploadSubmitted = false;
-		freeUploadStaging();
-	}
-	if (_UploadRecording)
-		return true;
-
-	_UploadBatchImages.clear();
+	// Called by beginFrame() after the frame fence proved that the submission
+	// which used this command buffer last has finished.
+	_UploadRecording = false;
+	_UploadCopyCount = 0;
 	VkCommandBufferBeginInfo bi;
 	memset(&bi, 0, sizeof(bi));
 	bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	if (vkBeginCommandBuffer(_UploadCommandBuffer, &bi) != VK_SUCCESS)
+	if (vkBeginCommandBuffer(_UploadCommandBuffers[_FrameIndex], &bi) != VK_SUCCESS)
 	{
 		nlwarning("Vulkan: vkBeginCommandBuffer(upload) failed");
 		return false;
 	}
 	_UploadRecording = true;
+
+	// Copies the engine asked for between the previous frame and this one.
+	for (size_t i = 0; i < _PendingTextureCopies.size(); ++i)
+		recordTextureCopy(_PendingTextureCopies[i]);
+	_PendingTextureCopies.clear();
 	return true;
 }
 
@@ -596,108 +695,80 @@ bool CDriverVulkan::submitUploadBatch()
 	if (!_UploadRecording)
 		return false;
 	_UploadRecording = false;
-	if (vkEndCommandBuffer(_UploadCommandBuffer) != VK_SUCCESS)
+	if (vkEndCommandBuffer(_UploadCommandBuffers[_FrameIndex]) != VK_SUCCESS)
 	{
 		nlwarning("Vulkan: vkEndCommandBuffer(upload) failed");
 		return false;
 	}
+	return _UploadCopyCount > 0;
+}
 
-	vkResetFences(_Device, 1, &_UploadFence);
-	VkSubmitInfo si;
-	memset(&si, 0, sizeof(si));
-	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	si.signalSemaphoreCount = 1;
-	si.pSignalSemaphores = &_UploadDone;
-	si.commandBufferCount = 1;
-	si.pCommandBuffers = &_UploadCommandBuffer;
-	if (vkQueueSubmit(_GraphicsQueue, 1, &si, _UploadFence) != VK_SUCCESS)
-	{
-		nlwarning("Vulkan: vkQueueSubmit(upload) failed");
+bool CDriverVulkan::recordTextureCopy(const STextureCopy &copy)
+{
+	if (copy.Image == VK_NULL_HANDLE)
 		return false;
-	}
-	_UploadSubmitted = true;
-	// The batch is closed: from now on the images it holds are read-only to the
-	// frame path until the fence signals (see isImageInUploadBatch()).
-	_UploadBatchImages.clear();
-	return true;
-}
-
-bool CDriverVulkan::isImageInUploadBatch(VkImage image) const
-{
-	for (size_t i = 0; i < _UploadBatchImages.size(); ++i)
-		if (_UploadBatchImages[i] == image)
-			return true;
-	return false;
-}
-
-VkCommandBuffer CDriverVulkan::beginTextureCopy(VkImage image, bool firstTime, bool &deferred)
-{
-	// First-time uploads target a brand-new image that no in-flight frame can
-	// reference, so they are recorded into the shared upload batch and
-	// submitted once for the whole frame. An in-place update of an image is
-	// synchronous instead: a frame that is still executing may be sampling the
-	// image we are about to overwrite. The exception is an image that already
-	// has a copy in this frame's batch: it must join the batch too, so that the
-	// layout transitions execute in recording order.
-	deferred = firstTime || isImageInUploadBatch(image);
-	if (deferred)
-		return beginUploadBatch() ? _UploadCommandBuffer : VK_NULL_HANDLE;
-
-	vkDeviceWaitIdle(_Device);
-	VkCommandBuffer cmd = VK_NULL_HANDLE;
-	VkCommandBufferAllocateInfo cbi;
-	memset(&cbi, 0, sizeof(cbi));
-	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	cbi.commandPool = _CommandPool;
-	cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	cbi.commandBufferCount = 1;
-	vkAllocateCommandBuffers(_Device, &cbi, &cmd);
-	VkCommandBufferBeginInfo bi;
-	memset(&bi, 0, sizeof(bi));
-	bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	vkBeginCommandBuffer(cmd, &bi);
-	return cmd;
-}
-
-bool CDriverVulkan::endTextureCopy(VkCommandBuffer cmd, bool deferred, VkImage image,
-	VkBuffer staging, VkDeviceMemory stagingMemory)
-{
-	if (deferred)
+	if (!_UploadRecording)
 	{
-		// The staging buffer survives until the upload batch fence signals and
-		// the next batch starts (see beginUploadBatch()). A layout-only copy
-		// passes VK_NULL_HANDLE for both.
-		if (staging != VK_NULL_HANDLE)
-			_UploadStaging.push_back(std::make_pair(staging, stagingMemory));
-		if (!isImageInUploadBatch(image))
-			_UploadBatchImages.push_back(image);
+		// No frame is being recorded, so the upload command buffer still belongs
+		// to a submission that may be executing; keep the copy for beginFrame().
+		_PendingTextureCopies.push_back(copy);
 		return true;
 	}
 
-	if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
-	{
-		nlwarning("Vulkan: vkEndCommandBuffer(texture) failed");
-		return false;
-	}
-	VkSubmitInfo si;
-	memset(&si, 0, sizeof(si));
-	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	si.commandBufferCount = 1;
-	si.pCommandBuffers = &cmd;
-	vkQueueSubmit(_GraphicsQueue, 1, &si, VK_NULL_HANDLE);
-	vkQueueWaitIdle(_GraphicsQueue);
+	VkCommandBuffer cmd = _UploadCommandBuffers[_FrameIndex];
+	VkImageMemoryBarrier barrier;
+	memset(&barrier, 0, sizeof(barrier));
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.oldLayout = copy.OldLayout;
+	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = copy.Image;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.baseMipLevel = copy.BaseLevel;
+	barrier.subresourceRange.levelCount = copy.LevelCount;
+	barrier.subresourceRange.layerCount = 1;
+	barrier.srcAccessMask = copy.OldLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0
+		: (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+	barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	// The source scope covers the previous frame's sampling of this image (and a
+	// previous frame's copy of it): its commands were submitted to this queue
+	// earlier, and submission order plus this barrier is what orders them, with
+	// no CPU wait. Vertex, fragment and transfer are the stages that can touch a
+	// texture; ALL_COMMANDS is not needed and would flush more caches than the
+	// copy depends on.
+	vkCmdPipelineBarrier(cmd,
+		copy.OldLayout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+			: VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
 
-	vkFreeCommandBuffers(_Device, _CommandPool, 1, &cmd);
-	if (staging != VK_NULL_HANDLE)
+	if (copy.RegionCount)
 	{
-		vkDestroyBuffer(_Device, staging, NULL);
-		vkFreeMemory(_Device, stagingMemory, NULL);
+		vkCmdCopyBufferToImage(cmd, copy.Staging, copy.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			copy.RegionCount, copy.Regions);
 	}
+
+	// Back to the layout every sampled descriptor declares. The frame's draws
+	// read the image after this copy, in a later command buffer of the same
+	// submission.
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		0, 0, NULL, 0, NULL, 1, &barrier);
+	++_StatsTextureCopies;
+	_StatsUploadBytes += (uint64)copy.StagingBytes;
+	++_UploadCopyCount;
 	return true;
 }
 
-bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out, bool deferred)
+// ---------------------------------------------------------------------------
+// Upload
+// ---------------------------------------------------------------------------
+
+bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out)
 {
 	if (out.Image == VK_NULL_HANDLE)
 		return false;
@@ -709,7 +780,7 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out, bool
 	if (!out.Compressed && !prepareTexturePixels(tex))
 		return false;
 
-	// Build the staging buffer and record all mip copies in one submit.
+	// Build the staging data and the copy regions for all mip levels.
 	VkDeviceSize totalSize = 0;
 	for (uint i = 0; i < mipCount; ++i)
 	{
@@ -721,18 +792,19 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out, bool
 	if (totalSize == 0)
 		return false;
 
-	VkBuffer staging = VK_NULL_HANDLE;
-	VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
-	void *mapped = NULL;
-	staging = createStagingBuffer(_Device, _PhysicalDevice, totalSize, &stagingMemory, &mapped);
-	if (staging == VK_NULL_HANDLE)
+	STextureStaging staging;
+	if (!allocTextureStaging(totalSize, staging))
 		return false;
 
+	STextureCopy copy;
+	copy.Image = out.Image;
+	copy.OldLayout = out.Layout;
+	copy.BaseLevel = 0;
+	copy.LevelCount = mipCount;
+	copy.Staging = staging.Buffer;
+	copy.StagingBytes = totalSize;
 	VkDeviceSize offset = 0;
-	VkBufferImageCopy regions[16];
-	memset(regions, 0, sizeof(regions));
-	uint regionCount = 0;
-	for (uint i = 0; i < mipCount && regionCount < 16; ++i)
+	for (uint i = 0; i < mipCount && copy.RegionCount < MaxTextureCopyRegions; ++i)
 	{
 		uint w = tex.getWidth(i);
 		uint h = tex.getHeight(i);
@@ -740,64 +812,36 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out, bool
 		if (out.Compressed)
 		{
 			size = tex.getPixels(i).size();
-			memcpy((uint8 *)mapped + offset, tex.getPixels(i).getPtr(), (size_t)size);
+			memcpy((uint8 *)staging.Mapped + offset, tex.getPixels(i).getPtr(), (size_t)size);
 		}
 		else
 		{
 			size = (VkDeviceSize)w * h * 4;
-			copyTextureRect(tex, i, CRect(0, 0, w, h), (uint8 *)mapped + offset);
+			copyTextureRect(tex, i, CRect(0, 0, w, h), (uint8 *)staging.Mapped + offset);
 		}
-		regions[regionCount].bufferOffset = offset;
-		regions[regionCount].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		regions[regionCount].imageSubresource.mipLevel = i;
-		regions[regionCount].imageSubresource.layerCount = 1;
-		regions[regionCount].imageExtent.width = w;
-		regions[regionCount].imageExtent.height = h;
-		regions[regionCount].imageExtent.depth = 1;
+		VkBufferImageCopy &region = copy.Regions[copy.RegionCount];
+		memset(&region, 0, sizeof(region));
+		region.bufferOffset = staging.Offset + offset;
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.mipLevel = i;
+		region.imageSubresource.layerCount = 1;
+		region.imageExtent.width = w;
+		region.imageExtent.height = h;
+		region.imageExtent.depth = 1;
 		offset += size;
-		++regionCount;
+		++copy.RegionCount;
 	}
 
-	// Record the copies, either into the per-frame batch (a brand-new image) or
-	// into a one-off command buffer submitted and waited for here.
-	bool batched = false;
-	VkCommandBuffer cmd = beginTextureCopy(out.Image, deferred, batched);
-	if (cmd == VK_NULL_HANDLE)
-	{
-		vkDestroyBuffer(_Device, staging, NULL);
-		vkFreeMemory(_Device, stagingMemory, NULL);
+	const bool recorded = recordTextureCopy(copy);
+	// A dedicated staging buffer is read by the copy command of this frame.
+	if (staging.Dedicated != VK_NULL_HANDLE)
+		deferDestroyBuffer(staging.Buffer, staging.Dedicated);
+	if (!recorded)
 		return false;
-	}
 
-	VkImageMemoryBarrier barrier;
-	memset(&barrier, 0, sizeof(barrier));
-	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrier.oldLayout = out.Layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		: VK_IMAGE_LAYOUT_UNDEFINED;
-	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = out.Image;
-	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	barrier.subresourceRange.levelCount = mipCount;
-	barrier.subresourceRange.layerCount = 1;
-	barrier.srcAccessMask = barrier.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_SHADER_READ_BIT;
-	barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	vkCmdPipelineBarrier(cmd,
-		barrier.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
-		VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
-	vkCmdCopyBufferToImage(cmd, staging, out.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, regionCount, regions);
-	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-		0, 0, NULL, 0, NULL, 1, &barrier);
 	out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	out.Uploaded = true;
-	return endTextureCopy(cmd, batched, out.Image, staging, stagingMemory);
+	return true;
 }
 
 bool CDriverVulkan::uploadTextureRegion(ITexture &tex, CTextureVulkan &out, const NLMISC::CRect &rect, uint mipLevel)
@@ -805,11 +849,17 @@ bool CDriverVulkan::uploadTextureRegion(ITexture &tex, CTextureVulkan &out, cons
 	if (out.Image == VK_NULL_HANDLE || tex.getWidth(mipLevel) == 0 || tex.getHeight(mipLevel) == 0)
 		return false;
 
-	// Compressed textures are updated in whole 4x4 blocks. This is the path
-	// CAsyncTextureManager uses to stream a DDS texture in a few block rows at
-	// a time, so it must not decompress anything.
+	STextureCopy copy;
+	copy.Image = out.Image;
+	copy.OldLayout = out.Layout;
+	copy.BaseLevel = mipLevel;
+	copy.LevelCount = 1;
+
 	if (out.Compressed)
 	{
+		// Compressed textures are updated in whole 4x4 blocks. This is the path
+		// CAsyncTextureManager uses to stream a DDS texture in a few block rows at
+		// a time, so it must not decompress anything.
 		const uint32 blockBytes = compressedBlockBytes(out.Format);
 		if (blockBytes == 0 || mipLevel >= tex.getMipMapCount() || mipLevel >= out.MipLevels)
 			return false;
@@ -828,46 +878,17 @@ bool CDriverVulkan::uploadTextureRegion(ITexture &tex, CTextureVulkan &out, cons
 		const uint8 *src = (const uint8 *)tex.getPixels(mipLevel).getPtr();
 		if (!src)
 			return false;
-		const VkDeviceSize size = (VkDeviceSize)rowBytes * (by1 - by0);
-		VkBuffer staging = VK_NULL_HANDLE;
-		VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
-		void *mapped = NULL;
-		staging = createStagingBuffer(_Device, _PhysicalDevice, size, &stagingMemory, &mapped);
-		if (staging == VK_NULL_HANDLE)
+
+		STextureStaging staging;
+		if (!allocTextureStaging((VkDeviceSize)rowBytes * (by1 - by0), staging))
 			return false;
 		for (sint by = by0; by < by1; ++by)
-			memcpy((uint8 *)mapped + (by - by0) * rowBytes,
+			memcpy((uint8 *)staging.Mapped + (by - by0) * rowBytes,
 				src + by * srcRowStride + bx0 * blockBytes, rowBytes);
 
-		bool batched = false;
-		VkCommandBuffer cmd = beginTextureCopy(out.Image, out.Layout == VK_IMAGE_LAYOUT_UNDEFINED, batched);
-		if (cmd == VK_NULL_HANDLE)
-		{
-			vkDestroyBuffer(_Device, staging, NULL);
-			vkFreeMemory(_Device, stagingMemory, NULL);
-			return false;
-		}
-
-		VkImageMemoryBarrier barrier;
-		memset(&barrier, 0, sizeof(barrier));
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.oldLayout = out.Layout;
-		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = out.Image;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.baseMipLevel = mipLevel;
-		barrier.subresourceRange.levelCount = 1;
-		barrier.subresourceRange.layerCount = 1;
-		barrier.srcAccessMask = out.Layout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_SHADER_READ_BIT;
-		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		vkCmdPipelineBarrier(cmd,
-			out.Layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
-
-		VkBufferImageCopy region;
+		VkBufferImageCopy &region = copy.Regions[0];
 		memset(&region, 0, sizeof(region));
+		region.bufferOffset = staging.Offset;
 		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		region.imageSubresource.mipLevel = mipLevel;
 		region.imageSubresource.layerCount = 1;
@@ -876,18 +897,18 @@ bool CDriverVulkan::uploadTextureRegion(ITexture &tex, CTextureVulkan &out, cons
 		region.imageExtent.width = std::min((uint32)(bx1 - bx0) * 4, tex.getWidth(mipLevel));
 		region.imageExtent.height = std::min((uint32)(by1 - by0) * 4, tex.getHeight(mipLevel));
 		region.imageExtent.depth = 1;
-		vkCmdCopyBufferToImage(cmd, staging, out.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+		copy.Staging = staging.Buffer;
+		copy.StagingBytes = (VkDeviceSize)rowBytes * (by1 - by0);
+		copy.RegionCount = 1;
 
-		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
-
+		const bool recorded = recordTextureCopy(copy);
+		if (staging.Dedicated != VK_NULL_HANDLE)
+			deferDestroyBuffer(staging.Buffer, staging.Dedicated);
+		if (!recorded)
+			return false;
 		out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		out.Uploaded = true;
-		return endTextureCopy(cmd, batched, out.Image, staging, stagingMemory);
+		return true;
 	}
 
 	CRect clipped = rect;
@@ -899,49 +920,16 @@ bool CDriverVulkan::uploadTextureRegion(ITexture &tex, CTextureVulkan &out, cons
 	if (!prepareTexturePixels(tex))
 		return false;
 
-	const VkDeviceSize size = (VkDeviceSize)clipped.Width * clipped.Height * 4;
-	VkBuffer staging = VK_NULL_HANDLE;
-	VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
-	void *mapped = NULL;
-	staging = createStagingBuffer(_Device, _PhysicalDevice, size, &stagingMemory, &mapped);
-	if (staging == VK_NULL_HANDLE)
+	STextureStaging staging;
+	if (!allocTextureStaging((VkDeviceSize)clipped.Width * clipped.Height * 4, staging))
 		return false;
-	copyTextureRect(tex, mipLevel, clipped, (uint8 *)mapped);
-
-	// The first write to a brand-new image is still a first-time copy, so it
-	// can ride the per-frame upload batch; anything else updates an image an
-	// in-flight frame may be sampling and stays synchronous.
-	bool batched = false;
-	VkCommandBuffer cmd = beginTextureCopy(out.Image, out.Layout == VK_IMAGE_LAYOUT_UNDEFINED, batched);
-	if (cmd == VK_NULL_HANDLE)
-	{
-		vkDestroyBuffer(_Device, staging, NULL);
-		vkFreeMemory(_Device, stagingMemory, NULL);
-		return false;
-	}
+	copyTextureRect(tex, mipLevel, clipped, (uint8 *)staging.Mapped);
 
 	// Unlike a full upload this must preserve the rest of the image, so the old
 	// layout is the one the image is actually in (UNDEFINED on first touch).
-	VkImageMemoryBarrier barrier;
-	memset(&barrier, 0, sizeof(barrier));
-	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrier.oldLayout = out.Layout;
-	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = out.Image;
-	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	barrier.subresourceRange.levelCount = 1;
-	barrier.subresourceRange.baseMipLevel = mipLevel;
-	barrier.subresourceRange.layerCount = 1;
-	barrier.srcAccessMask = out.Layout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_SHADER_READ_BIT;
-	barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	vkCmdPipelineBarrier(cmd,
-		out.Layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-		VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
-
-	VkBufferImageCopy region;
+	VkBufferImageCopy &region = copy.Regions[0];
 	memset(&region, 0, sizeof(region));
+	region.bufferOffset = staging.Offset;
 	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	region.imageSubresource.mipLevel = mipLevel;
 	region.imageSubresource.layerCount = 1;
@@ -950,18 +938,18 @@ bool CDriverVulkan::uploadTextureRegion(ITexture &tex, CTextureVulkan &out, cons
 	region.imageExtent.width = clipped.Width;
 	region.imageExtent.height = clipped.Height;
 	region.imageExtent.depth = 1;
-	vkCmdCopyBufferToImage(cmd, staging, out.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+	copy.Staging = staging.Buffer;
+	copy.StagingBytes = (VkDeviceSize)clipped.Width * clipped.Height * 4;
+	copy.RegionCount = 1;
 
-	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
-
+	const bool recorded = recordTextureCopy(copy);
+	if (staging.Dedicated != VK_NULL_HANDLE)
+		deferDestroyBuffer(staging.Buffer, staging.Dedicated);
+	if (!recorded)
+		return false;
 	out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	out.Uploaded = true;
-	return endTextureCopy(cmd, batched, out.Image, staging, stagingMemory);
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1130,7 +1118,7 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 			// copies.
 			if (tex.isAllInvalidated() || tex.mipMapOn())
 			{
-				if (!uploadTexturePixels(tex, vk, false))
+				if (!uploadTexturePixels(tex, vk))
 					return false;
 			}
 			else

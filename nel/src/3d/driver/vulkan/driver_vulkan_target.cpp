@@ -49,6 +49,22 @@ namespace NLVULKAN {
 // Pass setup
 // ---------------------------------------------------------------------------
 
+/// True for the block-compressed (BC / DXTC) formats this driver creates, for
+/// which vkCmdBlitImage is not supported: they can only be copied.
+static bool compressedImageFormat(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+	case VK_FORMAT_BC2_UNORM_BLOCK:
+	case VK_FORMAT_BC3_UNORM_BLOCK:
+		return true;
+	default:
+		return false;
+	}
+}
+
 VkExtent2D CDriverVulkan::currentTargetExtent() const
 {
 	VkExtent2D extent;
@@ -737,14 +753,13 @@ bool CDriverVulkan::stretchRectImage(ITexture *srcText, CRect &srcRect, ITexture
 {
 	if (!_Device || !srcText || !destText || srcText == destText)
 		return false;
-	// Mip levels and cube faces have no caller here; a whole 2D image is copied.
-	if (srcText->getWidth() == 0 || srcText->getHeight() == 0 ||
-		destText->getWidth() == 0 || destText->getHeight() == 0)
-		return false;
-
+	// getTextureVulkan() generates and uploads the texture on first use, so the
+	// sizes and formats are only meaningful after it. Mip levels and cube faces
+	// have no caller here: a whole 2D image is copied.
 	CTextureVulkan *src = getTextureVulkan(*srcText);
 	CTextureVulkan *dst = getTextureVulkan(*destText);
-	if (!src || !dst || src->Image == VK_NULL_HANDLE || dst->Image == VK_NULL_HANDLE)
+	if (!src || !dst || src->Image == VK_NULL_HANDLE || dst->Image == VK_NULL_HANDLE ||
+		src->Width == 0 || src->Height == 0 || dst->Width == 0 || dst->Height == 0)
 		return false;
 
 	static bool logged = false;
@@ -753,10 +768,21 @@ bool CDriverVulkan::stretchRectImage(ITexture *srcText, CRect &srcRect, ITexture
 		logged = true;
 		nlinfo("Vulkan: stretchRect %ux%u -> %ux%u (scaled blit)", src->Width, src->Height, dst->Width, dst->Height);
 	}
-	// vkCmdBlitImage needs matching texel layout; every image this driver
-	// creates is R8G8B8A8_UNORM.
 	if (!(src->Usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) || !(dst->Usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
 		return false;
+
+	// vkCmdBlitImage requires both images to have the same format, and no driver
+	// reports VK_FORMAT_FEATURE_BLIT_SRC_BIT / _DST_BIT for a BC format: a
+	// compressed texture can be copied but not scaled. Returning false makes the
+	// engine fall back to its textured quad (CDriverUser::stretchRect), which
+	// handles any format, so a compressed source stays correct.
+	const bool compressed = compressedImageFormat(src->Format);
+	if (src->Format != dst->Format)
+	{
+		nlwarning("Vulkan: stretchRect from format %d to %d: vkCmdBlitImage needs matching formats, using the quad fallback",
+			(int)src->Format, (int)dst->Format);
+		return false;
+	}
 
 	VkImageBlit blit;
 	memset(&blit, 0, sizeof(blit));
@@ -767,6 +793,20 @@ bool CDriverVulkan::stretchRectImage(ITexture *srcText, CRect &srcRect, ITexture
 	if (!makeBlitRegion(srcRect, src->Width, src->Height, blit, true) ||
 		!makeBlitRegion(destRect, dst->Width, dst->Height, blit, false))
 		return false;
+
+	// Same-size, same-place rects are a copy: cheaper than a blit, and the only
+	// thing a BC image can do (block-aligned offsets are guaranteed by the
+	// caller passing whole blocks).
+	const bool sameRect = src->Width == dst->Width && src->Height == dst->Height &&
+		memcmp(blit.srcOffsets, blit.dstOffsets, sizeof(blit.srcOffsets)) == 0;
+	const bool blockAligned = (blit.srcOffsets[0].x % 4) == 0 && (blit.srcOffsets[0].y % 4) == 0 &&
+		(blit.srcOffsets[1].x % 4) == 0 && (blit.srcOffsets[1].y % 4) == 0;
+	if (compressed && (!sameRect || !blockAligned))
+	{
+		nlwarning("Vulkan: stretchRect cannot scale a compressed (format %d) image; using the quad fallback",
+			(int)src->Format);
+		return false;
+	}
 
 	if (!_FrameOpen && !beginFrame())
 		return false;
@@ -814,9 +854,30 @@ bool CDriverVulkan::stretchRectImage(ITexture *srcText, CRect &srcRect, ITexture
 	dst->Layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
 	// Filtered blit: the bloom effect stretches the scene target into its fixed
-	// 256x256 blur target, so source and destination sizes usually differ.
-	vkCmdBlitImage(cmd, src->Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-		dst->Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+	// 256x256 blur target, so source and destination sizes usually differ. A
+	// compressed image is copied instead: the formats match and the rects are
+	// identical, which is what a copy requires.
+	if (compressed)
+	{
+		VkImageCopy region;
+		memset(&region, 0, sizeof(region));
+		region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.srcSubresource.layerCount = 1;
+		region.srcOffset = blit.srcOffsets[0];
+		region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.dstSubresource.layerCount = 1;
+		region.dstOffset = blit.dstOffsets[0];
+		region.extent.width = (uint32)(blit.srcOffsets[1].x - blit.srcOffsets[0].x);
+		region.extent.height = (uint32)(blit.srcOffsets[1].y - blit.srcOffsets[0].y);
+		region.extent.depth = 1;
+		vkCmdCopyImage(cmd, src->Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			dst->Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+	}
+	else
+	{
+		vkCmdBlitImage(cmd, src->Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			dst->Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+	}
 
 	memset(barriers, 0, sizeof(barriers));
 	barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -862,6 +923,154 @@ bool CDriverVulkan::stretchRectImage(ITexture *srcText, CRect &srcRect, ITexture
 		beginMainPass(cmd, false);
 	}
 	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Compressed stretchRect self-test (NLVK_TEXTEST=1)
+// ---------------------------------------------------------------------------
+//
+// vkCmdBlitImage cannot read or write a block-compressed image, so stretchRect()
+// copies two compressed images (same format, same rect) and refuses to scale
+// them, which makes CDriverUser draw its textured quad instead. Bloom and FXAA
+// only ever stretch RGBA render targets, so this one-shot test is the only
+// in-game coverage of the compressed path: it builds a solid red DXT1 texture,
+// copies it into another DXT1 texture through stretchRect(), asks for a scaled
+// copy as well (which must be refused), reads the destination image back and
+// checks that the copy landed.
+void CDriverVulkan::runTextureBlitTest()
+{
+	if (_BlitTestStage != 0 || !_FrameOpen || _SwapBufferCounter < 2)
+		return;
+	_BlitTestStage = 1;
+	if (!_SupportsBC)
+	{
+		nlinfo("Vulkan TEXTEST: skipped, the device has no BC texture support");
+		return;
+	}
+
+	// 64x64 DXT1, every 4x4 block solid red: colour0 = 0xF800, indices 0.
+	const uint32 size = 64;
+	const uint32 blockBytes = 8;
+	uint32 bytes = (size / 4) * (size / 4) * blockBytes;
+	uint8 *srcBlocks = new uint8[bytes];
+	uint8 *dstBlocks = new uint8[bytes];
+	for (uint32 i = 0; i < bytes; i += blockBytes)
+	{
+		srcBlocks[i + 0] = 0x00;	// colour0 low byte
+		srcBlocks[i + 1] = 0xF8;	// colour0 high byte
+		srcBlocks[i + 2] = 0x00;	// colour1
+		srcBlocks[i + 3] = 0x00;
+		memset(srcBlocks + i + 4, 0, 4);	// indices: all colour0
+	}
+	memset(dstBlocks, 0, bytes);
+	_BlitTestSrc.setPointer(srcBlocks, bytes, true, false, size, size, CBitmap::DXTC1);
+	_BlitTestDst.setPointer(dstBlocks, bytes, true, false, size, size, CBitmap::DXTC1);
+
+	CTextureVulkan *srcImage = getTextureVulkan(_BlitTestSrc);
+	if (!srcImage || !srcImage->Compressed)
+	{
+		nlinfo("Vulkan TEXTEST: skipped, the DXT1 texture was not uploaded as a BC image");
+		return;
+	}
+
+	CRect full(0, 0, size, size);
+	CRect half(0, 0, size / 2, size / 2);
+	const bool copied = stretchRect(&_BlitTestSrc, full, &_BlitTestDst, full);
+	const bool scaled = stretchRect(&_BlitTestSrc, full, &_BlitTestDst, half);
+	_BlitTestRequestOk = copied && !scaled;
+	nlinfo("Vulkan TEXTEST: stretchRect of a BC1 texture: same size -> %s, scaled -> %s (expected true, false)",
+		copied ? "true" : "false", scaled ? "true" : "false");
+}
+
+void CDriverVulkan::checkTextureBlitTest()
+{
+	// The copy was recorded in frame N and is proven finished when beginFrame()
+	// waits for the same frame slot again, two frames later.
+	if (_BlitTestStage != 1 || _SwapBufferCounter < 4)
+		return;
+	_BlitTestStage = 2;
+	if (!_BlitTestRequestOk)
+	{
+		nlinfo("Vulkan TEXTEST: FAIL, the compressed stretchRect paths did not answer as expected");
+		return;
+	}
+	CTextureVulkan *dst = getTextureVulkan(_BlitTestDst);
+	if (!dst || dst->Image == VK_NULL_HANDLE || !dst->Compressed)
+	{
+		nlinfo("Vulkan TEXTEST: FAIL, the destination image does not exist");
+		return;
+	}
+
+	// Read level 0 back and look at the first block.
+	const uint32 readSize = 2048;
+	VkBuffer buffer = VK_NULL_HANDLE;
+	VkDeviceMemory memory = VK_NULL_HANDLE;
+	void *mapped = NULL;
+	buffer = createStagingBuffer(readSize, &memory, &mapped, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+	if (buffer == VK_NULL_HANDLE)
+	{
+		nlinfo("Vulkan TEXTEST: FAIL, could not allocate the readback buffer");
+		return;
+	}
+	VkCommandBuffer cmd = VK_NULL_HANDLE;
+	VkCommandBufferAllocateInfo cbi;
+	memset(&cbi, 0, sizeof(cbi));
+	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	cbi.commandPool = _CommandPool;
+	cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cbi.commandBufferCount = 1;
+	vkAllocateCommandBuffers(_Device, &cbi, &cmd);
+	VkCommandBufferBeginInfo bi;
+	memset(&bi, 0, sizeof(bi));
+	bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	vkBeginCommandBuffer(cmd, &bi);
+	VkImageMemoryBarrier barrier;
+	memset(&barrier, 0, sizeof(barrier));
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = dst->Image;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.layerCount = 1;
+	barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+	barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		0, 0, NULL, 0, NULL, 1, &barrier);
+	VkBufferImageCopy region;
+	memset(&region, 0, sizeof(region));
+	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.imageSubresource.layerCount = 1;
+	region.imageExtent.width = dst->Width;
+	region.imageExtent.height = dst->Height;
+	region.imageExtent.depth = 1;
+	vkCmdCopyImageToBuffer(cmd, dst->Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		0, 0, NULL, 0, NULL, 1, &barrier);
+	vkEndCommandBuffer(cmd);
+	VkSubmitInfo si;
+	memset(&si, 0, sizeof(si));
+	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	si.commandBufferCount = 1;
+	si.pCommandBuffers = &cmd;
+	vkQueueSubmit(_GraphicsQueue, 1, &si, VK_NULL_HANDLE);
+	vkQueueWaitIdle(_GraphicsQueue);
+	vkFreeCommandBuffers(_Device, _CommandPool, 1, &cmd);
+
+	const uint8 *pixels = (const uint8 *)mapped;
+	const bool red = pixels[0] == 0x00 && pixels[1] == 0xF8;
+	nlinfo("Vulkan TEXTEST: %s, destination block colour0 = 0x%02x%02x (expected 0xF800)",
+		red ? "PASS" : "FAIL", (unsigned)pixels[1], (unsigned)pixels[0]);
+	vkDestroyBuffer(_Device, buffer, NULL);
+	vkFreeMemory(_Device, memory, NULL);
 }
 
 ITexture *CDriverVulkan::getRenderTarget() const
