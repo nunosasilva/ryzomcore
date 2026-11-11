@@ -23,11 +23,15 @@
 
 struct CVideoMode;
 
+// Values match the numeric Driver3D values accepted by client_cfg.cpp.
+// 3 is OpenGLES, which this desktop tool does not offer.
 enum E3DDriver
 {
-	DRV_AUTO,
-	DRV_OPENGL,
-	DRV_DIRECT3D
+	DRV_AUTO = 0,
+	DRV_OPENGL = 1,
+	DRV_DIRECT3D = 2,
+	DRV_OPENGL3 = 4,
+	DRV_VULKAN = 5
 };
 
 /**
