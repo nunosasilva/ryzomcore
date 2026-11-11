@@ -598,3 +598,42 @@ materials stay on the simple path until cube upload exists.
 
 A full-pink screen seen during loading is the frame clear colour (the moor's fog
 colour) with no world geometry drawn yet; it is not a crash.
+
+## Reliable login procedure (use this, it works ~99% of the time)
+
+The account is single-session and a killed client keeps it for the network
+timeout + 30 s. Before the real login, force the session to be clean:
+
+    ./ryzom_client mats007 passDOSma          # no slot: errors "already logged in" or waits at char select
+    sleep 10
+    kill %1                                    # or kill -9 the pid
+    sleep 30
+    ./ryzom_client mats007 passDOSma slot 1 --nopatch 1
+
+No screenshots/keys needed for the guard step. Then use the game normally
+(Escape -> Quit Ryzom -> Quit Now, or the Lua scripting available in the debug
+build — `-DWITH_RYZOM_LIVE=OFF` — for a clean logout instead of xdotool).
+
+## Render targets — merged
+
+`driver_vulkan_target.cpp` implements offscreen render targets: COLOR_ATTACHMENT
+images/framebuffers, a shared depth/stencil cache, pass switching (a second LOAD
+render pass so the main scene survives an offscreen pass), target clears,
+`getRenderTargetSize` and `copyTargetToTexture`. `setupTextureEx()` refuses to
+upload render targets (so rendering into them is not overwritten).
+
+Evidence (live client, Shadows = 1, NLVK_VALIDATION=1): `render target 256x256
+created` / `rendering into offscreen target 256x256` every frame; the avatar's
+torso went from 76% pure black to fully textured (rgb(174,160,126), 0% black),
+same for skirt and legs; ground unchanged as control; no new validation errors.
+Images: `/tmp/opencode/rt/before_2400.png` and `/tmp/opencode/rt/final_2400.png`.
+
+Still open:
+- Shadow projection in the default (simple) path: the receiver material
+  generates UVs from object space, which only the mega VP implements. Under
+  `NLVK_MEGA=1` the shadow follows the avatar. Next: port tex-coord generation to
+  the simple shader, or finish fog and make the mega path the default.
+- Bloom/FXAA: `supportBloomEffect()` is still false (inert, no black screen).
+  Enabling it needs `supportBloomEffect()`, `stretchRect()` and `CTextureOffscreen`,
+  which can reuse the new render-target path.
+- `copyTargetToTexture()` supports an offscreen source only.
