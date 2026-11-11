@@ -382,7 +382,7 @@ static void writeBroadcastAssign(std::stringstream &ss, const CVPOperand &dest,
 /// rebuilds NeL eye-space ecPos from gl_Position so the pixel stage's fog
 /// still works.
 static bool convertNelvpToGLSL(CVertexProgram *program, std::string &outSource, uint32 &outRegisterCount,
-	bool &outSpecular)
+	bool &outSpecular, uint16 &outWrittenTexCoords)
 {
 	IProgram::CSource *nelvpSrc = NULL;
 	for (int i = 0; i < (int)program->getSourceNb(); ++i)
@@ -459,6 +459,13 @@ static bool convertNelvpToGLSL(CVertexProgram *program, std::string &outSource, 
 		registerCount = std::max(highestConstant + 1, 4);
 	registerCount = (registerCount + 3) & ~3;
 	outRegisterCount = (uint32)registerCount;
+
+	// Texture coordinates the program writes. A vertex buffer only describes
+	// the inputs, so the pixel stage needs this to know that texCoordN exists.
+	outWrittenTexCoords = 0;
+	for (int i = 0; i < 8; ++i)
+		if (outputUsed[CVPOperand::OTex0 + i])
+			outWrittenTexCoords |= (uint16)(CVertexBuffer::TexCoord0Flag << i);
 
 	std::stringstream ss;
 	ss << "#version 450\n";
@@ -907,6 +914,31 @@ static std::string stripGLOnlyDeclarations(const std::string &src)
 	return out;
 }
 
+/// True when a GLSL source declares a plain (non-block) uniform. Vulkan
+/// requires global uniforms to live in uniform blocks, so such a source cannot
+/// compile here; when the same program also has a nelvp source the conversion
+/// path handles it (the bloom effect's texture-offset program is one).
+static bool sourceHasPlainUniforms(const std::string &src)
+{
+	size_t pos = 0;
+	while (pos < src.size())
+	{
+		size_t lineEnd = src.find('\n', pos);
+		if (lineEnd == std::string::npos)
+			lineEnd = src.size();
+		std::string line = src.substr(pos, lineEnd - pos);
+		pos = lineEnd < src.size() ? lineEnd + 1 : src.size();
+		size_t first = line.find_first_not_of(" \t");
+		if (first == std::string::npos || line.compare(first, 8, "uniform ") != 0)
+			continue;
+		// A block declaration has an opening brace on the same line.
+		if (line.find('{') != std::string::npos)
+			continue;
+		return true;
+	}
+	return false;
+}
+
 /// Turn an engine GLSL vertex program (written for GL 3.3 SSO) into Vulkan
 /// GLSL: prepend #version 450, the builtin and user UBO blocks, declare the
 /// missing generic outputs and wrap main() for the clip-depth remap.
@@ -965,6 +997,126 @@ static bool buildRawGLSLVertexProgram(IProgram::CSource *src, std::string &outSo
 	return true;
 }
 
+/// Add the qualifiers Vulkan requires to a GLSL fragment program written for
+/// GL SSO: an explicit location on the colour output, explicit locations on
+/// the known varying inputs and explicit bindings on the sampler uniforms.
+/// The engine sources are shared with the GL drivers, so the rewrite happens
+/// here instead of changing them.
+static std::string addVulkanFragmentQualifiers(const std::string &src)
+{
+	std::string out;
+	std::vector<std::string> locals;
+	size_t pos = 0;
+	while (pos < src.size())
+	{
+		size_t lineEnd = src.find('\n', pos);
+		if (lineEnd == std::string::npos)
+			lineEnd = src.size();
+		std::string line = src.substr(pos, lineEnd - pos);
+		size_t first = line.find_first_not_of(" \t");
+		const std::string indent = first == std::string::npos ? std::string() : line.substr(0, first);
+		const std::string trimmed = first == std::string::npos ? std::string() : line.substr(first);
+
+		if (trimmed == "out vec4 fragColor;")
+		{
+			line = indent + "layout(location = 0) out vec4 fragColor;";
+		}
+		else
+		{
+			bool varying = false;
+			for (int i = 0; i < 16; ++i)
+			{
+				const std::string name = s_Varyings[i].Name;
+				if (trimmed == "in vec4 " + name + ";" ||
+					trimmed == "smooth in vec4 " + name + ";" ||
+					trimmed == "flat in vec4 " + name + ";")
+				{
+					const std::string renamed = "nlIn_" + name;
+					line = indent + "layout(location = " + NLMISC::toString(i) + ") smooth in vec4 " + renamed + ";";
+					// A user PP is a full-screen pass that samples a render
+					// target. Render targets are stored top-down in Vulkan while
+					// NeL texture coordinates have V = 0 at the bottom, so the
+					// interpolated texture coordinates are flipped here. This is
+					// the same correction the builtin pixel program applies per
+					// render-target stage.
+					if (i >= 8)
+						locals.push_back("    vec4 " + name + " = vec4(" + renamed + ".x, 1.0 - " + renamed + ".y, " + renamed + ".zw);");
+					else
+						locals.push_back("    vec4 " + name + " = " + renamed + ";");
+					varying = true;
+					break;
+				}
+			}
+			if (!varying)
+			{
+				for (uint i = 0; i < NL_VK_MEGA_SAMPLER_COUNT; ++i)
+				{
+					const std::string name = "sampler" + NLMISC::toString((int)i);
+					if (trimmed == "uniform sampler2D " + name + ";" ||
+						trimmed == "uniform samplerCube " + name + ";")
+					{
+						const bool cube = trimmed.find("samplerCube") != std::string::npos;
+						line = indent + "layout(set = 0, binding = " +
+							NLMISC::toString((int)(NL_VK_MEGA_BINDING_SAMPLER_BASE + i)) + ") uniform " +
+							(cube ? "samplerCube " : "sampler2D ") + name + ";";
+						break;
+					}
+				}
+			}
+		}
+		out += line;
+		if (lineEnd < src.size())
+			out.push_back('\n');
+		pos = lineEnd < src.size() ? lineEnd + 1 : src.size();
+	}
+
+	// Define the flipped varyings at the top of main(). The renamed inputs are
+	// only there so the body keeps using the original names.
+	if (!locals.empty())
+	{
+		size_t mainAt = out.find("void main");
+		size_t brace = mainAt == std::string::npos ? std::string::npos : out.find('{', mainAt);
+		if (brace != std::string::npos)
+		{
+			std::string block;
+			for (size_t i = 0; i < locals.size(); ++i)
+				block += locals[i] + "\n";
+			out.insert(brace + 1, "\n" + block);
+		}
+	}
+	return out;
+}
+
+/// Assemble a user pixel program for Vulkan. Only UBO-formatted GLSL sources
+/// are supported (plain uniforms cannot live outside a block in Vulkan); the
+/// user block is bound where the engine's bindUniformBuffer() puts it.
+static bool buildRawGLSLFragmentProgram(IProgram::CSource *src, std::string &outSource)
+{
+	if (src->UniformBufferFormats.empty())
+	{
+		nlwarning("Vulkan: pixel program '%s' has no uniform buffer format", src->DisplayName.c_str());
+		return false;
+	}
+
+	bool headersOk = true;
+	std::string headers = buildVertexProgramUBOHeaders(src->UniformBufferFormats, headersOk);
+	if (!headersOk)
+		return false;
+
+	std::string body = stripGLOnlyDeclarations(std::string(src->SourcePtr, src->SourceLen));
+	body = addVulkanFragmentQualifiers(body);
+
+	std::stringstream out;
+	out << "#version 450\n";
+	out << "// Vulkan user pixel program from '" << src->DisplayName << "'\n";
+	out << headers;
+	out << body;
+	if (body.empty() || body[body.size() - 1] != '\n')
+		out << "\n";
+	outSource = out.str();
+	return true;
+}
+
 } /* anonymous namespace */
 
 // ---------------------------------------------------------------------------
@@ -980,6 +1132,8 @@ CProgramDrvInfosVulkan::CProgramDrvInfosVulkan(CDriverVulkan *drv, ItGPUPrgDrvIn
 	, FirstDrawLogged(false)
 	, OutputsSpecularColor(false)
 	, IsInsertProgram(false)
+	, IsPixelProgram(false)
+	, WrittenTexCoords(0)
 {
 }
 
@@ -987,9 +1141,12 @@ CProgramDrvInfosVulkan::~CProgramDrvInfosVulkan()
 {
 	if (Id != 0 && _VkDriver)
 	{
-		// The driver may already have released its device; releaseUserVPShader()
-		// only touches the shader map, never the Vulkan device.
-		_VkDriver->releaseUserVPShader(Id);
+		// The driver may already have released its device; the release methods
+		// only touch the shader maps, never the Vulkan device.
+		if (IsPixelProgram)
+			_VkDriver->releaseUserPPShader(Id);
+		else
+			_VkDriver->releaseUserVPShader(Id);
 	}
 }
 
@@ -1050,6 +1207,93 @@ void CDriverVulkan::releaseUserVPShader(uint32 id)
 		_NelvpActiveUB = NULL;
 		_BoundUserUB[UBBindingVertexProgram] = NULL;
 	}
+}
+
+void CDriverVulkan::releaseUserPPShader(uint32 id)
+{
+	std::map<uint32, VkShaderModule>::iterator it = _UserPPShaders.find(id);
+	if (it != _UserPPShaders.end())
+	{
+		if (_Device && it->second != VK_NULL_HANDLE)
+			vkDestroyShaderModule(_Device, it->second, NULL);
+		_UserPPShaders.erase(it);
+	}
+	if (_ActiveUserPP && _ActiveUserPP->Id == id)
+	{
+		_ActiveUserPP = NULL;
+		_BoundUserUB[UBBindingPixelProgram] = NULL;
+	}
+}
+
+bool CDriverVulkan::compilePixelProgram(CPixelProgram *program)
+{
+	if (program->m_DrvInfo)
+		return true;
+	if (program->m_CompileFailed)
+		return false;
+	if (!_MegaResourcesReady)
+		return false;
+
+	// The glsl300esf profile is the UBO variant the engine provides for user
+	// pixel programs (FXAA). The GL330 variant uses plain uniforms, which
+	// Vulkan does not allow, so it is not a fallback here.
+	IProgram::CSource *src = NULL;
+	for (int i = 0; i < (int)program->getSourceNb(); ++i)
+	{
+		if (program->getSource(i)->Profile == IProgram::glsl300esf)
+		{
+			src = program->getSource(i);
+			break;
+		}
+	}
+	if (!src)
+	{
+		nlinfo("Vulkan: pixel program has no glsl300esf source");
+		program->m_CompileFailed = true;
+		return false;
+	}
+
+	std::string source;
+	if (!buildRawGLSLFragmentProgram(src, source))
+	{
+		program->m_CompileFailed = true;
+		return false;
+	}
+
+	VkShaderModule module = VK_NULL_HANDLE;
+	if (!compileShader(source.c_str(), &module, false))
+	{
+		nlwarning("Vulkan: user pixel program '%s' failed to compile", src->DisplayName.c_str());
+		program->m_CompileFailed = true;
+		return false;
+	}
+
+	CProgramDrvInfosVulkan *drvInfo = new CProgramDrvInfosVulkan(this,
+		_GPUPrgDrvInfos.insert(_GPUPrgDrvInfos.end(), (IProgramDrvInfos *)NULL));
+	drvInfo->Id = ++_NextUserPPId;
+	drvInfo->DisplayName = src->DisplayName;
+	drvInfo->IsPixelProgram = true;
+	_UserPPShaders[drvInfo->Id] = module;
+	program->m_DrvInfo = drvInfo;
+	program->buildInfo(src);
+	nlinfo("Vulkan: compiled user pixel program '%s'", src->DisplayName.c_str());
+	return true;
+}
+
+bool CDriverVulkan::activePixelProgram(CPixelProgram *program)
+{
+	if (program == NULL)
+	{
+		_ActiveUserPP = NULL;
+		return true;
+	}
+	if (!program->m_DrvInfo && !compilePixelProgram(program))
+	{
+		_ActiveUserPP = NULL;
+		return false;
+	}
+	_ActiveUserPP = static_cast<CProgramDrvInfosVulkan *>((IProgramDrvInfos *)program->m_DrvInfo);
+	return true;
 }
 
 bool CDriverVulkan::supportVertexProgram(CVertexProgram::TProfile profile) const
@@ -1161,6 +1405,17 @@ bool CDriverVulkan::compileVertexProgram(CVertexProgram *program)
 			nelvpSrc = s;
 	}
 
+	// A GLSL source with plain uniforms cannot compile for Vulkan, but the
+	// program may also ship a nelvp source the converter handles (bloom's
+	// texture-offset program does). Prefer that instead of failing first.
+	if (glslSrc && nelvpSrc && glslSrc->SourcePtr &&
+		sourceHasPlainUniforms(std::string(glslSrc->SourcePtr, glslSrc->SourceLen)))
+	{
+		nlinfo("Vulkan: GLSL vertex program '%s' uses plain uniforms; using its nelvp source",
+			glslSrc->DisplayName.c_str());
+		glslSrc = NULL;
+	}
+
 	std::string source;
 	uint32 registerCount = 0;
 	bool specular = false;
@@ -1194,7 +1449,8 @@ bool CDriverVulkan::compileVertexProgram(CVertexProgram *program)
 
 	if (nelvpSrc)
 	{
-		if (!convertNelvpToGLSL(program, source, registerCount, specular))
+		uint16 writtenTexCoords = 0;
+		if (!convertNelvpToGLSL(program, source, registerCount, specular, writtenTexCoords))
 		{
 			program->m_CompileFailed = true;
 			return false;
@@ -1250,6 +1506,7 @@ bool CDriverVulkan::compileVertexProgram(CVertexProgram *program)
 		drvInfo->NelvpConstantUB = constants;
 		drvInfo->ParamIndices = nelvpSrc->ParamIndices;
 		drvInfo->OutputsSpecularColor = specular;
+		drvInfo->WrittenTexCoords = writtenTexCoords;
 		_UserVPShaders[drvInfo->Id] = module;
 		program->m_DrvInfo = drvInfo;
 		program->buildInfo(converted);
