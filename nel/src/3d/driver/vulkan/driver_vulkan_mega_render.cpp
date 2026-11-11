@@ -729,6 +729,8 @@ bool CDriverVulkan::growUniformRing(uint32 required)
 	// Cached user-block offsets referred to the old buffer.
 	memset(_UserUBStageCache, 0, sizeof(_UserUBStageCache));
 	memset(_UserUBStageSize, 0, sizeof(_UserUBStageSize));
+	// The frame's light table block lives in the old buffer too.
+	_MegaLightTableValid = false;
 	nlinfo("Vulkan: uniform ring grown to %u bytes", newSize);
 	return true;
 }
@@ -746,7 +748,16 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	CMaterialUBOData materialData;
 	stageMegaObjectUBO(vb, objectData);
 	stageMegaMaterialUBO(*_CurrentMaterial, materialData);
-	stageMegaLightTableUBO();
+	// The light table is scene state, not per-object: stage it once per frame
+	// (or after a light change) instead of copying 12 KiB for every mega draw.
+	if (!_MegaLightTableValid)
+	{
+		stageMegaLightTableUBO();
+		_MegaLightTableOffset = allocUniformBlock(_MegaLightTableEntries, sizeof(_MegaLightTableEntries));
+		if (_MegaLightTableOffset == 0xFFFFFFFF)
+			return false;
+		_MegaLightTableValid = true;
+	}
 	CCameraUBOData cameraData = stageMegaCameraUBO();
 	if (_MegaPassFogBlack || _FogColorOverrideBlack)
 	{
@@ -758,7 +769,7 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	}
 
 	const uint32 cameraOffset = allocUniformBlock(&cameraData, sizeof(cameraData));
-	const uint32 lightTableOffset = allocUniformBlock(_MegaLightTableEntries, sizeof(_MegaLightTableEntries));
+	const uint32 lightTableOffset = _MegaLightTableOffset;
 	const uint32 objectOffset = allocUniformBlock(&objectData, sizeof(objectData));
 	const uint32 materialOffset = allocUniformBlock(&materialData, sizeof(materialData));
 	if (cameraOffset == 0xFFFFFFFF || lightTableOffset == 0xFFFFFFFF ||
@@ -824,6 +835,8 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 	if (vkAllocateDescriptorSets(_Device, &dsai, &descriptorSet) != VK_SUCCESS)
 		return false;
+	if (_StatsEnabled)
+		++_StatsDescriptorSets;
 
 	VkWriteDescriptorSet writes[15];
 	memset(writes, 0, sizeof(writes));
@@ -853,13 +866,7 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 
 	// The mega pipelines declare VK_DYNAMIC_STATE_BLEND_CONSTANTS like the
 	// simple ones, so the state must be set on both paths.
-	const float blendConstants[4] = {
-		_BlendConstantColor.R / 255.f,
-		_BlendConstantColor.G / 255.f,
-		_BlendConstantColor.B / 255.f,
-		_BlendConstantColor.A / 255.f,
-	};
-	vkCmdSetBlendConstants(cmd, blendConstants);
+	setBlendConstants(cmd);
 	return true;
 }
 

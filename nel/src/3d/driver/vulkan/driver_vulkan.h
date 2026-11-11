@@ -721,6 +721,13 @@ private:
 	// --- Rendering (driver_vulkan_render.cpp) ---
 	bool					compileShader(const char *glsl, VkShaderModule *outModule, bool vertex);
 	VkPipeline				getPipeline(const CPipelineKey &key);
+	/// Dynamic state helpers: skip the call when the command buffer already
+	/// has that pipeline / those blend constants.
+	void					bindPipeline(VkCommandBuffer cmd, VkPipeline pipeline);
+	void					setBlendConstants(VkCommandBuffer cmd);
+	VkPipeline				_LastPipeline;
+	float					_BlendConstants[4];
+	bool					_BlendConstantsSet;
 	void					updateMaterialState(CMaterial &mat);
 	bool					setupVertexBuffer(CVertexBuffer &vb);
 	bool					drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count, VkPrimitiveTopology topo, uint32 indexStride);
@@ -783,6 +790,22 @@ private:
 	/// Texture copies recorded and bytes staged, per NLVK_STATS window.
 	uint64					_StatsTextureCopies;
 	uint64					_StatsUploadBytes;
+	/// State changes the GPU sees, per NLVK_STATS window: pipeline binds,
+	/// descriptor sets written, and texture stages bound to a real image.
+	uint64					_StatsPipelineBinds;
+	uint64					_StatsDescriptorSets;
+	uint64					_StatsTextureBinds;
+	/// Vertex layouts of the draws in the window, for the vertex-format report:
+	/// {CVertexBuffer flags, stride, draw count}, most frequent first.
+	struct SVertexFormatDraw
+	{
+		uint32			Flags;
+		uint32			Stride;
+		uint64			Draws;
+	};
+	SVertexFormatDraw		_StatsVertexFormats[16];
+	uint					_StatsVertexFormatCount;
+	void					countVertexFormat(uint32 flags, uint32 stride);
 	uint64					_StatsWindowStartNs;
 	uint64					_StatsWindowFrames;
 	/// Compile a glsl3vi snippet into the mega VP variants it can select.
@@ -838,6 +861,10 @@ private:
 	/// Staged light table, uploaded through the per-frame uniform ring at draw
 	/// time (same path as the camera/object/material blocks).
 	CLightTableUBOEntry			_MegaLightTableEntries[NL_VK_MEGA_MAX_LIGHT_TABLE];
+	/// Offset of this frame's light table block in the uniform ring, and
+	/// whether it still matches the engine's light state.
+	bool						_MegaLightTableValid;
+	uint32						_MegaLightTableOffset;
 	VkBuffer					_MegaUserBuffer;
 	VkDeviceMemory				_MegaUserBufferMemory;
 	CCameraUBOData				_MegaCameraData;
@@ -1104,6 +1131,18 @@ private:
 	uint32					_DepthFunc;
 	CRGBA					_BlendConstantColor;
 	CTextureVulkan			*_StageTextures[IDRV_PROGRAM_MAXSAMPLERS];
+	/// Stage binds of the previous material. When the next material asks for
+	/// the same texture in the same stage and the engine has not touched it,
+	/// the image is already current: skip the share-name build and the infos
+	/// lookup (measured at ~18% of a Debug frame, 1445 stage binds/frame).
+	ITexture				*_StageTextureSrc[IDRV_PROGRAM_MAXSAMPLERS];
+	CTextureVulkan			*_StageTextureVk[IDRV_PROGRAM_MAXSAMPLERS];
+	uint64					_StageTextureGen[IDRV_PROGRAM_MAXSAMPLERS];
+	/// Bumped when a texture drv infos is destroyed, so a recycled ITexture
+	/// address can never match a cached stage entry.
+	uint64					_TextureGeneration;
+	uint64					_StatsTexInfoHits;
+	uint64					_StatsTexInfoMisses;
 	CRGBA					_MaterialColor;
 	uint32					_TexEnv[4];
 	uint8					_MappedUV[4];
