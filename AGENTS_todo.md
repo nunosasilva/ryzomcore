@@ -570,7 +570,11 @@ Verified in game (`~/Projects/ryzom/ryzom_live_vk2_mega`, `Shadows = 1`,
 | account | password | slot | notes |
 |---|---|---|---|
 | `mats007` | `passDOSma` | 1 | main account |
-| `mats006` | `passDOSma` | 1 | second account, use it for a second concurrent client/agent |
+| `mats006` | `passDOSma` | 1 | second account, second concurrent client/agent |
+| `mats005` | `passDOSma` | 1 | third account, third concurrent client/agent |
+
+Slot `0` is the first character: those avatars are in a city, which is useful
+to test interiors/lightmaps. Slot `1` is the open-field character used so far.
 
 Only one client per account. When several agents need to run the game at the
 same time, assign each a different account explicitly in the agent prompt.
@@ -636,7 +640,7 @@ The account is single-session and a killed client keeps it for the network
 timeout + 30 s. Before the real login, force the session to be clean:
 
     ./ryzom_client mats007 passDOSma          # no slot: errors "already logged in" or waits at char select
-    sleep 10
+    sleep 20                                  # debug client start is slow; 10 s is not always enough
     kill %1                                    # or kill -9 the pid
     sleep 40
     ./ryzom_client mats007 passDOSma slot 1 --nopatch 1
@@ -1145,3 +1149,19 @@ described above.
   `vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed` while recreating the
   swapchain during teardown and has to be killed. Use Escape -> Quit Ryzom ->
   Quit Now for a clean logout (the logout packet is only sent on that path).
+
+## Open issue: memory usage (user report, 2026-11-11)
+
+The game now uses >3 GB resident RAM, roughly 3x the original client. Suspects:
+- `_TexturesVulkan` never evicts textures (every distinct ITexture keeps its
+  VkImage/ImageView/Sampler/Memory for the whole session; also a stale-texture
+  hazard when an ITexture address is recycled);
+- per-draw uniform/index rings only grow (`_UniformRingSize *= 2`, 16 MB index
+  ring) and old buffer allocations may be kept;
+- deferred-destroy lists and the upload-batch fence paths;
+- two frames in flight with full descriptor pools per frame (4096 sets each).
+Validate with NLVK_VALIDATION=1 and measure RSS at fixed points (login,
+character selection, in game after N minutes, after moving between areas).
+Implement texture eviction (`ITexture::TextureDrvShare` / ITextureDrvInfos) and
+check for double allocations. This is a task that can run concurrently with
+rendering work.
