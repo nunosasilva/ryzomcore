@@ -101,8 +101,8 @@ void CDriverVulkan::destroyTexture(CTextureVulkan &tex)
 		tex.Framebuffer == VK_NULL_HANDLE)
 		return;
 	// Commands that reference this texture may still be recording or in flight,
-	// so always release it at the next frame boundary.
-	_PendingTextureDestroy.push_back(tex);
+	// so retire it; beginFrame() frees it once it is two frames old.
+	_PendingTextureDestroy.push_back(std::make_pair(_SwapBufferCounter, tex));
 	tex = CTextureVulkan();
 }
 
@@ -358,10 +358,71 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 		return true;
 	}
 
-	return uploadTexturePixels(tex, out, sourceFormat);
+	return uploadTexturePixels(tex, out, sourceFormat, true);
 }
 
-bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out, CBitmap::TType sourceFormat)
+bool CDriverVulkan::beginUploadBatch()
+{
+	// The previous batch may still be executing: wait for its fence (a tiny
+	// copy-only submission, usually already done) before reusing the command
+	// buffer and freeing its staging buffers.
+	if (_UploadSubmitted)
+	{
+		vkWaitForFences(_Device, 1, &_UploadFence, VK_TRUE, UINT64_MAX);
+		_UploadSubmitted = false;
+		for (uint i = 0; i < _UploadStaging.size(); ++i)
+		{
+			vkDestroyBuffer(_Device, _UploadStaging[i].first, NULL);
+			vkFreeMemory(_Device, _UploadStaging[i].second, NULL);
+		}
+		_UploadStaging.clear();
+	}
+	if (_UploadRecording)
+		return true;
+
+	_UploadBatchImages.clear();
+	VkCommandBufferBeginInfo bi;
+	memset(&bi, 0, sizeof(bi));
+	bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	if (vkBeginCommandBuffer(_UploadCommandBuffer, &bi) != VK_SUCCESS)
+	{
+		nlwarning("Vulkan: vkBeginCommandBuffer(upload) failed");
+		return false;
+	}
+	_UploadRecording = true;
+	return true;
+}
+
+bool CDriverVulkan::submitUploadBatch()
+{
+	if (!_UploadRecording)
+		return false;
+	_UploadRecording = false;
+	if (vkEndCommandBuffer(_UploadCommandBuffer) != VK_SUCCESS)
+	{
+		nlwarning("Vulkan: vkEndCommandBuffer(upload) failed");
+		return false;
+	}
+
+	vkResetFences(_Device, 1, &_UploadFence);
+	VkSubmitInfo si;
+	memset(&si, 0, sizeof(si));
+	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	si.signalSemaphoreCount = 1;
+	si.pSignalSemaphores = &_UploadDone;
+	si.commandBufferCount = 1;
+	si.pCommandBuffers = &_UploadCommandBuffer;
+	if (vkQueueSubmit(_GraphicsQueue, 1, &si, _UploadFence) != VK_SUCCESS)
+	{
+		nlwarning("Vulkan: vkQueueSubmit(upload) failed");
+		return false;
+	}
+	_UploadSubmitted = true;
+	return true;
+}
+
+bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out, CBitmap::TType sourceFormat, bool deferred)
 {
 	uint width = out.Width;
 	uint height = out.Height;
@@ -429,25 +490,59 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out, CBit
 		++regionCount;
 	}
 
-	vkDeviceWaitIdle(_Device);
+	// A first-time upload targets a brand-new image that no in-flight frame can
+	// reference, so it is recorded into the shared upload batch and submitted
+	// once for the whole frame. An in-place update of an existing image is done
+	// synchronously instead: a frame that is still executing may be sampling
+	// the image we are about to overwrite. The exception is an image that
+	// already has a copy in this frame's batch: it must join the batch so that
+	// the two layout transitions execute in recording order.
+	if (!deferred)
+	{
+		for (size_t i = 0; i < _UploadBatchImages.size(); ++i)
+		{
+			if (_UploadBatchImages[i] == out.Image)
+			{
+				deferred = true;
+				break;
+			}
+		}
+	}
+
 	VkCommandBuffer cmd = VK_NULL_HANDLE;
-	VkCommandBufferAllocateInfo cbi;
-	memset(&cbi, 0, sizeof(cbi));
-	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	cbi.commandPool = _CommandPool;
-	cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	cbi.commandBufferCount = 1;
-	vkAllocateCommandBuffers(_Device, &cbi, &cmd);
-	VkCommandBufferBeginInfo bi;
-	memset(&bi, 0, sizeof(bi));
-	bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	vkBeginCommandBuffer(cmd, &bi);
+	if (deferred)
+	{
+		if (!beginUploadBatch())
+		{
+			vkDestroyBuffer(_Device, staging, NULL);
+			vkFreeMemory(_Device, stagingMemory, NULL);
+			return false;
+		}
+		cmd = _UploadCommandBuffer;
+	}
+	else
+	{
+		vkDeviceWaitIdle(_Device);
+		VkCommandBufferAllocateInfo cbi;
+		memset(&cbi, 0, sizeof(cbi));
+		cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		cbi.commandPool = _CommandPool;
+		cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		cbi.commandBufferCount = 1;
+		vkAllocateCommandBuffers(_Device, &cbi, &cmd);
+		VkCommandBufferBeginInfo bi;
+		memset(&bi, 0, sizeof(bi));
+		bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		vkBeginCommandBuffer(cmd, &bi);
+	}
 
 	VkImageMemoryBarrier barrier;
 	memset(&barrier, 0, sizeof(barrier));
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	barrier.oldLayout = out.Layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		: VK_IMAGE_LAYOUT_UNDEFINED;
 	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -462,22 +557,39 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out, CBit
 	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
-	vkEndCommandBuffer(cmd);
-
-	VkSubmitInfo si;
-	memset(&si, 0, sizeof(si));
-	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	si.commandBufferCount = 1;
-	si.pCommandBuffers = &cmd;
-	vkQueueSubmit(_GraphicsQueue, 1, &si, VK_NULL_HANDLE);
-	vkQueueWaitIdle(_GraphicsQueue);
-
-	vkFreeCommandBuffers(_Device, _CommandPool, 1, &cmd);
-	vkDestroyBuffer(_Device, staging, NULL);
-	vkFreeMemory(_Device, stagingMemory, NULL);
-
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		0, 0, NULL, 0, NULL, 1, &barrier);
 	out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+	if (deferred)
+	{
+		// Survives until the upload batch fence signals and the next batch
+		// starts (see beginUploadBatch()).
+		_UploadStaging.push_back(std::make_pair(staging, stagingMemory));
+		bool tracked = false;
+		for (size_t i = 0; i < _UploadBatchImages.size(); ++i)
+			if (_UploadBatchImages[i] == out.Image)
+				tracked = true;
+		if (!tracked)
+			_UploadBatchImages.push_back(out.Image);
+	}
+	else
+	{
+		vkEndCommandBuffer(cmd);
+
+		VkSubmitInfo si;
+		memset(&si, 0, sizeof(si));
+		si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		si.commandBufferCount = 1;
+		si.pCommandBuffers = &cmd;
+		vkQueueSubmit(_GraphicsQueue, 1, &si, VK_NULL_HANDLE);
+		vkQueueWaitIdle(_GraphicsQueue);
+
+		vkFreeCommandBuffers(_Device, _CommandPool, 1, &cmd);
+		vkDestroyBuffer(_Device, staging, NULL);
+		vkFreeMemory(_Device, stagingMemory, NULL);
+	}
 	out.Uploaded = true;
 	return true;
 }
@@ -549,7 +661,7 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 	{
 		// Same size: update the pixels in place so that nothing is destroyed
 		// while commands reference it (animated textures hit this path a lot).
-		if (bUpload && !uploadTexturePixels(tex, it->second, it->second.SourceFormat))
+		if (bUpload && !uploadTexturePixels(tex, it->second, it->second.SourceFormat, false))
 			return false;
 		tex.clearTouched();
 		bAllUploaded = bUpload;
