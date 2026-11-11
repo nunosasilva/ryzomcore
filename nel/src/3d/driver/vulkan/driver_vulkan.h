@@ -752,8 +752,8 @@ private:
 
 	std::map<ITexture *, CTextureVulkan>	_TexturesVulkan;
 	/// Textures retired during the given swap-buffer frame. They are freed once
-	/// that frame and the one after it are both known to be finished (two frame
-	/// slots in flight), without a device-wide wait.
+	/// every frame that can reference them is known to be finished, three frame
+	/// slots later, without a device-wide wait (see beginFrame()).
 	std::vector<std::pair<uint64, CTextureVulkan> >	_PendingTextureDestroy;
 	std::vector<std::pair<uint64, std::pair<VkBuffer, VkDeviceMemory> > >	_PendingBufferDestroy;
 
