@@ -97,18 +97,81 @@ void CDriverVulkan::destroyTexture(CTextureVulkan &tex)
 	if (!_Device)
 		return;
 	if (tex.Image == VK_NULL_HANDLE && tex.Memory == VK_NULL_HANDLE &&
-		tex.View == VK_NULL_HANDLE && tex.Sampler == VK_NULL_HANDLE)
+		tex.View == VK_NULL_HANDLE && tex.Sampler == VK_NULL_HANDLE &&
+		tex.Framebuffer == VK_NULL_HANDLE)
 		return;
 	// Commands that reference this texture may still be recording or in flight,
 	// so always release it at the next frame boundary.
 	_PendingTextureDestroy.push_back(tex);
 	tex = CTextureVulkan();
-	return;
-	if (tex.Sampler) { vkDestroySampler(_Device, tex.Sampler, NULL); tex.Sampler = VK_NULL_HANDLE; }
-	if (tex.View) { vkDestroyImageView(_Device, tex.View, NULL); tex.View = VK_NULL_HANDLE; }
-	if (tex.Image) { vkDestroyImage(_Device, tex.Image, NULL); tex.Image = VK_NULL_HANDLE; }
-	if (tex.Memory) { vkFreeMemory(_Device, tex.Memory, NULL); tex.Memory = VK_NULL_HANDLE; }
-	tex.Uploaded = false;
+}
+
+/// Create the image, memory, view and sampler of a texture. Used for both
+/// uploaded textures and render targets: the only difference is the usage
+/// flags (render targets add COLOR_ATTACHMENT).
+bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCount,
+	VkImageUsageFlags usage, CTextureVulkan &out)
+{
+	VkImageCreateInfo ici;
+	memset(&ici, 0, sizeof(ici));
+	ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	ici.imageType = VK_IMAGE_TYPE_2D;
+	ici.extent.width = width;
+	ici.extent.height = height;
+	ici.extent.depth = 1;
+	ici.mipLevels = mipCount;
+	ici.arrayLayers = 1;
+	ici.format = NL_VK_TEXTURE_FORMAT;
+	ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+	ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	ici.usage = usage;
+	ici.samples = VK_SAMPLE_COUNT_1_BIT;
+	ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	if (vkCreateImage(_Device, &ici, NULL, &out.Image) != VK_SUCCESS)
+		return false;
+
+	VkMemoryRequirements req;
+	vkGetImageMemoryRequirements(_Device, out.Image, &req);
+	VkMemoryAllocateInfo mai;
+	memset(&mai, 0, sizeof(mai));
+	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	mai.allocationSize = req.size;
+	mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	if (vkAllocateMemory(_Device, &mai, NULL, &out.Memory) != VK_SUCCESS)
+		return false;
+	if (vkBindImageMemory(_Device, out.Image, out.Memory, 0) != VK_SUCCESS)
+		return false;
+
+	VkImageViewCreateInfo vci;
+	memset(&vci, 0, sizeof(vci));
+	vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	vci.image = out.Image;
+	vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	vci.format = NL_VK_TEXTURE_FORMAT;
+	vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	vci.subresourceRange.levelCount = mipCount;
+	vci.subresourceRange.layerCount = 1;
+	if (vkCreateImageView(_Device, &vci, NULL, &out.View) != VK_SUCCESS)
+		return false;
+
+	VkSamplerCreateInfo sci;
+	memset(&sci, 0, sizeof(sci));
+	sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	sci.magFilter = VK_FILTER_LINEAR;
+	sci.minFilter = VK_FILTER_LINEAR;
+	sci.mipmapMode = mipCount > 1 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+	sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	sci.maxLod = (float)mipCount;
+	vkCreateSampler(_Device, &sci, NULL, &out.Sampler);
+
+	out.Width = width;
+	out.Height = height;
+	out.Layers = 1;
+	out.Usage = usage;
+	out.Layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	return true;
 }
 
 VkImageView CDriverVulkan::getWhiteTexture()
@@ -133,7 +196,7 @@ VkImageView CDriverVulkan::getWhiteTexture()
 		ici.extent.depth = 1;
 		ici.mipLevels = 1;
 		ici.arrayLayers = 1;
-		ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+		ici.format = NL_VK_TEXTURE_FORMAT;
 		ici.tiling = VK_IMAGE_TILING_OPTIMAL;
 		ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -157,7 +220,7 @@ VkImageView CDriverVulkan::getWhiteTexture()
 		vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 		vci.image = _WhiteTexture.Image;
 		vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+		vci.format = NL_VK_TEXTURE_FORMAT;
 		vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		vci.subresourceRange.levelCount = 1;
 		vci.subresourceRange.layerCount = 1;
@@ -238,7 +301,11 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 {
 	destroyTexture(out);
 
-	tex.generate();
+	// A render target is drawn into, not uploaded: give it an image the
+	// render-target path can attach and skip pixel generation entirely.
+	const bool renderTarget = tex.getRenderTarget();
+	if (!renderTarget)
+		tex.generate();
 
 	uint width = tex.getWidth();
 	uint height = tex.getHeight();
@@ -246,10 +313,10 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 		return false;
 
 	CBitmap::TType sourceFormat = tex.getPixelFormat();
-	if (sourceFormat != CBitmap::RGBA)
+	if (!renderTarget && sourceFormat != CBitmap::RGBA)
 		tex.convertToType(CBitmap::RGBA);
 
-	if (sourceFormat == CBitmap::Alpha)
+	if (!renderTarget && sourceFormat == CBitmap::Alpha)
 	{
 		uint32 nonZero = 0;
 		const uint8 *px = (const uint8 *)tex.getPixels(0).getPtr();
@@ -259,71 +326,23 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	}
 
 	uint mipCount = 1;
-	if (tex.mipMapOn())
+	if (!renderTarget && tex.mipMapOn())
 	{
 		tex.buildMipMaps();
 		mipCount = max(1u, (uint)tex.getMipMapCount());
 	}
 
-	VkImageCreateInfo ici;
-	memset(&ici, 0, sizeof(ici));
-	ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-	ici.imageType = VK_IMAGE_TYPE_2D;
-	ici.extent.width = width;
-	ici.extent.height = height;
-	ici.extent.depth = 1;
-	ici.mipLevels = mipCount;
-	ici.arrayLayers = 1;
-	ici.format = VK_FORMAT_R8G8B8A8_UNORM;
-	ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-	ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	ici.samples = VK_SAMPLE_COUNT_1_BIT;
-	ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	if (vkCreateImage(_Device, &ici, NULL, &out.Image) != VK_SUCCESS)
+	VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	if (renderTarget)
+		usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	if (!createTextureImage(width, height, mipCount, usage, out))
 		return false;
 
-	VkMemoryRequirements req;
-	vkGetImageMemoryRequirements(_Device, out.Image, &req);
-	VkMemoryAllocateInfo mai;
-	memset(&mai, 0, sizeof(mai));
-	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	mai.allocationSize = req.size;
-	mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	if (vkAllocateMemory(_Device, &mai, NULL, &out.Memory) != VK_SUCCESS)
-		return false;
-	if (vkBindImageMemory(_Device, out.Image, out.Memory, 0) != VK_SUCCESS)
-		return false;
-
-	VkImageViewCreateInfo vci;
-	memset(&vci, 0, sizeof(vci));
-	vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-	vci.image = out.Image;
-	vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	vci.format = VK_FORMAT_R8G8B8A8_UNORM;
-	vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	vci.subresourceRange.levelCount = mipCount;
-	vci.subresourceRange.layerCount = 1;
-	if (vkCreateImageView(_Device, &vci, NULL, &out.View) != VK_SUCCESS)
-		return false;
-
-	VkSamplerCreateInfo sci;
-	memset(&sci, 0, sizeof(sci));
-	sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	sci.magFilter = VK_FILTER_LINEAR;
-	sci.minFilter = mipCount > 1 ? VK_FILTER_LINEAR : VK_FILTER_LINEAR;
-	sci.mipmapMode = mipCount > 1 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
-	sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	sci.maxLod = (float)mipCount;
-	vkCreateSampler(_Device, &sci, NULL, &out.Sampler);
-
-	out.Width = width;
-	out.Height = height;
-	out.Layers = 1;
 	out.HasAlpha = true;
 	out.SourceFormat = sourceFormat;
+
+	if (renderTarget)
+		return true;
 
 	if (sourceFormat == CBitmap::DXTC1 || sourceFormat == CBitmap::DXTC1Alpha ||
 		sourceFormat == CBitmap::DXTC3 || sourceFormat == CBitmap::DXTC5)
@@ -455,6 +474,7 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out, CBit
 	vkDestroyBuffer(_Device, staging, NULL);
 	vkFreeMemory(_Device, stagingMemory, NULL);
 
+	out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	out.Uploaded = true;
 	return true;
 }
@@ -488,6 +508,36 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 	bAllUploaded = false;
 
 	map<ITexture *, CTextureVulkan>::iterator it = _TexturesVulkan.find(&tex);
+
+	// Render targets are never uploaded from the CPU: their contents come from
+	// rendering. setRenderTarget() touches the texture on every bind, so this
+	// early-out is what keeps the rendered image from being overwritten.
+	if (tex.getRenderTarget())
+	{
+		if (it != _TexturesVulkan.end() && it->second.Image != VK_NULL_HANDLE &&
+			it->second.Width == tex.getWidth() && it->second.Height == tex.getHeight())
+		{
+			tex.clearTouched();
+			bAllUploaded = true;
+			return true;
+		}
+		CTextureVulkan created;
+		if (!uploadTextureVulkan(tex, created, false))
+			return false;
+		if (it != _TexturesVulkan.end())
+		{
+			destroyTexture(it->second);
+			it->second = created;
+		}
+		else
+		{
+			_TexturesVulkan.insert(make_pair(&tex, created));
+		}
+		tex.clearTouched();
+		bAllUploaded = true;
+		return true;
+	}
+
 	if (it != _TexturesVulkan.end() && !bMustRecreateSharedTexture && !tex.touched())
 		return true;
 

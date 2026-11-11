@@ -643,7 +643,7 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	pci.pColorBlendState = &colorBlend;
 	pci.pDynamicState = &dynamicState;
 	pci.layout = pipelineLayout;
-	pci.renderPass = _RenderPass;
+	pci.renderPass = key.Target ? _OffscreenRenderPass : _RenderPass;
 	pci.subpass = 0;
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
@@ -1927,15 +1927,16 @@ void CDriverVulkan::setupViewport(const CViewport &viewport)
 {
 	_Viewport = viewport;
 	// NeL viewports are normalized (0..1) relative to the render target.
-	float x = viewport.getX() * _SwapchainExtent.width;
-	float y = viewport.getY() * _SwapchainExtent.height;
-	float w = viewport.getWidth() * _SwapchainExtent.width;
-	float h = viewport.getHeight() * _SwapchainExtent.height;
+	VkExtent2D extent = currentTargetExtent();
+	float x = viewport.getX() * extent.width;
+	float y = viewport.getY() * extent.height;
+	float w = viewport.getWidth() * extent.width;
+	float h = viewport.getHeight() * extent.height;
 	if (_FrameOpen)
 	{
 		VkViewport vk;
 		vk.x = x;
-		vk.y = _SwapchainExtent.height - y;
+		vk.y = extent.height - y;
 		vk.width = w;
 		vk.height = -h; // GL-like bottom-up
 		vk.minDepth = 0.f;
@@ -1954,11 +1955,12 @@ void CDriverVulkan::setupScissor(const CScissor &scissor)
 	_Scissor = scissor;
 	if (_FrameOpen)
 	{
+		VkExtent2D extent = currentTargetExtent();
 		VkRect2D rect;
-		rect.offset.x = (sint32)(scissor.X * _SwapchainExtent.width);
-		rect.offset.y = (sint32)(_SwapchainExtent.height - (scissor.Y + scissor.Height) * _SwapchainExtent.height);
-		rect.extent.width = (uint32)(scissor.Width * _SwapchainExtent.width);
-		rect.extent.height = (uint32)(scissor.Height * _SwapchainExtent.height);
+		rect.offset.x = (sint32)(scissor.X * extent.width);
+		rect.offset.y = (sint32)(extent.height - (scissor.Y + scissor.Height) * extent.height);
+		rect.extent.width = (uint32)(scissor.Width * extent.width);
+		rect.extent.height = (uint32)(scissor.Height * extent.height);
 		vkCmdSetScissor(_CommandBuffers[_FrameIndex], 0, 1, &rect);
 	}
 }

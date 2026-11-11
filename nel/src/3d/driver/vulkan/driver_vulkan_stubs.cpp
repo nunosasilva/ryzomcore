@@ -295,21 +295,6 @@ void CDriverVulkan::setCursorScale(float scale)
 {
 }
 
-bool CDriverVulkan::setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel, uint32 cubeFace)
-{
-	return false;
-}
-
-bool CDriverVulkan::getRenderTargetSize(uint32 &width, uint32 &height)
-{
-	return false;
-}
-
-bool CDriverVulkan::copyTargetToTexture(ITexture *tex, uint32 offsetx, uint32 offsety, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel)
-{
-	return false;
-}
-
 bool CDriverVulkan::textureCoordinateAlternativeMode() const
 {
 	return false;
@@ -511,11 +496,6 @@ const char * CDriverVulkan::getDriverInformation()
 const char * CDriverVulkan::getVideocardInformation()
 {
 	return _DeviceProps.deviceName;
-}
-
-ITexture * CDriverVulkan::getRenderTarget() const
-{
-	return NULL;
 }
 
 IOcclusionQuery * CDriverVulkan::createOcclusionQuery()

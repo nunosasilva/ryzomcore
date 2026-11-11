@@ -35,6 +35,11 @@
 
 namespace NLVULKAN {
 
+/// Pixel format of every NeL texture uploaded or rendered to. Uploads convert
+/// to RGBA8, and an offscreen render pass can only be used with a framebuffer
+/// whose colour attachment has the same format, so both paths use this.
+static const VkFormat NL_VK_TEXTURE_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;
+
 /// Round a value up to a multiple of alignment.
 inline VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment)
 {
