@@ -872,3 +872,109 @@ Images (`/tmp/opencode/textcolor/`):
 - The Vulkan login form has a black backdrop where GL3 shows the 3D login
   scene (ring, logo, turtle). Pre-existing (the old driver screenshot is the
   same) and unrelated to this branch.
+
+## Branch `vulkan-transforms-perf` (2026-11-11, unverified in game)
+
+Base `e407be0f8`. Work stopped on request before any run on this branch: the
+account coordination changed mid-session (this task's account is
+`mats006`/`passDOSma`; `mats007` belongs to another agent) and game launches
+were forbidden. **Everything below compiles but has not been run in game.**
+
+### Reported problems and what was found
+
+1. **Avatar equipment (head, hair, gloves) displaced.** Reproduced in the
+   previous branch's captures:
+   `/tmp/opencode/fogbloom/megacheck1200.png` (in game, avatar headless with a
+   face and a hair item floating about one head above) and
+   `/tmp/opencode/ryzomtest/final/skin2400.png` (character selection: same
+   displacement in the 3D scene *and* in the UI portrait). The body itself is
+   correct. In game the body is CPU-skinned (it has blend shapes); the
+   equipment meshes are the ones that take the glsl3vi insert path
+   (`GPU Skinning Insert` / `GPU Skinning Simple Insert`). The likely cause is
+   therefore the GPU-skinning/insert path (bone palette, NlSkeleton staging or
+   the insert snippet), which had only ever been checked for "textured", never
+   for correct placement -- the GL drivers used for comparison run either the
+   legacy OpenGL driver (no glsl3vi at all) or CPU skinning.
+
+   Mitigation in this branch (correctness first): `supportVertexProgram(
+   IProgram::glsl3vi)` now returns **false** by default, so the engine uses the
+   known-correct CPU skinning path for equipment, NPCs and MRM geomorph. Set
+   `NLVK_GPUSKIN=1` to exercise the insert path again. If the avatar is then
+   correct, the insert path is confirmed as the cause and can be debugged in
+   isolation.
+
+2. **Huge tree branches too low.** Not reproduced on this branch (no runs).
+   In `megacheck1200.png` and `ryzomtest/final/final.png` the giant trees
+   render, but their canopies/branches are only ~20-30 m up instead of the
+   ~200 m visible in the reference client. These trees are drawn with the
+   wind-tree user vertex program (`glsl330v/MeshVPWindTree/UBO`, GLSL+UBO) and
+   the MRM geomorph insert path. Both are suspects. With `glsl3vi` disabled the
+   MRM geomorph path is out of the picture for a first A/B; if the branches are
+   still low, the next step is to compare the same spot against
+   `~/Projects/ryzom/ryzom_live` (legacy OpenGL driver, `Driver3D="OpenGL"`).
+   The object UBO staging itself is shared with every other mesh and is
+   correct for the ground/avatar, so a wrong MVP for just this class points at
+   the per-program UBO (wind tree `NlWindTree`) or its attribute setup, not at
+   `stageMegaObjectUBO`.
+
+3. **Flicker during character selection.** Not investigated in game. New
+   `NLVK_SCREENSHOT_EVERY=<n>` (`NLVK_SCREENSHOT=<prefix>.ppm
+   NLVK_SCREENSHOT_FRAME=<first>`) dumps consecutive frames (`prefix.<frame>.ppm`,
+   every `<n>` frames) so a 1-in-40 black frame can be captured and compared.
+   The first suspect is the swapchain/render-target resume path
+   (`beginMainPass(first=false)` uses `_ResumeRenderPass` with
+   `initialLayout=PRESENT_SRC_KHR`), the second is a frame in which a texture
+   upload or a deferred destroy stalls the queue. See the new batching below.
+
+### Performance changes in this branch (compile-verified only)
+
+- `beginFrame()` no longer calls `vkDeviceWaitIdle()`. Deferred texture and
+  buffer destroys are tagged with the swap-buffer frame and released once they
+  are two frames old (two frame slots are in flight, and the slot fence waited
+  at `beginFrame()` proves the older one finished). This removes a device-wide
+  stall whenever any texture or ring was recreated.
+- `stageUserUB()` keeps the ring offset of a block that has not been
+  `Touched` since it was copied. The 12 KiB `NlSkeleton` block is filled once
+  per skeleton and read by every one of its skinned draws; before, it was
+  memcpy'd into the ring for every draw. The cache is dropped when the ring
+  grows and at every `beginFrame()`.
+- First-time texture uploads are batched: newly created images cannot be
+  referenced by an in-flight frame, so their copies are recorded into one
+  upload command buffer and submitted once per `swapBuffers()` with a
+  semaphore, instead of one command buffer + `vkQueueWaitIdle` per texture.
+  In-place updates of an existing image (animated textures) keep the old
+  synchronous path because an in-flight frame may still be sampling it.
+  Staging buffers are freed when the batch fence signals at the start of the
+  next batch. This targets the long loading times.
+- `NLVK_STATS=1` logs every 120 frames: wall-clock ms/frame, drawers per frame,
+  and the average CPU cost of the descriptor+draw and index-copy paths. Use it
+  to produce the before/after numbers the task asks for (the old build did
+  ~12.5 fps at 1280x800 on the moor with ~700 indexed draws/frame; that number
+  includes a per-frame `vkDeviceWaitIdle` and the per-texture waits and is not
+  a clean baseline).
+
+### Next steps for the replacement agent
+
+1. Build with the command in `AGENTS_wip.md` and run the reliable login guard
+   with **`mats006`/`passDOSma`/slot 1**.
+2. Run once without `NLVK_GPUSKIN` and once with it, capturing at the same
+   frame (`NLVK_SCREENSHOT_SEQ=1`, `NLVK_SCREENSHOT_FRAME=2400`). The avatar's
+   head/hair should be correct without it; if so, the insert path is the bug.
+   The first thing to check there is the `NlSkeleton` block: dump the first
+   16 bone matrices and the paletteSkin/weight of a head vertex on both paths
+   (`fillGPUSkinBoneUBO()` is shared, so a difference would be in the driver's
+   `stageUserUB()`/descriptor staging or in the `VK_FORMAT_R8G8B8A8_USCALED`
+   attribute).
+3. Compare the giant-tree spot with `~/Projects/ryzom/ryzom_live` (its
+   `client.cfg` uses `Driver3D="OpenGL"`); take the same frame from both and
+   measure the canopy height. If the wind-tree VP is at fault, look at
+   `meshvp_wind_tree.cpp` (the GLSL UBO body is shared with GL3) and at the
+   `NlWindTree` user UBO staging.
+4. For the flicker, set `NLVK_SCREENSHOT_SEQ=1 NLVK_SCREENSHOT_EVERY=1
+   NLVK_SCREENSHOT_FRAME=2000` during character selection and diff consecutive
+   frames. Also try `NLVK_STATS=1` to see whether the black frame coincides
+   with a device stall.
+5. Validate the new upload batching with `NLVK_VALIDATION=1` (layout
+   transitions are the risk). If anything looks wrong, the fallback is a
+   one-line change: pass `false` from `uploadTextureVulkan()` to
+   `uploadTexturePixels()` to get the old synchronous path back.
