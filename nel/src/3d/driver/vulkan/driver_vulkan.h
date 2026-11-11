@@ -533,6 +533,22 @@ private:
 	uint32					_WindowHeight;
 	bool					_WindowVisible;
 	GfxMode					_CurrentMode;
+	/// release() started: no more frames, no more swapchain work.
+	bool					_ShuttingDown;
+	/// The swapchain could not be recreated (surface gone): stop presenting.
+	bool					_SwapchainLost;
+	/// NLVK_PRESENT_LOG=1: trace acquire/present per frame.
+	bool					_PresentLog;
+	/// Results of the calls of the frame being presented (for the present log).
+	VkResult				_LastAcquireResult;
+	VkResult				_LastFenceResult;
+	VkResult				_LastSubmitResult;
+	/// Timestamp of the previous logged present, for the frame interval.
+	uint64					_PresentLogLastNs;
+	/// Number of frames that could not be rendered/acquired, for the log.
+	uint64					_SkippedFrames;
+	/// Incremented on every successful swapchain creation.
+	uint32					_SwapchainGeneration;
 #if defined(NL_OS_UNIX) && !defined(NL_OS_MAC)
 	NLMISC::CVulkanEventEmitter _EventEmitter;
 #endif
@@ -648,7 +664,9 @@ private:
 	bool					createFramebuffers();
 	bool					createCommands();
 	bool					createSyncObjects();
-	void					recreateSwapchain();
+	bool					recreateSwapchain(const char *reason);
+	/// True while the X window still exists (X errors are not fatal).
+	bool					windowAlive();
 	void					recordFrameCommands(VkCommandBuffer cmd);
 	bool					beginFrame();
 	void					dumpScreenshot(const char *path);
