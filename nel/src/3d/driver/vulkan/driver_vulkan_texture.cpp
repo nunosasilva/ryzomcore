@@ -106,11 +106,49 @@ void CDriverVulkan::destroyTexture(CTextureVulkan &tex)
 	tex = CTextureVulkan();
 }
 
+VkFormat CDriverVulkan::compressedTextureFormat(CBitmap::TType format) const
+{
+	// All BC formats are sampleable when textureCompressionBC is supported.
+	// DXT1 loses its punch-through alpha if uploaded as BC1_RGB, so keep the
+	// RGBA variant: Ryzom uses DXT1 for foliage and other masked textures.
+	if (!_SupportsBC)
+		return VK_FORMAT_UNDEFINED;
+	switch (format)
+	{
+	case CBitmap::DXTC1:
+	case CBitmap::DXTC1Alpha:	return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+	case CBitmap::DXTC3:		return VK_FORMAT_BC2_UNORM_BLOCK;
+	case CBitmap::DXTC5:		return VK_FORMAT_BC3_UNORM_BLOCK;
+	default:					return VK_FORMAT_UNDEFINED;
+	}
+}
+
+void CDriverVulkan::releaseTextureDrvInfo(CTextureDrvInfosVulkan &info)
+{
+	_TextureUsed.erase(&info);
+	if (_AllocatedTextureMemory >= info.TextureMemory)
+		_AllocatedTextureMemory -= info.TextureMemory;
+	else
+		_AllocatedTextureMemory = 0;
+	info.TextureMemory = 0;
+	destroyTexture(info.Texture);
+}
+
+CTextureDrvInfosVulkan::~CTextureDrvInfosVulkan()
+{
+	// _Driver is always valid for the textures this driver created: IDriver's
+	// release() destroys every CTextureDrvShare (and therefore every entry)
+	// before the Vulkan device goes away.
+	if (_Driver)
+		_Driver->releaseTextureDrvInfo(*this);
+}
+
 /// Create the image, memory, view and sampler of a texture. Used for both
 /// uploaded textures and render targets: the only difference is the usage
-/// flags (render targets add COLOR_ATTACHMENT).
+/// flags (render targets add COLOR_ATTACHMENT) and the format (compressed
+/// textures keep their BC format, everything else is RGBA8).
 bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCount,
-	VkImageUsageFlags usage, CTextureVulkan &out)
+	VkImageUsageFlags usage, VkFormat format, CTextureVulkan &out)
 {
 	VkImageCreateInfo ici;
 	memset(&ici, 0, sizeof(ici));
@@ -121,7 +159,7 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 	ici.extent.depth = 1;
 	ici.mipLevels = mipCount;
 	ici.arrayLayers = 1;
-	ici.format = NL_VK_TEXTURE_FORMAT;
+	ici.format = format;
 	ici.tiling = VK_IMAGE_TILING_OPTIMAL;
 	ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	ici.usage = usage;
@@ -132,6 +170,7 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 
 	VkMemoryRequirements req;
 	vkGetImageMemoryRequirements(_Device, out.Image, &req);
+	out.MemorySize = req.size;
 	VkMemoryAllocateInfo mai;
 	memset(&mai, 0, sizeof(mai));
 	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -147,7 +186,7 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 	vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	vci.image = out.Image;
 	vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	vci.format = NL_VK_TEXTURE_FORMAT;
+	vci.format = format;
 	vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	vci.subresourceRange.levelCount = mipCount;
 	vci.subresourceRange.layerCount = 1;
@@ -168,8 +207,10 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 
 	out.Width = width;
 	out.Height = height;
+	out.MipLevels = mipCount;
 	out.Layers = 1;
 	out.Usage = usage;
+	out.Format = format;
 	out.Layout = VK_IMAGE_LAYOUT_UNDEFINED;
 	return true;
 }
@@ -297,6 +338,19 @@ VkImageView CDriverVulkan::getWhiteTexture()
 // Upload
 // ---------------------------------------------------------------------------
 
+/// Bytes of one 4x4 block of a BC format, or 0 for other formats.
+static uint32 compressedBlockBytes(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+	case VK_FORMAT_BC1_RGB_UNORM_BLOCK:	return 8;
+	case VK_FORMAT_BC2_UNORM_BLOCK:
+	case VK_FORMAT_BC3_UNORM_BLOCK:		return 16;
+	default:							return 0;
+	}
+}
+
 /// Bytes per texel of an uncompressed CBitmap format, or 0 for a format that
 /// has to be converted before it can be read (the compressed ones).
 static uint sourcePixelSize(CBitmap::TType format)
@@ -415,12 +469,35 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	if (width == 0 || height == 0)
 		return false;
 
+	// Compressed textures stay compressed all the way to the GPU when the
+	// device can sample BC images: the bitmap is not expanded to RGBA on the
+	// CPU, which used to multiply the client's texture memory by 4 to 8 (DXT1
+	// is 4 bits per texel, RGBA is 32) and quadrupled the upload bandwidth.
+	// An explicit upload format means the engine wants that representation
+	// (alpha-only fonts, luminance masks, forced RGBA), so only the automatic
+	// case keeps the BC data.
+	VkFormat format = VK_FORMAT_UNDEFINED;
+	if (!renderTarget && tex.getUploadFormat() == ITexture::Auto)
+		format = compressedTextureFormat(tex.getPixelFormat());
+	const bool compressed = (format != VK_FORMAT_UNDEFINED);
+
 	uint mipCount = 1;
 	if (!renderTarget && tex.mipMapOn())
 	{
-		tex.buildMipMaps();
-		mipCount = max(1u, (uint)tex.getMipMapCount());
+		if (compressed)
+		{
+			// DDS files ship their mip chain; CBitmap::buildMipMaps() only
+			// works on RGBA data and would decompress the whole texture.
+			mipCount = max(1u, (uint)tex.getMipMapCount());
+		}
+		else
+		{
+			tex.buildMipMaps();
+			mipCount = max(1u, (uint)tex.getMipMapCount());
+		}
 	}
+	if (!compressed)
+		format = NL_VK_TEXTURE_FORMAT;
 
 	// TRANSFER_SRC is always on so any texture can be the source of
 	// stretchRect()'s vkCmdBlitImage (the engine also stretches plain textures).
@@ -428,19 +505,19 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 		VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 	if (renderTarget)
 		usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-	if (!createTextureImage(width, height, mipCount, usage, out))
+	if (!createTextureImage(width, height, mipCount, usage, format, out))
 		return false;
 
 	out.HasAlpha = true;
+	out.Compressed = compressed;
 	out.SourceFormat = tex.getPixelFormat();
 
 	if (renderTarget)
 		return true;
 
-	if (out.SourceFormat == CBitmap::DXTC1 || out.SourceFormat == CBitmap::DXTC1Alpha ||
-		out.SourceFormat == CBitmap::DXTC3 || out.SourceFormat == CBitmap::DXTC5)
-		nldebug("Vulkan: compressed texture %ux%u format=%d (%s) decompressed on upload",
-			width, height, (int)out.SourceFormat, typeid(tex).name());
+	if (compressed)
+		nldebug("Vulkan: compressed texture %ux%u %u mips format=%d uploaded as BC",
+			width, height, mipCount, (int)out.SourceFormat);
 
 	if (!upload)
 	{
@@ -622,22 +699,27 @@ bool CDriverVulkan::endTextureCopy(VkCommandBuffer cmd, bool deferred, VkImage i
 
 bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out, bool deferred)
 {
-	uint mipCount = 1;
 	if (out.Image == VK_NULL_HANDLE)
 		return false;
 
-	// Mip count is implied by the image; re-derive it from the texture.
-	if (tex.mipMapOn())
-		mipCount = max(1u, (uint)tex.getMipMapCount());
+	const uint32 mipCount = out.MipLevels ? out.MipLevels : 1;
 
-	// Read the bitmap in its own (uncompressed) format; see the note above.
-	if (!prepareTexturePixels(tex))
+	// Compressed textures are copied straight from the CBitmap: its mip chain
+	// is already DXT data, so nothing is converted or generated on the CPU.
+	if (!out.Compressed && !prepareTexturePixels(tex))
 		return false;
 
 	// Build the staging buffer and record all mip copies in one submit.
 	VkDeviceSize totalSize = 0;
 	for (uint i = 0; i < mipCount; ++i)
-		totalSize += (VkDeviceSize)tex.getWidth(i) * tex.getHeight(i) * 4;
+	{
+		if (out.Compressed)
+			totalSize += tex.getPixels(i).size();
+		else
+			totalSize += (VkDeviceSize)tex.getWidth(i) * tex.getHeight(i) * 4;
+	}
+	if (totalSize == 0)
+		return false;
 
 	VkBuffer staging = VK_NULL_HANDLE;
 	VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
@@ -654,8 +736,17 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out, bool
 	{
 		uint w = tex.getWidth(i);
 		uint h = tex.getHeight(i);
-		VkDeviceSize size = (VkDeviceSize)w * h * 4;
-		copyTextureRect(tex, i, CRect(0, 0, w, h), (uint8 *)mapped + offset);
+		VkDeviceSize size;
+		if (out.Compressed)
+		{
+			size = tex.getPixels(i).size();
+			memcpy((uint8 *)mapped + offset, tex.getPixels(i).getPtr(), (size_t)size);
+		}
+		else
+		{
+			size = (VkDeviceSize)w * h * 4;
+			copyTextureRect(tex, i, CRect(0, 0, w, h), (uint8 *)mapped + offset);
+		}
 		regions[regionCount].bufferOffset = offset;
 		regions[regionCount].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		regions[regionCount].imageSubresource.mipLevel = i;
@@ -713,6 +804,91 @@ bool CDriverVulkan::uploadTextureRegion(ITexture &tex, CTextureVulkan &out, cons
 {
 	if (out.Image == VK_NULL_HANDLE || tex.getWidth(mipLevel) == 0 || tex.getHeight(mipLevel) == 0)
 		return false;
+
+	// Compressed textures are updated in whole 4x4 blocks. This is the path
+	// CAsyncTextureManager uses to stream a DDS texture in a few block rows at
+	// a time, so it must not decompress anything.
+	if (out.Compressed)
+	{
+		const uint32 blockBytes = compressedBlockBytes(out.Format);
+		if (blockBytes == 0 || mipLevel >= tex.getMipMapCount() || mipLevel >= out.MipLevels)
+			return false;
+		const uint32 blocksX = (tex.getWidth(mipLevel) + 3) / 4;
+		const uint32 blocksY = (tex.getHeight(mipLevel) + 3) / 4;
+		// The engine streams full-width rows in multiples of 4 lines, but clamp
+		// to the mip so a caller with an arbitrary rect still lands in bounds.
+		sint bx0 = std::max(0, rect.X) / 4;
+		sint by0 = std::max(0, rect.Y) / 4;
+		sint bx1 = std::min<sint>(blocksX, (std::max(0, rect.X) + rect.Width + 3) / 4);
+		sint by1 = std::min<sint>(blocksY, (std::max(0, rect.Y) + rect.Height + 3) / 4);
+		if (bx1 <= bx0 || by1 <= by0)
+			return true;
+		const uint32 rowBytes = (uint32)(bx1 - bx0) * blockBytes;
+		const uint32 srcRowStride = blocksX * blockBytes;
+		const uint8 *src = (const uint8 *)tex.getPixels(mipLevel).getPtr();
+		if (!src)
+			return false;
+		const VkDeviceSize size = (VkDeviceSize)rowBytes * (by1 - by0);
+		VkBuffer staging = VK_NULL_HANDLE;
+		VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+		void *mapped = NULL;
+		staging = createStagingBuffer(_Device, _PhysicalDevice, size, &stagingMemory, &mapped);
+		if (staging == VK_NULL_HANDLE)
+			return false;
+		for (sint by = by0; by < by1; ++by)
+			memcpy((uint8 *)mapped + (by - by0) * rowBytes,
+				src + by * srcRowStride + bx0 * blockBytes, rowBytes);
+
+		bool batched = false;
+		VkCommandBuffer cmd = beginTextureCopy(out.Image, out.Layout == VK_IMAGE_LAYOUT_UNDEFINED, batched);
+		if (cmd == VK_NULL_HANDLE)
+		{
+			vkDestroyBuffer(_Device, staging, NULL);
+			vkFreeMemory(_Device, stagingMemory, NULL);
+			return false;
+		}
+
+		VkImageMemoryBarrier barrier;
+		memset(&barrier, 0, sizeof(barrier));
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.oldLayout = out.Layout;
+		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = out.Image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.baseMipLevel = mipLevel;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+		barrier.srcAccessMask = out.Layout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_SHADER_READ_BIT;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		vkCmdPipelineBarrier(cmd,
+			out.Layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+		VkBufferImageCopy region;
+		memset(&region, 0, sizeof(region));
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.mipLevel = mipLevel;
+		region.imageSubresource.layerCount = 1;
+		region.imageOffset.x = bx0 * 4;
+		region.imageOffset.y = by0 * 4;
+		region.imageExtent.width = std::min((uint32)(bx1 - bx0) * 4, tex.getWidth(mipLevel));
+		region.imageExtent.height = std::min((uint32)(by1 - by0) * 4, tex.getHeight(mipLevel));
+		region.imageExtent.depth = 1;
+		vkCmdCopyBufferToImage(cmd, staging, out.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+		out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		out.Uploaded = true;
+		return endTextureCopy(cmd, batched, out.Image, staging, stagingMemory);
+	}
 
 	CRect clipped = rect;
 	if (!clampTextureRect(clipped, tex.getWidth(mipLevel), tex.getHeight(mipLevel)))
@@ -788,22 +964,105 @@ bool CDriverVulkan::uploadTextureRegion(ITexture &tex, CTextureVulkan &out, cons
 	return endTextureCopy(cmd, batched, out.Image, staging, stagingMemory);
 }
 
+// ---------------------------------------------------------------------------
+// Driver texture infos
+// ---------------------------------------------------------------------------
+
+void CDriverVulkan::setTextureImage(CTextureDrvInfosVulkan &info, CTextureVulkan &created)
+{
+	if (_AllocatedTextureMemory >= info.TextureMemory)
+		_AllocatedTextureMemory -= info.TextureMemory;
+	else
+		_AllocatedTextureMemory = 0;
+	destroyTexture(info.Texture);
+	info.Texture = created;
+	info.TextureMemory = (uint32)created.MemorySize;
+	_AllocatedTextureMemory += info.TextureMemory;
+	created = CTextureVulkan();
+}
+
+CTextureDrvInfosVulkan *CDriverVulkan::getTextureDrvInfos(ITexture &tex, bool *created)
+{
+	if (created)
+		*created = false;
+
+	// First use by the engine: create the per-texture share object, and get it
+	// registered so that IDriver::release() tears it down with the driver.
+	if (!tex.TextureDrvShare)
+	{
+		ItTexDrvSharePtrList it = _TexDrvShares.insert(_TexDrvShares.end(), (NL3D::CTextureDrvShare *)NULL);
+		*it = tex.TextureDrvShare = new CTextureDrvShare(this, it, &tex);
+	}
+
+	// Shared textures: one image per share name, whatever the number of
+	// ITexture instances that point at it. This is what keeps the client from
+	// uploading the same .dds once per mesh that uses it.
+	if (tex.supportSharing())
+	{
+		string name;
+		getTextureShareName(tex, name);
+
+		// The destructor of a replaced infos removes its map entry and takes
+		// _SyncTexDrvInfos, so the previous entry must die outside the lock.
+		NLMISC::CSmartPtr<ITextureDrvInfos> maybeDeleted;
+		CTextureDrvInfosVulkan *info = NULL;
+		{
+			CSynchronized<TTexDrvInfoPtrMap>::CAccessor access(&_SyncTexDrvInfos);
+			TTexDrvInfoPtrMap &map = access.value();
+			ItTexDrvInfoPtrMap it = map.find(name);
+			if (it == map.end())
+			{
+				it = map.insert(make_pair(name, (ITextureDrvInfos *)NULL)).first;
+				info = new CTextureDrvInfosVulkan(this, it, this);
+				it->second = info;
+				if (created)
+					*created = true;
+			}
+			else
+			{
+				info = static_cast<CTextureDrvInfosVulkan *>((ITextureDrvInfos *)it->second);
+			}
+			maybeDeleted = tex.TextureDrvShare->DrvTexture;
+			tex.TextureDrvShare->DrvTexture = info;
+		}
+		return info;
+	}
+
+	if (!tex.TextureDrvShare->DrvTexture)
+	{
+		// Unshared texture: the infos dies with the ITexture. Passing a NULL
+		// driver keeps it out of the share-name map.
+		tex.TextureDrvShare->DrvTexture = new CTextureDrvInfosVulkan(NULL, ItTexDrvInfoPtrMap(), this);
+		if (created)
+			*created = true;
+	}
+	return static_cast<CTextureDrvInfosVulkan *>((ITextureDrvInfos *)tex.TextureDrvShare->DrvTexture);
+}
+
+CTextureDrvInfosVulkan *CDriverVulkan::findTextureDrvInfos(const ITexture &tex) const
+{
+	if (!tex.TextureDrvShare || !tex.TextureDrvShare->DrvTexture)
+		return NULL;
+	return static_cast<CTextureDrvInfosVulkan *>((ITextureDrvInfos *)tex.TextureDrvShare->DrvTexture);
+}
+
 CTextureVulkan *CDriverVulkan::getTextureVulkan(ITexture &tex)
 {
-	map<ITexture *, CTextureVulkan>::iterator it = _TexturesVulkan.find(&tex);
-	if (it != _TexturesVulkan.end())
-		return &it->second;
-
-	CTextureVulkan created;
-	if (!uploadTextureVulkan(tex, created, true))
-		return NULL;
-	pair<map<ITexture *, CTextureVulkan>::iterator, bool> inserted = _TexturesVulkan.insert(make_pair(&tex, created));
-	return &inserted.first->second;
+	CTextureDrvInfosVulkan *info = getTextureDrvInfos(tex);
+	if (info->Texture.Image == VK_NULL_HANDLE)
+	{
+		CTextureVulkan created;
+		if (!uploadTextureVulkan(tex, created, true))
+			return NULL;
+		setTextureImage(*info, created);
+	}
+	return &info->Texture;
 }
 
 bool CDriverVulkan::isTextureExist(const ITexture &tex)
 {
-	return _TexturesVulkan.find(const_cast<ITexture *>(&tex)) != _TexturesVulkan.end();
+	const CTextureDrvInfosVulkan *info = findTextureDrvInfos(tex);
+	return info != NULL && info->Texture.Image != VK_NULL_HANDLE;
 }
 
 bool CDriverVulkan::setupTexture(ITexture &tex)
@@ -816,15 +1075,16 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 {
 	bAllUploaded = false;
 
-	map<ITexture *, CTextureVulkan>::iterator it = _TexturesVulkan.find(&tex);
+	bool createdInfo = false;
+	CTextureDrvInfosVulkan *info = getTextureDrvInfos(tex, &createdInfo);
+	CTextureVulkan &vk = info->Texture;
 
 	// Render targets are never uploaded from the CPU: their contents come from
 	// rendering. setRenderTarget() touches the texture on every bind, so this
 	// early-out is what keeps the rendered image from being overwritten.
 	if (tex.getRenderTarget())
 	{
-		if (it != _TexturesVulkan.end() && it->second.Image != VK_NULL_HANDLE &&
-			it->second.Width == tex.getWidth() && it->second.Height == tex.getHeight())
+		if (vk.Image != VK_NULL_HANDLE && vk.Width == tex.getWidth() && vk.Height == tex.getHeight())
 		{
 			tex.clearTouched();
 			bAllUploaded = true;
@@ -833,25 +1093,28 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 		CTextureVulkan created;
 		if (!uploadTextureVulkan(tex, created, false))
 			return false;
-		if (it != _TexturesVulkan.end())
-		{
-			destroyTexture(it->second);
-			it->second = created;
-		}
-		else
-		{
-			_TexturesVulkan.insert(make_pair(&tex, created));
-		}
+		setTextureImage(*info, created);
 		tex.clearTouched();
 		bAllUploaded = true;
 		return true;
 	}
 
-	if (it != _TexturesVulkan.end() && !bMustRecreateSharedTexture && !tex.touched())
+	// A shared texture found through its share name already holds the pixels
+	// another ITexture uploaded. Loading this instance's bitmap would be pure
+	// overhead (and its size is not even known before generate()), so leave the
+	// image alone unless the caller explicitly wants it recreated.
+	if (!createdInfo && tex.supportSharing() && !bMustRecreateSharedTexture)
+	{
+		tex.clearTouched();
+		bAllUploaded = true;
+		return true;
+	}
+
+	if (vk.Image != VK_NULL_HANDLE && !bMustRecreateSharedTexture && !tex.touched())
 		return true;
 
-	if (it != _TexturesVulkan.end() && it->second.Image != VK_NULL_HANDLE &&
-		it->second.Width == tex.getWidth() && it->second.Height == tex.getHeight())
+	if (vk.Image != VK_NULL_HANDLE && !bMustRecreateSharedTexture &&
+		vk.Width == tex.getWidth() && vk.Height == tex.getHeight())
 	{
 		// Same size: update the pixels in place so that nothing is destroyed
 		// while commands reference it (animated textures hit this path a lot).
@@ -867,7 +1130,7 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 			// copies.
 			if (tex.isAllInvalidated() || tex.mipMapOn())
 			{
-				if (!uploadTexturePixels(tex, it->second, false))
+				if (!uploadTexturePixels(tex, vk, false))
 					return false;
 			}
 			else
@@ -875,7 +1138,7 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 				const list<CRect> &rects = tex._ListInvalidRect;
 				for (list<CRect>::const_iterator r = rects.begin(); r != rects.end(); ++r)
 				{
-					if (!uploadTextureRegion(tex, it->second, *r, 0))
+					if (!uploadTextureRegion(tex, vk, *r, 0))
 						return false;
 				}
 			}
@@ -888,15 +1151,7 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 	CTextureVulkan created;
 	if (!uploadTextureVulkan(tex, created, bUpload))
 		return false;
-	if (it != _TexturesVulkan.end())
-	{
-		destroyTexture(it->second);
-		it->second = created;
-	}
-	else
-	{
-		_TexturesVulkan.insert(make_pair(&tex, created));
-	}
+	setTextureImage(*info, created);
 	tex.clearTouched();
 	bAllUploaded = bUpload;
 	return true;
@@ -904,30 +1159,22 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 
 bool CDriverVulkan::uploadTexture(ITexture &tex, CRect &rect, uint8 nNumMipMap)
 {
-	map<ITexture *, CTextureVulkan>::iterator it = _TexturesVulkan.find(&tex);
+	CTextureDrvInfosVulkan *info = getTextureDrvInfos(tex);
 
 	// Create the image without pixels if this is the first use: the caller is
 	// streaming one rectangle of a mip level in (shape bank / async texture
 	// manager), so uploading the whole bitmap here would read regions that have
 	// not been generated yet.
-	if (it == _TexturesVulkan.end() || it->second.Image == VK_NULL_HANDLE ||
-		it->second.Width != tex.getWidth() || it->second.Height != tex.getHeight())
+	if (info->Texture.Image == VK_NULL_HANDLE ||
+		info->Texture.Width != tex.getWidth() || info->Texture.Height != tex.getHeight())
 	{
 		CTextureVulkan created;
 		if (!uploadTextureVulkan(tex, created, false))
 			return false;
-		if (it != _TexturesVulkan.end())
-		{
-			destroyTexture(it->second);
-			it->second = created;
-		}
-		else
-		{
-			it = _TexturesVulkan.insert(make_pair(&tex, created)).first;
-		}
+		setTextureImage(*info, created);
 	}
 
-	return uploadTextureRegion(tex, it->second, rect, nNumMipMap);
+	return uploadTextureRegion(tex, info->Texture, rect, nNumMipMap);
 }
 
 bool CDriverVulkan::uploadTextureCube(ITexture &tex, CRect &rect, uint8 nNumMipMap, uint8 nNumFace)
@@ -937,15 +1184,22 @@ bool CDriverVulkan::uploadTextureCube(ITexture &tex, CRect &rect, uint8 nNumMipM
 
 uintptr_t CDriverVulkan::getTextureHandle(const ITexture &tex)
 {
-	map<ITexture *, CTextureVulkan>::const_iterator it = _TexturesVulkan.find(const_cast<ITexture *>(&tex));
-	if (it == _TexturesVulkan.end())
+	const CTextureDrvInfosVulkan *info = findTextureDrvInfos(tex);
+	if (!info)
 		return 0;
-	return (uintptr_t)it->second.Image;
+	return (uintptr_t)info->Texture.Image;
 }
 
 void CDriverVulkan::swapTextureHandle(ITexture &tex0, ITexture &tex1)
 {
-	swap(_TexturesVulkan[&tex0], _TexturesVulkan[&tex1]);
+	// Both textures must have driver data before their contents are swapped.
+	bool allUploaded = false;
+	setupTextureEx(tex0, true, allUploaded, false);
+	setupTextureEx(tex1, true, allUploaded, false);
+	CTextureDrvInfosVulkan *a = getTextureDrvInfos(tex0);
+	CTextureDrvInfosVulkan *b = getTextureDrvInfos(tex1);
+	swap(a->Texture, b->Texture);
+	swap(a->TextureMemory, b->TextureMemory);
 }
 
 } /* namespace NLVULKAN */

@@ -148,12 +148,31 @@ CDriverVulkan::CDriverVulkan()
 	_FragmentShader = VK_NULL_HANDLE;
 	_DefaultSampler = VK_NULL_HANDLE;
 	_TestPipeline = VK_NULL_HANDLE;
+	_SupportsBC = false;
+	_AllocatedTextureMemory = 0;
+	_UsedTextureMemorySumEnabled = false;
+	_VertexRing = VK_NULL_HANDLE;
+	_VertexRingMemory = VK_NULL_HANDLE;
+	_VertexRingMapped = NULL;
+	_VertexRingSize = 0;
+	_VertexRingOffset = 0;
+	_VertexRingFrameBase = 0;
+	_VertexRingHalf = 0;
 	_IndexRing = VK_NULL_HANDLE;
 	_IndexRingMemory = VK_NULL_HANDLE;
 	_IndexRingMapped = NULL;
 	_IndexRingSize = 0;
 	_IndexRingOffset = 0;
 	_IndexRingDrawOffset = 0;
+	_IndexRingFrameBase = 0;
+	_IndexRingHalf = 0;
+	_UniformRing = VK_NULL_HANDLE;
+	_UniformRingMemory = VK_NULL_HANDLE;
+	_UniformRingMapped = NULL;
+	_UniformRingSize = 0;
+	_UniformRingOffset = 0;
+	_UniformRingFrameBase = 0;
+	_UniformRingHalf = 0;
 	_CurrentVB = NULL;
 	_CurrentIB = NULL;
 	_IndexValues = NULL;
@@ -189,6 +208,7 @@ CDriverVulkan::CDriverVulkan()
 	_AmbientColor = CRGBA(51, 51, 51);
 
 	_MegaEnabled = getenv("NLVK_MEGA") != NULL;
+	_LightMapLogged = false;
 	_MegaResourcesReady = false;
 	_ActiveUserVP = NULL;
 	_NelvpActiveUB = NULL;
@@ -358,6 +378,9 @@ bool CDriverVulkan::pickPhysicalDevice()
 			_PhysicalDevice = devices[i];
 			_GraphicsFamily = q;
 			_DeviceProps = props;
+			VkPhysicalDeviceFeatures features;
+			vkGetPhysicalDeviceFeatures(devices[i], &features);
+			_SupportsBC = (features.textureCompressionBC == VK_TRUE);
 			nlinfo("Vulkan: using '%s' (API %u.%u.%u)", props.deviceName,
 				VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion), VK_VERSION_PATCH(props.apiVersion));
 			return true;
@@ -383,6 +406,8 @@ bool CDriverVulkan::createLogicalDevice()
 	memset(&features, 0, sizeof(features));
 	features.fillModeNonSolid = VK_TRUE; // wireframe polygon mode
 	features.wideLines = VK_TRUE;
+	// Needed to upload DXTC textures without expanding them on the CPU.
+	features.textureCompressionBC = _SupportsBC ? VK_TRUE : VK_FALSE;
 
 	VkDeviceCreateInfo dci;
 	memset(&dci, 0, sizeof(dci));
@@ -872,9 +897,9 @@ bool CDriverVulkan::initVulkan()
 
 		VkDescriptorPoolSize poolSize[2];
 		poolSize[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		poolSize[0].descriptorCount = 65536;
+		poolSize[0].descriptorCount = 4 * 4096;
 		poolSize[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		poolSize[1].descriptorCount = 32768;
+		poolSize[1].descriptorCount = 4096;
 		VkDescriptorPoolCreateInfo dpci;
 		memset(&dpci, 0, sizeof(dpci));
 		dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -896,10 +921,10 @@ bool CDriverVulkan::initVulkan()
 
 	// Uniform ring: per-draw uniform slots, host visible, reset each frame.
 	// The mega path writes camera, object and material blocks per draw, and a
-	// user vertex program adds its own block; dense vegetation can reach tens
-	// of thousands of draws per frame, so size it generously up front and grow
-	// it without destroying a buffer a frame may still reference.
-	_UniformRingSize = 128 * 1024 * 1024;
+	// user vertex program adds its own block. Each frame uses its own half, so
+	// a frame that is still executing never sees the next frame's blocks; the
+	// ring starts small and doubles when a dense frame needs more room.
+	_UniformRingSize = 4 * 1024 * 1024;
 	{
 		VkBufferCreateInfo bci;
 		memset(&bci, 0, sizeof(bci));
@@ -921,6 +946,8 @@ bool CDriverVulkan::initVulkan()
 			return false;
 		vkBindBufferMemory(_Device, _UniformRing, _UniformRingMemory, 0);
 		vkMapMemory(_Device, _UniformRingMemory, 0, VK_WHOLE_SIZE, 0, &_UniformRingMapped);
+		_UniformRingHalf = _UniformRingSize / 2;
+		_UniformRingFrameBase = 0;
 		_UniformRingOffset = 0;
 	}
 
@@ -1015,16 +1042,11 @@ void CDriverVulkan::shutdownVulkan()
 
 	if (_Device)
 	{
-		// Textures.
-		for (map<ITexture *, CTextureVulkan>::iterator it = _TexturesVulkan.begin(); it != _TexturesVulkan.end(); ++it)
-		{
-			CTextureVulkan &tex = it->second;
-			if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
-			if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
-			if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
-			if (tex.Memory) vkFreeMemory(_Device, tex.Memory, NULL);
-		}
-		_TexturesVulkan.clear();
+		// Textures that still have a driver object (whichever ones are left
+		// after IDriver::release()) are retired through _PendingTextureDestroy
+		// and freed above; nothing else holds a VkImage here.
+		_TextureUsed.clear();
+		_AllocatedTextureMemory = 0;
 		CTextureVulkan &white = _WhiteTexture;
 		if (white.Sampler) vkDestroySampler(_Device, white.Sampler, NULL);
 		if (white.View) vkDestroyImageView(_Device, white.View, NULL);
@@ -1053,6 +1075,8 @@ void CDriverVulkan::shutdownVulkan()
 		if (_UniformRingMemory) { vkFreeMemory(_Device, _UniformRingMemory, NULL); _UniformRingMemory = VK_NULL_HANDLE; }
 		if (_IndexRing) { vkDestroyBuffer(_Device, _IndexRing, NULL); _IndexRing = VK_NULL_HANDLE; }
 		if (_IndexRingMemory) { vkFreeMemory(_Device, _IndexRingMemory, NULL); _IndexRingMemory = VK_NULL_HANDLE; }
+		if (_VertexRing) { vkDestroyBuffer(_Device, _VertexRing, NULL); _VertexRing = VK_NULL_HANDLE; }
+		if (_VertexRingMemory) { vkFreeMemory(_Device, _VertexRingMemory, NULL); _VertexRingMemory = VK_NULL_HANDLE; }
 		if (_ScreenshotBuffer) { vkDestroyBuffer(_Device, _ScreenshotBuffer, NULL); _ScreenshotBuffer = VK_NULL_HANDLE; }
 		if (_ScreenshotMemory) { vkFreeMemory(_Device, _ScreenshotMemory, NULL); _ScreenshotMemory = VK_NULL_HANDLE; }
 
@@ -1362,9 +1386,13 @@ bool CDriverVulkan::beginFrame()
 	_FrameOpen = true;
 	_RenderTargetTexture = NULL;
 	_RenderTargetInfo = NULL;
-	_IndexRingOffset = 0;
-	_UniformRingOffset = 0;
-	// Cached user-block offsets point into this frame's ring, which starts at 0.
+	_IndexRingFrameBase = _FrameIndex * _IndexRingHalf;
+	_IndexRingOffset = _IndexRingFrameBase;
+	_VertexRingFrameBase = _FrameIndex * _VertexRingHalf;
+	_VertexRingOffset = _VertexRingFrameBase;
+	_UniformRingFrameBase = _FrameIndex * _UniformRingHalf;
+	_UniformRingOffset = _UniformRingFrameBase;
+	// Cached user-block offsets point into this frame's half of the ring.
 	memset(_UserUBStageCache, 0, sizeof(_UserUBStageCache));
 	memset(_UserUBStageSize, 0, sizeof(_UserUBStageSize));
 	_MegaLightTableStaged = false;
@@ -1550,11 +1578,14 @@ bool CDriverVulkan::swapBuffers()
 	_ClearDepthPending = false;
 	_ClearStencilPending = false;
 	_FrameOpen = false;
+	if (_UsedTextureMemorySumEnabled)
+		_TextureUsed.clear();
 
 	if ((_SwapBufferCounter % 600) == 0)
-		nldebug("Vulkan: frame %llu, %u vertex draws, %u indexed draws, %u pipelines, %llu target binds",
+		nldebug("Vulkan: frame %llu, %u vertex draws, %u indexed draws, %u pipelines, %llu target binds, %llu MB textures",
 			(unsigned long long)_SwapBufferCounter, _ArrayDrawCount, _IndexedDrawCount,
-			(uint)_PipelineCache.size(), (unsigned long long)_RenderTargetBinds);
+			(uint)_PipelineCache.size(), (unsigned long long)_RenderTargetBinds,
+			(unsigned long long)(_AllocatedTextureMemory >> 20));
 
 	// NLVK_STATS: wall-clock frame time plus the CPU cost of the per-draw
 	// paths. The counters are cumulative since the previous report.
