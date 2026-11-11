@@ -2247,3 +2247,91 @@ safe, high-value work to the GPU, preferring shared engine code so OpenGL/GL3
 keep working. Candidates: skinning/palette transforms, MRM geomorph, particle
 and vegetation updates, per-frame vertex/index generation, matrix math,
 texture conversion/mipmaps, sorting, lightmap/fog.
+
+## Windowed resize — fixed (`vulkan-resize`, commit `d61e31182`)
+
+Resizing the window in windowed mode (`FullScreen = 0`) froze the windowed
+client on a black screen, and showed up as **two** bugs in the same path:
+
+1. **Hang.** `swapBuffers()` handled the resize itself, after the frame had
+   already acquired a swapchain image and reset that frame slot's fence. It
+   destroyed the swapchain, discarded the frame (submit and present skipped)
+   but left `_Fences[slot]` reset, then called `beginFrame()` for a new frame
+   on the same slot: `vkWaitForFences(..., UINT64_MAX)` blocked forever.
+   Reproduction at the login screen: resize once, process sleeps forever with
+   `wchan = drm_syncobj_array_wait_timeout`; gdb stack
+   `vkWaitForFences <- beginFrame (driver_vulkan.cpp:1503) <- swapBuffers
+   (:1739) <- CDriverUser::swapBuffers <- loginMainLoop`.
+   A second, spurious recreation was involved too: `_WindowWidth/_WindowHeight`
+   were only refreshed by `isActive()`, which the game loop does not call, so
+   after a present-driven recreate the cached size still held the old value
+   and swapBuffers recreated the swapchain again in the next frame.
+
+2. **In-game segfault.** On the first frame after a resize,
+   `vkAcquireNextImageKHR` returns `VK_ERROR_OUT_OF_DATE_KHR`. `beginFrame()`
+   recreated the swapchain and returned false. `beginDefaultRenderTarget()`
+   (driver_user2.cpp) ignores `setRenderTarget()`'s return, so the scene was
+   recorded with no target bound; `CFXAA::applyEffect()` then dereferenced
+   `getRenderTarget()` (null) at `fxaa.cpp:351` -> SIGSEGV (core dump:
+   `#0 NL3D::CFXAA::applyEffect` <- `mainLoop:1782`, `_RenderTargetTexture=0`,
+   `_FrameOpen=true`). This only happens in game because that is where the
+   FXAA/bloom default render target is bound.
+
+### Fix (all in `nel/src/3d/driver/vulkan/driver_vulkan{.cpp,.h}`)
+
+- The swapchain is replaced **at the start of `beginFrame()`**, before the
+  fence wait and the acquire: no image is acquired and no command buffer is
+  recording, so the old images can be destroyed and the fences keep their
+  meaning. `swapBuffers()` only sets `_SwapchainOutOfDate` on present
+  `OUT_OF_DATE`/`SUBOPTIMAL`; `setMode()` does the same (plus `XSync` so the
+  surface sees the new geometry) instead of recreating synchronously.
+- `beginFrame()` **retries the acquire once** after replacing an out-of-date
+  swapchain instead of failing the frame, so `setRenderTarget()` cannot be
+  left with "no frame" mid-frame. A failed acquire signals neither the
+  semaphore nor the fence, so the retry reuses them safely.
+- `createSwapchain()` clamps the extent to `[1, maxImageExtent]` (a minimized
+  window reports 0x0, which `vkCreateSwapchainKHR` rejects) and caches the
+  surface extent as the window size, so the next frame's size check and
+  `getWindowSize()` agree with the images.
+- `beginFrame()` skips frames while the window has no drawable size and asks X
+  again (`isActive()`) before giving up, rather than creating a 0x0 swapchain
+  or presenting into a surface nobody consumes.
+- `recreateSwapchain()` refuses to run with a frame open (defensive warning)
+  and marks the swapchain lost if the depth/framebuffer recreation fails,
+  instead of continuing with null handles.
+
+### Verification
+
+Built Debug (`build-vulkan`), Xvfb 1600x1000 and gamescope 1280x800, windowed
+1280x800, `NLVK_VALIDATION=1 NLVK_STATS=1`.
+
+| run | what | result |
+|---|---|---|
+| login screen (gamescope + Xvfb) | 1024x640, 1400x900, 1x1, 1280x800, 800x600, 1600x1000 | one swapchain recreation per size, frames keep coming, `login-after-*` captures correct |
+| in game (Xvfb, mats005) | 1280x800 -> 1024x640 -> 1400x900 -> 900x600 -> 1280x800, then 1x1, 640x400, 1600x1000, rapid 0.3 s alternation | no hang, no crash (`EXIT=0` at the end), swapchain recreated at every size, in-game capture `shots-game4/after-resizes.png` correct |
+| in game (pre-fix, Xvfb) | 1024x640 -> 1400x900 | SIGSEGV in `CFXAA::applyEffect` (the bug above) |
+| login screen (pre-fix, gamescope) | 1024x640 | hang in `vkWaitForFences`, gdb stack recorded |
+| shutdown | `xdotool windowclose` (WM_DELETE) in game | exit 0, render targets released, no dump |
+| validation | all of the above | only the known gamescope `VkSwapchainPresentModeInfoKHR` / `VK_EXT_surface_maintenance1` WSI messages and the pre-existing "vertex attribute not consumed" pipeline warnings |
+
+Evidence in `/tmp/opencode/vkresize/`: `hang-first-resize.log` (pre-fix hang
+log + gdb), core `2665770` in `coredumpctl` (FXAA crash), `run/client.log`,
+`shots-game4/`, `shots-gs2/`, `shots/`, `xvfb-*.log`. Test scripts:
+`run-gs.sh`, `run-xvfb.sh`, `resize-test.sh`, `resize-in-game.sh`,
+`stop-gs.sh`. The run dir is `/tmp/opencode/vkresize/run` (data/cfg/examples
+symlinked to `~/Projects/ryzom/ryzom_live`, `client.cfg` with
+`Driver3D="Vulkan"`, `FullScreen=0`, 1280x800).
+
+### Notes / left
+
+- `setMode()` still only resizes the X window; there is no real fullscreen
+  path in this driver (no override-redirect/XRandR mode switch). The deferred
+  swapchain recreate is the same code path the resize tests exercise, and a
+  `FullScreen = 1` start was checked (renders, exit 0). A true fullscreen
+  toggle is still open, and it is a client/driver feature gap, not this bug.
+- The engine ignores `setRenderTarget()`'s return value in
+  `beginDefaultRenderTarget()`, so any future driver failure there crashes
+  FXAA. The driver now avoids the failure, but the engine call site is worth
+  hardening separately.
+- `isActive()` still returns false for an unmapped window; the loading loop
+  (`progress.cpp`) exits the client in that case. Pre-existing, untouched.
