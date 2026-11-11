@@ -2374,6 +2374,13 @@ namespace NLGUI
 		_XReal+= dx;
 		_YReal+= dy;
 
+		// A zero delta is the per-frame refresh call from CWidgetManager: every
+		// group that needs it (CGroupInScene) is a top-level window and is
+		// visited directly, and multiplying a zero delta down the whole UI tree
+		// is a no-op. Non-zero deltas still move all children.
+		if (dx == 0 && dy == 0)
+			return;
+
 		// Move all my sons.
 		vector<CViewBase*>::const_iterator ite;
 		for (ite = _EltOrder.begin() ; ite != _EltOrder.end(); ite++)

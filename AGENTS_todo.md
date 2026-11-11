@@ -2535,3 +2535,183 @@ latent network bug that fires whenever the server disconnects the client.
   them to `poll()` would remove the >1024-client limit, but the client fix
   does not depend on it.
 - No client/gamescope left running.
+
+## CPU -> GPU offload audit (branch `vulkan-offload`, base `1dec94a8b`)
+
+Task: find work still done on the CPU that should be on the GPU, profile it,
+and move the safe/high-value parts. Account `mats006` slot 1, FINAL build,
+1280x800, Vulkan (RADV 840M), same measurement wrapper as the perf assessment
+(`gamescope --backend headless`, `NLVK_STATS=1`, `perf record -F 499 -g`).
+
+### Verdict
+
+The remaining FINAL CPU is engine logic (visibility, animation, UI layout,
+matrix math); most of it has no honest GPU equivalent that fits a bounded
+change. **The one significant GPU-offloadable block is software skinning +
+MRM geomorph, and that path already exists in the tree** (the `glsl3vi` insert
+vertex program, `gpu_skin_vp.cpp`). It works on GL3 but is disabled on Vulkan
+because the insert path draws the character's rigid parts in the wrong place
+(`supportVertexProgram(glsl3vi)` is opt-in behind `NLVK_GPUSKIN` because of
+it). Fixing that is the next real offload; it is ~4% of the FINAL frame.
+
+What was implemented here instead is the safe part: two measured CPU
+reductions in shared engine code (they benefit every driver) plus a driver
+capability split that separates "can do MRM geomorph" from "can do bone
+skinning" and removes the engine's dependency on the single `glsl3vi` flag
+(which is what made it impossible to enable one without the other).
+
+### Profile ranking (FINAL, Vulkan, same spot; `perf`, self time)
+
+DSO shares: `libnel3d` 33.7%, RADV 15.6%, `libnel_drv_vulkan` 12.0%,
+`libnelmisc` 8.0%, `libnelgui` 7.9%, `ryzom_client` 5.8%, libc 3.8%,
+kernel 3.7% (`vk-base` run; NLVK_STATS adds ~2.5% of `clock_gettime`).
+
+Top self-time symbols (percent of process CPU):
+
+| % | symbol |
+|---|---|
+| 2.73 | `NL3D::CLandscapeVegetableBlock::update` (per-block distance bucket) |
+| 2.39 | `NLGUI::CInterfaceGroup::onFrameUpdateWindowPos` (zero-delta tree walk) |
+| 2.21 | `NLVULKAN::CDriverVulkan::updateMaterialState` |
+| 2.20 | `NLVULKAN::CDriverVulkan::bindMegaDescriptors` |
+| 1.81 | `NL3D::CLandscape::render` (clear/preRender/refill/render) |
+| 1.64 | `NLMISC::CMatrix::setMulMatrix` |
+| 1.37+0.87+0.85+0.51 | `CMeshMRMSkinnedGeom::applyArrayRawSkinNormal2/3/4/1` (CPU skinning, 3.6% together) |
+| 1.23 | `memmove` (uniform/index staging) |
+| 1.11 | `CMatrix::setMulMatrixNoProj` (bone matrices) |
+| 1.06 | `commitPushConstants` |
+| 0.98 | `stageMegaObjectUBO` |
+| 0.93 | `drawIndexed` |
+| 0.75 | `CTrackSampledQuatSmallHeader::evalTime` |
+| 0.74 | `CInterfaceElement::onFrameUpdateWindowPos` (part of the same walk) |
+| 0.73 | `CPatch::preRender` |
+| 0.63 | `CVegetableManager::render` |
+| 0.59 | `CTrackSampledQuatSmallHeader::eval` |
+
+Grouped: skinning ~4.0%, UI per-frame window walk ~3.1%, matrix math ~3.2%,
+landscape (patch refine/render) ~3.0%, animation tracks ~2.4%, driver
+per-draw (bind/stage/push) ~7%, particles/ribbons ~0.6%.
+
+### Candidate table
+
+| candidate | where | measured cost | GPU/offload equivalent | risk | GL/GL3 impact |
+|---|---|---|---|---|---|
+| GPU bone skinning | `gpu_skin_vp.cpp`, `mesh*skinned*.cpp`, `skeleton_model.cpp` | 4.0% of CPU (all `applyArrayRawSkin*`) | vertex shader bone palette (`glsl3vi` insert VP) — **already implemented** | **high today**: Vulkan draws rigid parts displaced; must be fixed and validated | GL3 uses the same path (it compiles the insert VP); GL2 unaffected |
+| MRM geomorph | `mesh_mrm.cpp` render path, same insert VP | <0.5% in the measured spots (opaque MRM goes through `beginMesh`/VB heap, which has no GPU path) | same vertex program with `useSkeleton=0` | medium; only reached for non-mesh-block draws | shared |
+| Landscape vegetable bucket update | `landscape_vegetable_block.cpp`, `landscape.cpp` | 2.7-4.8% | none (per-block visibility/LOD bookkeeping) | low → **implemented** as a CPU fast path | shared, all drivers |
+| UI per-frame window walk | `interface_group.cpp`, `widget_manager.cpp` | 3.1% | none (CPU layout) | low → **implemented** as a zero-delta short-circuit | shared, all drivers |
+| Per-frame bone matrices | `bone.cpp` (`setMulMatrixNoProj`) | 1.1% | compute shader skeleton update (big redesign) | high | shared |
+| Matrix concatenation | `matrix.cpp` (`setMulMatrix`) | 1.6% | instance data in UBOs; CPU scene graph still needed | high | shared |
+| Scene culling (spheres/planes/clip) | `mesh*.cpp`, `tess_block`, `clip_trav` | ~2.5% | GPU culling + indirect draws (big redesign) | high | shared |
+| Particle/ribbon geometry | `ps_ribbon*.cpp` | ~0.6% | GPU particles/geometry shader (big redesign) | high | shared |
+| Descriptor sets | `driver_vulkan_mega_render.cpp` | 1.04 sets/draw | dynamic offsets + cache — **already tried and was a wash** (see the descriptor section above) | - | Vulkan only |
+| Texture upload/DXT | driver | ~0.01 MiB/frame in game | already BC + mips; no per-frame conversion | - | - |
+
+### GPU skinning: what was found (do not redo this)
+
+Facts established in game (Vulkan FINAL, `NLVK_GPUSKIN=1`, screenshots under
+`/tmp/opencode/offload/`):
+
+* With GPU skinning enabled, the character's rigid parts (gloves, boots,
+  head/hair) are displaced and rotated; the CPU-skinned body is correct.
+* `NLVK_SKIN_IDENTITY` (insert shader skips skinning entirely) renders a
+  correct bind pose with every part attached → the GPU vertex buffer, the
+  palette attribute (`R8G8B8A8_USCALED`, offset 80, stride 84) and the weights
+  are right.
+* The bone block staged into the Vulkan uniform ring matches the engine's
+  `CUniformBuffer` byte-for-byte, and the descriptor at binding 6 points at
+  that offset/range (`SKINDBG` logs, now removed).
+* GL3 (same engine code, same shader source, same bone block) renders the
+  avatar correctly and logs `GL3: compiled insert vertex program`.
+* A debug insert shader that shifts vertices by +2 m had **no visible effect
+  on GL3**, i.e. GL3 may not be executing the insert VP for those draws even
+  though it compiles it. Verify that before assuming GL3 is the reference:
+  put the shift in `gpu_skin_vp.cpp` (`NLVK_SKIN_SHIFT` was the temporary
+  switch) and look at the gloves.
+* Conclusion: the engine data path is correct; the remaining bug is in the
+  Vulkan insert program's use of the bone block (binding/shader interaction),
+  not in `fillGPUSkinBoneUBO`, the vertex layout or the descriptor staging.
+
+The capability split added here (`IDriver::supportGPUSkinning()`,
+`InterfaceVersion` 0x75) lets a future fix turn Vulkan skinning on without
+also turning on the geomorph path, and guards `CMeshMRMSkinnedGeom::render`'s
+non-skeleton insert path (previously it did not check the driver at all and
+would try to use `glsl3vi` on GL2).
+
+### Implemented: zero-delta UI tree walk (`interface_group.cpp`)
+
+`CWidgetManager` calls `onFrameUpdateWindowPos(0,0)` on every top-level group
+that needs a per-frame position (all `CGroupInScene` windows: name labels,
+bubbles, flying text — 639 of them in the measured scene). The base
+`CInterfaceGroup::onFrameUpdateWindowPos` then recursed through the whole
+element tree adding zero. Every scene group is a top-level window
+(`addWindowToMasterGroup`), so the recursion was pure no-op work.
+
+`onFrameUpdateWindowPos` now returns after moving itself when `dx==dy==0`.
+Non-zero deltas still move all children. Scene groups still get their direct
+call from the widget manager, compute their projected position and call the
+base with the real delta.
+
+Measured (`perf`, same spot, FINAL):
+* before: `CInterfaceGroup::onFrameUpdateWindowPos` 2.39% +
+  `CInterfaceElement::onFrameUpdateWindowPos` 0.74% of all samples;
+* after: **0 samples in both**.
+
+### Implemented: vegetable distance-bucket fast path
+
+`CLandscape::refine` called `CLandscapeVegetableBlock::update` for every
+vegetable block every frame. `update` only does work when the view center
+crosses a distance bucket (`NL3D_VEGETABLE_BLOCK_ELTDIST` steps); otherwise it
+recomputes the same bucket and returns. The block now caches the squared
+distance range of its current bucket (`_SqrDistMin/_SqrDistMax`, updated with
+`_CurDistType`) and the refine loop skips the call while the view center stays
+inside it. Bucket boundaries are inclusive, exactly matching the old
+incremental loop; the initial state (no instance groups) uses
+`[Array[NUMDIST], FLT_MAX]`, so the first update still happens when the block
+becomes visible.
+
+Measured (`perf`, giant-forest spot with a heavy vegetable field):
+* before: `CLandscapeVegetableBlock::update` 4.78% of samples;
+* after: `update` 0.68% + `isInCurrentDistanceType` 1.3% (the check inlines
+  into `CLandscape::refine` in the final version).
+
+### Before / after (FINAL, Vulkan, same spot and draw count)
+
+Same client build, `NLVK_STATS=1`, three consecutive logins, ~920-922
+draws/frame. Wall time includes GPU (4.1-4.3 ms); the CPU record is the
+engine+driver path.
+
+| build | CPU record | wall ms/frame | fps |
+|---|---|---|---|
+| base `1dec94a8b` | 6.10-6.88 ms | 8.09-8.57 | 117-124 |
+| + UI zero-delta skip | 5.81-6.02 ms | 7.64 | 131 |
+| + vegetable fast path | 5.60-5.87 ms | 6.92-7.32 | 137-144 |
+
+Run-to-run variance on this box is a few percent (other agents' builds), so
+treat the perf percentages above as the precise numbers and the wall-clock
+rows as the end-to-end effect. Total: about **0.8 ms of the 6.5 ms CPU record
+removed (-12%)**, ~0.9-1.3 ms of wall time.
+
+### Verification
+
+* FINAL `build-final` and Debug `build-vulkan` both build the client and all
+  three drivers.
+* Vulkan FINAL: rendering unchanged (screenshots `ui-simple.png`, `veg.png`,
+  `veg2.png` under `/tmp/opencode/offload/`; HUD, name labels, avatar,
+  vegetables, landscape).
+* GL3 (same FINAL binary, `Driver3D="OpenGL3"`, Xvfb): starts, renders the
+  same scene, labels and HUD correct (`gl3-final.png`).
+* `NLVK_VALIDATION=1`: only the known gamescope `VkSwapchainPresentModeInfoKHR`
+  VUIDs and the existing `vkCreateDevice` extension warning; no new errors.
+* Client stopped with SIGTERM; no clients left running.
+
+### Recommended next steps
+
+1. Fix the Vulkan insert skinning (the facts above narrow it to the bone block
+   as seen by the shader). Then enable `supportGPUSkinning()` for Vulkan and
+   reclaim ~4% CPU. Verify GL3's insert path actually executes first.
+2. GPU culling / indirect draws would attack the ~2.5% clip/transform work and
+   the per-draw `setupModelMatrix`; that is the next structural offload.
+3. `CWidgetManager::getWindowUnder` (0.6%) runs hit-testing every frame even
+   when the mouse has not moved; cache by pointer position + UI generation.
+4. Descriptor caching stays rejected (measured a wash, see above).

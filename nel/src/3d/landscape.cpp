@@ -742,7 +742,10 @@ void			CLandscape::refine(const CVector &refineCenter)
 		CLandscapeVegetableBlock	*vegetBlock= _VegetableBlockList.begin();
 		for(;vegetBlock != nullptr; vegetBlock= (CLandscapeVegetableBlock*)vegetBlock->Next)
 		{
-			vegetBlock->update(refineCenter, _VegetableManager);
+			// Most blocks stay in the same distance bucket every frame; skip the
+			// call (and its instance-group work) when the bucket cannot change.
+			if (!vegetBlock->isInCurrentDistanceType(refineCenter))
+				vegetBlock->update(refineCenter, _VegetableManager);
 		}
 
 		// update lighting for vegetables
