@@ -55,6 +55,14 @@ namespace NLVULKAN {
 
 static const char *s_ValidationLayers[] = { "VK_LAYER_KHRONOS_validation" };
 
+/// X error handler that ignores protocol errors. Xlib's default handler exits
+/// the process, which turns a window that the WM destroyed first into a fake
+/// crash; the driver must survive queries on a dead window.
+static int ignoreXError(Display *, XErrorEvent *)
+{
+	return 0;
+}
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL vulkanDebugCallback(
 	VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 	VkDebugUtilsMessageTypeFlagsEXT type,
@@ -73,6 +81,24 @@ static bool checkVk(VkResult res, const char *what)
 	return false;
 }
 
+/// Name of a VkResult, for the NLVK_PRESENT_LOG traces.
+static const char *vkResultName(VkResult res)
+{
+	switch (res)
+	{
+	case VK_SUCCESS: return "VK_SUCCESS";
+	case VK_NOT_READY: return "VK_NOT_READY";
+	case VK_TIMEOUT: return "VK_TIMEOUT";
+	case VK_SUBOPTIMAL_KHR: return "VK_SUBOPTIMAL_KHR";
+	case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";
+	case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";
+	case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+	case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+	case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+	default: return "VkResult";
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Construction / destruction
 // ---------------------------------------------------------------------------
@@ -85,6 +111,15 @@ CDriverVulkan::CDriverVulkan()
 	, _WindowWidth(0)
 	, _WindowHeight(0)
 	, _WindowVisible(false)
+	, _ShuttingDown(false)
+	, _SwapchainLost(false)
+	, _PresentLog(getenv("NLVK_PRESENT_LOG") != NULL)
+	, _LastAcquireResult(VK_SUCCESS)
+	, _LastFenceResult(VK_SUCCESS)
+	, _LastSubmitResult(VK_SUCCESS)
+	, _PresentLogLastNs(0)
+	, _SkippedFrames(0)
+	, _SwapchainGeneration(0)
 	, _PipelineLayout(VK_NULL_HANDLE)
 	, _TestPipeline(VK_NULL_HANDLE)
 	, _Instance(VK_NULL_HANDLE)
@@ -282,6 +317,21 @@ bool CDriverVulkan::init(uintptr_t windowIcon, emptyProc exitFunc)
 
 bool CDriverVulkan::release()
 {
+	// The client calls release() from its shutdown path and then deletes the
+	// driver; the destructor calls shutdownVulkan() again. Everything below is
+	// idempotent, but the first call is the one that owns the teardown.
+	if (!_ShuttingDown)
+	{
+		_ShuttingDown = true;
+		// Finish all submitted work while the window is still mapped: a present
+		// that is pending on a window that no longer exists must not stall the
+		// teardown. Then unmap, like the GL3 driver, so the compositor has
+		// nothing left to present.
+		if (_Device)
+			vkDeviceWaitIdle(_Device);
+		if (_Display && _XWindow && _WindowVisible)
+			showWindow(false);
+	}
 	bool ret = IDriver::release();
 	shutdownVulkan();
 	return ret;
@@ -541,6 +591,7 @@ bool CDriverVulkan::createSwapchain()
 	}
 
 	nlinfo("Vulkan: swapchain %ux%u, %u images", _SwapchainExtent.width, _SwapchainExtent.height, imageCount);
+	++_SwapchainGeneration;
 	return true;
 }
 
@@ -995,6 +1046,10 @@ bool CDriverVulkan::initVulkan()
 
 void CDriverVulkan::shutdownVulkan()
 {
+	// No frame may be recorded or presented from here on. release() sets this
+	// before calling us; the destructor path may run without it.
+	_ShuttingDown = true;
+
 	if (_Device)
 		vkDeviceWaitIdle(_Device);
 
@@ -1003,6 +1058,8 @@ void CDriverVulkan::shutdownVulkan()
 		for (uint i = 0; i < _PendingTextureDestroy.size(); ++i)
 		{
 			CTextureVulkan tex = _PendingTextureDestroy[i].second;
+			// Render targets own a framebuffer as well as the image and view.
+			if (tex.Framebuffer) vkDestroyFramebuffer(_Device, tex.Framebuffer, NULL);
 			if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
 			if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
 			if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
@@ -1018,6 +1075,11 @@ void CDriverVulkan::shutdownVulkan()
 		_PendingBufferDestroy.clear();
 		freeUploadStaging();
 	}
+
+	// Destroy the window system objects first: the swapchain must go before the
+	// surface, and the presentation semaphores (_RenderFinished) are only free
+	// once the swapchain that waits on them is gone.
+	destroySwapchain();
 
 	if (_UploadFence) { vkDestroyFence(_Device, _UploadFence, NULL); _UploadFence = VK_NULL_HANDLE; }
 	if (_UploadDone) { vkDestroySemaphore(_Device, _UploadDone, NULL); _UploadDone = VK_NULL_HANDLE; }
@@ -1037,8 +1099,6 @@ void CDriverVulkan::shutdownVulkan()
 		_CommandPool = VK_NULL_HANDLE;
 		_CommandBuffers.clear();
 	}
-
-	destroySwapchain();
 
 	if (_Device)
 	{
@@ -1106,6 +1166,26 @@ void CDriverVulkan::shutdownVulkan()
 		}
 		vkDestroyInstance(_Instance, NULL);
 		_Instance = VK_NULL_HANDLE;
+	}
+
+	// The window and the display connection are ours. The WM may already have
+	// destroyed the window (or the surface never got created), so X errors are
+	// ignored here instead of being turned into a process exit by Xlib.
+#if defined(NL_OS_UNIX) && !defined(NL_OS_MAC)
+	_EventEmitter.closeIM();
+#endif
+	if (_Display)
+	{
+		XErrorHandler oldHandler = XSetErrorHandler(ignoreXError);
+		if (_XWindow && _OwnWindow)
+		{
+			XDestroyWindow(_Display, _XWindow);
+			XSync(_Display, False);
+		}
+		XSetErrorHandler(oldHandler);
+		_XWindow = 0;
+		XCloseDisplay(_Display);
+		_Display = NULL;
 	}
 }
 
@@ -1185,18 +1265,39 @@ bool CDriverVulkan::setMode(const GfxMode &mode)
 		_WindowHeight = mode.Height;
 		XResizeWindow(_Display, _XWindow, _WindowWidth, _WindowHeight);
 		XFlush(_Display);
-		recreateSwapchain();
+		recreateSwapchain("setMode");
 	}
 	return true;
 }
 
-void CDriverVulkan::recreateSwapchain()
+bool CDriverVulkan::recreateSwapchain(const char *reason)
 {
+	// Nothing to recreate once the driver is shutting down, and nothing to
+	// recreate it on once the swapchain is gone for good.
+	if (_ShuttingDown || _SwapchainLost || !_Device || !_Surface)
+		return false;
+	if (!windowAlive())
+	{
+		// The WM destroyed the window. Asking the surface for its capabilities
+		// would only log VK_ERROR_SURFACE_LOST_KHR; stop presenting instead.
+		_SwapchainLost = true;
+		nlwarning("Vulkan: window destroyed (%s); rendering stopped", reason);
+		return false;
+	}
+	if (_PresentLog)
+		nlinfo("Vulkan present: recreating swapchain (generation %u): %s", _SwapchainGeneration, reason);
 	destroySwapchain();
 	if (!createSwapchain())
-		return;
+	{
+		// The surface is gone (window destroyed). There is no way back without
+		// a new window: stop presenting instead of calling into a null
+		// swapchain every frame.
+		_SwapchainLost = true;
+		nlwarning("Vulkan: swapchain recreation failed (%s); rendering stopped", reason);
+		return false;
+	}
 	if (!createDepthResources())
-		return;
+		return false;
 	if (!createFramebuffers())
 		nlwarning("Vulkan: framebuffer recreation failed");
 	if (_FrameOpen)
@@ -1206,6 +1307,7 @@ void CDriverVulkan::recreateSwapchain()
 		_RenderTargetTexture = NULL;
 		_RenderTargetInfo = NULL;
 	}
+	return true;
 }
 
 bool CDriverVulkan::getModes(std::vector<GfxMode> &modes)
@@ -1253,9 +1355,13 @@ void CDriverVulkan::showWindow(bool show)
 {
 	if (_Display && _XWindow)
 	{
+		// The window may be gone already (WM close before the client finished
+		// its release): never let Xlib's default handler exit the process.
+		XErrorHandler oldHandler = XSetErrorHandler(ignoreXError);
 		if (show) XMapWindow(_Display, _XWindow);
 		else XUnmapWindow(_Display, _XWindow);
-		XFlush(_Display);
+		XSync(_Display, False);
+		XSetErrorHandler(oldHandler);
 	}
 	_WindowVisible = show;
 }
@@ -1278,10 +1384,16 @@ nlWindow CDriverVulkan::getDisplay()
 
 bool CDriverVulkan::isActive()
 {
-	if (!_Display || !_XWindow)
+	if (_ShuttingDown || _SwapchainLost || !_Display || !_XWindow)
 		return false;
 	XWindowAttributes attributes;
-	if (!XGetWindowAttributes(_Display, _XWindow, &attributes))
+	// Xlib's default error handler exits the process on a protocol error, and
+	// the window may already be gone (WM force-close): ignore errors here.
+	XErrorHandler oldHandler = XSetErrorHandler(ignoreXError);
+	const bool ok = XGetWindowAttributes(_Display, _XWindow, &attributes) != 0;
+	XSync(_Display, False);
+	XSetErrorHandler(oldHandler);
+	if (!ok)
 		return false;
 	if (attributes.width != (int)_WindowWidth || attributes.height != (int)_WindowHeight)
 	{
@@ -1292,6 +1404,18 @@ bool CDriverVulkan::isActive()
 	return attributes.map_state != IsUnmapped;
 }
 
+bool CDriverVulkan::windowAlive()
+{
+	if (!_Display || !_XWindow)
+		return false;
+	XWindowAttributes attributes;
+	XErrorHandler oldHandler = XSetErrorHandler(ignoreXError);
+	const bool ok = XGetWindowAttributes(_Display, _XWindow, &attributes) != 0;
+	XSync(_Display, False);
+	XSetErrorHandler(oldHandler);
+	return ok;
+}
+
 // ---------------------------------------------------------------------------
 // Frame loop
 // ---------------------------------------------------------------------------
@@ -1300,11 +1424,23 @@ bool CDriverVulkan::beginFrame()
 {
 	if (_FrameOpen)
 		return true;
-	if (!_Device)
+	if (!_Device || _ShuttingDown)
 		return false;
+	if (_SwapchainLost || _Swapchain == VK_NULL_HANDLE)
+	{
+		++_SkippedFrames;
+		return false;
+	}
 
 	uint32 frame = _FrameIndex;
-	vkWaitForFences(_Device, 1, &_Fences[frame], VK_TRUE, UINT64_MAX);
+	VkResult fence = vkWaitForFences(_Device, 1, &_Fences[frame], VK_TRUE, UINT64_MAX);
+	_LastFenceResult = fence;
+	if (fence != VK_SUCCESS)
+	{
+		++_SkippedFrames;
+		nlwarning("Vulkan: vkWaitForFences(frame %u) failed (%d %s)", frame, (int)fence, vkResultName(fence));
+		return false;
+	}
 
 	// Frame `frame` (and therefore everything recorded for it) is finished.
 	// Resources retired at least three frames ago cannot be referenced by any
@@ -1360,16 +1496,27 @@ bool CDriverVulkan::beginFrame()
 
 	VkResult acquire = vkAcquireNextImageKHR(_Device, _Swapchain, UINT64_MAX,
 		_ImageAvailable[frame], VK_NULL_HANDLE, &_ImageIndex);
-	if (acquire == VK_ERROR_OUT_OF_DATE_KHR)
+	_LastAcquireResult = acquire;
+	if (acquire == VK_ERROR_OUT_OF_DATE_KHR || acquire == VK_ERROR_SURFACE_LOST_KHR)
 	{
-		recreateSwapchain();
+		// The semaphore was not signalled, but it is only used again after the
+		// swapchain has been replaced, so nothing else has to be undone here.
+		++_SkippedFrames;
+		if (_PresentLog)
+			nlinfo("Vulkan present: frame %llu skipped: acquire %d (%s)",
+				(unsigned long long)_SwapBufferCounter, (int)acquire, vkResultName(acquire));
+		recreateSwapchain(acquire == VK_ERROR_SURFACE_LOST_KHR ? "acquire: surface lost" : "acquire: out of date");
 		return false;
 	}
 	if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
 	{
-		nlwarning("Vulkan: vkAcquireNextImageKHR failed (%d)", (int)acquire);
+		++_SkippedFrames;
+		nlwarning("Vulkan: vkAcquireNextImageKHR failed (%d %s)", (int)acquire, vkResultName(acquire));
 		return false;
 	}
+	if (_PresentLog && acquire == VK_SUBOPTIMAL_KHR)
+		nlinfo("Vulkan present: frame %llu acquired suboptimal image %u (swapchain %u)",
+			(unsigned long long)_SwapBufferCounter, _ImageIndex, _SwapchainGeneration);
 	vkResetFences(_Device, 1, &_Fences[frame]);
 
 	VkCommandBuffer cmd = _CommandBuffers[frame];
@@ -1409,6 +1556,8 @@ bool CDriverVulkan::beginFrame()
 
 bool CDriverVulkan::clear2D(CRGBA rgba)
 {
+	if (_ShuttingDown || _SwapchainLost)
+		return false;
 	_ClearColor = rgba;
 	_ClearColorPending = true;
 	if (_FrameOpen)
@@ -1429,12 +1578,13 @@ bool CDriverVulkan::clear2D(CRGBA rgba)
 		vkCmdClearAttachments(_CommandBuffers[_FrameIndex], 1, &attachment, 1, &rect);
 		return true;
 	}
-	beginFrame();
-	return true;
+	return beginFrame();
 }
 
 bool CDriverVulkan::clearZBuffer(float zval)
 {
+	if (_ShuttingDown || _SwapchainLost)
+		return false;
 	_ClearDepth = zval;
 	_ClearDepthPending = true;
 	if (_FrameOpen)
@@ -1466,7 +1616,9 @@ bool CDriverVulkan::clearDepthStencil(float zval, sint stencilval)
 
 bool CDriverVulkan::swapBuffers()
 {
-	if (!_Device)
+	if (!_Device || _ShuttingDown)
+		return false;
+	if (_SwapchainLost || _Swapchain == VK_NULL_HANDLE)
 		return false;
 
 	// Resize if the window changed.
@@ -1474,7 +1626,8 @@ bool CDriverVulkan::swapBuffers()
 		(_WindowWidth != _SwapchainExtent.width || _WindowHeight != _SwapchainExtent.height) &&
 		_SwapchainExtent.width != 0)
 	{
-		recreateSwapchain();
+		if (!recreateSwapchain("window resize"))
+			return false;
 	}
 
 	if (!_FrameOpen && !beginFrame())
@@ -1539,7 +1692,9 @@ bool CDriverVulkan::swapBuffers()
 	si.pCommandBuffers = &cmd;
 	si.signalSemaphoreCount = 1;
 	si.pSignalSemaphores = &_RenderFinished[_ImageIndex];
-	if (!checkVk(vkQueueSubmit(_GraphicsQueue, 1, &si, _Fences[frame]), "vkQueueSubmit"))
+	VkResult submit = vkQueueSubmit(_GraphicsQueue, 1, &si, _Fences[frame]);
+	_LastSubmitResult = submit;
+	if (!checkVk(submit, "vkQueueSubmit"))
 		return false;
 
 	if (wantScreenshot)
@@ -1567,9 +1722,28 @@ bool CDriverVulkan::swapBuffers()
 	pi.pImageIndices = &_ImageIndex;
 	VkResult present = vkQueuePresentKHR(_GraphicsQueue, &pi);
 	if (present == VK_ERROR_OUT_OF_DATE_KHR || present == VK_SUBOPTIMAL_KHR)
-		recreateSwapchain();
+	{
+		if (_PresentLog)
+			nlinfo("Vulkan present: frame %llu image %u present %d (%s)",
+				(unsigned long long)_SwapBufferCounter, _ImageIndex, (int)present, vkResultName(present));
+		recreateSwapchain(present == VK_ERROR_OUT_OF_DATE_KHR ? "present: out of date" : "present: suboptimal");
+	}
 	else if (present != VK_SUCCESS)
-		nlwarning("Vulkan: vkQueuePresentKHR failed (%d)", (int)present);
+		nlwarning("Vulkan: vkQueuePresentKHR failed (%d %s)", (int)present, vkResultName(present));
+
+	if (_PresentLog)
+	{
+		const uint64 now = nowNs();
+		const double dtUs = _PresentLogLastNs ? (double)(now - _PresentLogLastNs) / 1000.0 : 0.0;
+		_PresentLogLastNs = now;
+		nlinfo("Vulkan present: frame %llu dt %.0fus swapchain %u image %u acquire %d (%s) fence %d (%s) submit %d (%s) present %d (%s) skipped %llu",
+			(unsigned long long)_SwapBufferCounter, dtUs, _SwapchainGeneration, _ImageIndex,
+			(int)_LastAcquireResult, vkResultName(_LastAcquireResult),
+			(int)_LastFenceResult, vkResultName(_LastFenceResult),
+			(int)_LastSubmitResult, vkResultName(_LastSubmitResult),
+			(int)present, vkResultName(present),
+			(unsigned long long)_SkippedFrames);
+	}
 
 	_FrameIndex = (frame + 1) % 2;
 	++_SwapBufferCounter;
