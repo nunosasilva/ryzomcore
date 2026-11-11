@@ -1,6 +1,6 @@
 # Port Ryzom to Vulkan — handoff
 
-_Last updated: 2026-11-11, glsl3vi insert programs + GPU skinning (branch `vulkan-skinning`)_
+_Last updated: 2026-11-11, render targets + shadow maps (branch `vulkan-rendertargets`)_
 
 ## Status in one line
 
@@ -8,17 +8,18 @@ _Last updated: 2026-11-11, glsl3vi insert programs + GPU skinning (branch `vulka
 screens, the in-game UI, the sky, the landscape, the vegetation and the player
 avatar render, validation-clean.** User vertex programs (nelvp, glsl330v and
 now the `glsl3vi` insert profile used by GPU skinning/MRM geomorph) compile and
-draw. The avatar is textured with `Shadows = 0`; with shadows enabled it is
-still a black silhouette because the client's shadow-map pass has no render
-target to write to (see below).
+draw. Offscreen render targets exist, so `Shadows = 1` no longer paints the
+shadow pass into the window: the avatar stays textured, and on the mega path the
+shadow is projected on the ground (see the render-target section).
 
 ## Branch
 
 `main/atys-live-n-vulkan` = `main/atys-live` + OpenGL3 renderer (fast-forward
 from `origin/atys-n-gl3`, `88e72dc35`) + the Vulkan driver, pushed to `origin`.
 The vertex-program work is on local branch `vulkan-nelvp` (nelvp/glsl330v, not
-pushed) and `vulkan-skinning` (glsl3vi insert programs + GPU skinning, based on
-`b7c8b0200`, not pushed).
+pushed), `vulkan-skinning` (glsl3vi insert programs + GPU skinning, based on
+`b7c8b0200`, not pushed) and `vulkan-rendertargets` (render targets + shadow
+maps, based on `6b20a9341`, not pushed).
 
 The GL2 and GL3 drivers are kept. `Driver3D="OpenGL3"` was re-tested after the
 Vulkan work: the GL3 mega shaders initialise and the client runs.
@@ -43,6 +44,10 @@ Vulkan work: the GL3 mega shaders initialise and the client runs.
   lighting from the light table (`setLights`/`setLightTableEntry`).
 - Negative-height viewport (GL-like bottom-up), GL depth converted to [0,1] in
   the vertex shader, CCW front face.
+- Offscreen render targets: `setRenderTarget`/`getRenderTarget`/
+  `getRenderTargetSize`/`copyTargetToTexture`, a shared depth/stencil cache per
+  target size, and a LOAD pass to resume the window pass mid-frame. Shadow maps
+  write to a real target (`Shadows = 1` is safe). See the render-target section.
 - ~60 fps (vsync) in game on RADV, ~600 draw calls/frame.
 - Validation layer clean. The only remaining message is gamescope's WSI
   `VkSwapchainPresentModeInfoKHR` warning, which comes from the gamescope
@@ -63,23 +68,31 @@ Vulkan work: the GL3 mega shaders initialise and the client runs.
    (GPU skinning + MRM geomorph). The avatar still takes the CPU-skinning +
    simple-shader path because the live character has blend shapes, but that
    path now renders it textured; see the shadow-map note.
-3. **Render targets.** `setRenderTarget`/`copyTargetToTexture` are stubs, so
-   bloom, FXAA, water reflection **and shadow maps** are disabled. Shadow maps
-   are the reason characters are black silhouettes when `Shadows = 1`: the
-   client renders shadow casters into "the shadow texture", but with no render
-   target the black shadow pass lands in the main framebuffer. Set
-   `Shadows = 0` in `client.cfg` until render targets exist.
-4. **Textures are never evicted** from `_TexturesVulkan` (no `ITextureDrvInfos`
+3. **Render targets.** Implemented (branch `vulkan-rendertargets`):
+   `setRenderTarget`/`getRenderTarget`/`getRenderTargetSize`/`copyTargetToTexture`
+   and offscreen `ITexture` images. Shadow maps write to a real target, so
+   `Shadows = 1` is safe again. Bloom/FXAA/water reflection still need engine-
+   side work (`supportBloomEffect()` is still false, `stretchRect` is a stub).
+   See the render-target section.
+4. **Shadow projection in the simple path.** The shadow *receiver* material
+   generates its UVs from object space (`setTexCoordGen(ObjectSpace)` + a user
+   texture matrix); only the mega vertex program implements that. Staged in
+   `stageMegaMaterialUBO()` now, so shadows project on the mega path only. Port
+   tex-coord generation to the simple path (or make the mega path the default)
+   to get shadows in the default configuration.
+5. **Textures are never evicted** from `_TexturesVulkan` (no `ITextureDrvInfos`
    hook): a per-session leak, and a re-used `ITexture` address could show a
    stale texture.
-5. **Partial texture uploads.** `uploadTexture` re-uploads the whole texture;
+6. **Partial texture uploads.** `uploadTexture` re-uploads the whole texture;
    compressed (DXT) textures are decompressed on upload.
-6. **`getZBuffer`/`getBufferPart`** are stubs; `getBuffer` does a swapchain
+7. **`getZBuffer`/`getBufferPart`** are stubs; `getBuffer` does a swapchain
    readback.
-7. **Performance details.** One descriptor set per draw from a per-frame pool,
+8. **Performance details.** One descriptor set per draw from a per-frame pool,
    no persistent pipeline cache, rings are single-buffered (they grow instead
    of wrapping).
-8. Cubemaps are uploaded as 2D textures; `getTotalVideoMemory` is 4 GiB.
+9. Cubemaps are uploaded as 2D textures; `getTotalVideoMemory` is 4 GiB.
+10. `copyTargetToTexture()` only supports an offscreen source; copying from the
+    window target would have to suspend the swapchain pass.
 
 ## Environment / run
 
@@ -297,19 +310,24 @@ Final screenshot: `/tmp/opencode/ryzomtest/vp/final2/f.ppm.8400.png`.
 
 ## Next steps (in order of value)
 
-1. **Render targets + shadows.** Implement `setRenderTarget`/`copyTargetToTexture`
-   (and `ITexture::setRenderTarget` support) so the shadow-map pass writes to a
-   real target; then set `Shadows = 1` again. This is also the prerequisite for
-   bloom, FXAA and water reflection. Until then keep `Shadows = 0`.
+1. **Shadow projection in the simple path** (see gap 4): port the mega vertex
+   program's tex-coord generation to the simple shader, or switch the default
+   path to the mega shader. Until then shadows only project with
+   `NLVK_MEGA=1`, where the mega path also tints the scene (fog parity, next
+   item).
 2. Fog parity: the mega shaders implement fog but it is currently disabled
    (`stageMegaObjectUBO`) because the simple path has none. Port fog to the
    simple shader (or make the mega path the default) and re-enable
    `data.fogEnabled`; GL3's black-fog overrides for additive blends and
    LightMap passes > 0 are already in place.
-3. Verify the LightMap multi-pass staging in game on a static-lightmapped
+3. Bloom / FXAA / water reflection now that render targets exist:
+   `supportBloomEffect()` is false, `stretchRect()` returns false and the bloom
+   render targets come from `CRenderTargetManager` (`CTextureOffscreen`), which
+   exercises the same code path as shadow maps.
+4. Verify the LightMap multi-pass staging in game on a static-lightmapped
    object (no LightMap material was in view at the test spot).
-4. Texture eviction via an `ITextureDrvInfos` implementation.
-5. Partial texture uploads, BC textures, real cubemaps.
+5. Texture eviction via an `ITextureDrvInfos` implementation.
+6. Partial texture uploads, BC textures, real cubemaps.
 
 ## Review findings already fixed
 
@@ -462,6 +480,71 @@ CPU-skinning path match the mega programs:
   view and trip `VUID-vkCmdDrawIndexed-viewType-07752`. This also removes the
   black Specular-environment draws until real cube uploads exist.
 
+## Render targets + shadow maps (branch `vulkan-rendertargets`) — merged
+
+`CDriverVulkan::setRenderTarget()` is implemented, so the shadow-map pass has a
+real target (`driver_vulkan_target.cpp`):
+
+- **Offscreen images.** A texture with `ITexture::getRenderTarget()` gets a
+  `VkImage` created with `COLOR_ATTACHMENT | SAMPLED | TRANSFER_SRC/DST`
+  (`ensureRenderTarget()`, `createTextureImage()`), a `VkFramebuffer` built on
+  the offscreen render pass, and a sampled view/sampler the normal draw paths
+  already use. Images are recreated when a texture changes size or was created
+  before it was flagged as a target (its upload is then dropped). Uploads skip
+  render targets entirely (`setupTextureEx()` early-out), otherwise every
+  `setRenderTarget()` (which touches the texture) would overwrite the pixels.
+- **Depth/stencil cache.** `CDepthTargetVulkan` (_DepthTargets) mirrors GL3's
+  `CDepthStencilFBO`: one depth image per (size, format) shared by every target
+  of that size; the first pass using it transitions it out of UNDEFINED.
+- **Pass switching.** One render pass is recorded at a time. `setRenderTarget()`
+  ends the current one and begins the destination. Returning to the window uses
+  `_ResumeRenderPass` (same attachments, LOAD ops, so it is compatible with
+  `_RenderPass` and shares its pipelines) and the offscreen pass uses
+  `_OffscreenRenderPass` (RGBA8 + the window depth format). `swapBuffers()`
+  recovers if a target is still bound. `CPipelineKey::Target` selects the pass
+  for pipeline creation.
+- **Layouts.** A target's colour image is left in `SHADER_READ_ONLY_OPTIMAL`
+  when its pass ends, which is the layout every sampled descriptor declares;
+  `beginOffscreenPass()` transitions it back. Because the offscreen pass'
+  initial/final layouts equal the attachment layout, no implicit transition is
+  done by the pass, so those barriers are explicit.
+- **Viewport/scissor** are computed from `currentTargetExtent()`, i.e. the bound
+  target or the window; a cached scissor is clamped to the new target because
+  the aspect ratios differ. `clear2D()`/`clearZBuffer()` clear the target.
+- **`copyTargetToTexture`** copies (vkCmdCopyImage, RGBA8 both sides) from the
+  bound offscreen target into another texture's level 0, flipping Y for NeL's
+  bottom-up rects. Copying from the window target is not implemented.
+- `getRenderTarget()` returns the bound texture, `getRenderTargetSize()` its
+  size (window size otherwise), same contract as GL3.
+
+Also staged in the mega path (prerequisite for the shadow *projection*):
+
+- `stageMegaMaterialUBO()` now fills `texGenMode[]` from
+  `CMaterial::getTexCoordGen()/getTexCoordGenMode()` (the mega VP already had
+  the `texMatrix` * `nlPos` code; it was hardwired to disabled).
+- `bindMegaDescriptors()` sets `vkCmdSetBlendConstants` (the mega pipelines
+  declare that dynamic state; it was only set on the simple path, which made
+  validation complain about constant-blend materials).
+
+Verified in game (`~/Projects/ryzom/ryzom_live_vk2_mega`, `Shadows = 1`,
+`NLVK_VALIDATION=1`, 1280x800):
+
+- `Vulkan: render target 256x256 created` once, then
+  `Vulkan: rendering into offscreen target 256x256`; the per-600-frame log line
+  reports target binds (3600 per 1800 frames with shadows on, 0 with `Shadows=0`).
+- **No new validation messages** from any of the new paths (the remaining ones
+  are pre-existing: the swapchain-maintenance1 extension warning, the
+  `VkSwapchainPresentModeInfoKHR` present warning and "vertex attribute not
+  consumed" pipeline warnings).
+- The avatar stays textured with `Shadows = 1` (skin/cloth colours, no black
+  silhouette): the caster pass goes to the offscreen target.
+- The projected shadow on the ground is only visible with `NLVK_MEGA=1`, where
+  tex-coord generation is implemented: a soft dark patch follows the avatar on
+  the moor. With the default (simple) path nothing is projected - the receiver
+  material has no vertex UVs and the simple shader ignores `texGenMode`.
+- `NLVK_MEGA=1` still tints the whole scene (fog parity), so it is not a usable
+  default yet.
+
 ## Login procedure (for humans and subagents)
 
 The live account is single-session. A client that is killed still owns the
@@ -471,7 +554,11 @@ a while. Do it like this:
 
 1. Before starting: `pgrep -a ryzom_client` and `pgrep -a gamescope`. Only kill
    clients you started yourself; never kill the user's session.
-2. Log in with: `./ryzom_client mats007 passDOSma slot 1 --nopatch 1`.
+2. Log in with:
+   `./ryzom_client mats007 passDOSma 4294967295 1 --nopatch 1`
+   The positional arguments are `<login> <password> <shard_id> <slot>`: the
+   third one is the shard (use `4294967295` for "the current one"), the fourth
+   the character slot (1 = Megana). With a slot the client auto-enters the game.
 3. To stop: leave the game through `Escape` -> "Quit Ryzom" -> "Quit Now"
    (or `/tmp/opencode/ryzomtest/stop_client.sh` when the window is up), and wait
    for the process to exit. Avoid `kill -9`.
@@ -480,11 +567,15 @@ a while. Do it like this:
 5. Wait at least 30 s between two automated runs, and never run two clients with
    credentials at the same time.
 6. Screenshots: `NLVK_SCREENSHOT=<path>.ppm NLVK_SCREENSHOT_FRAME=<n>` (or
-   `NLVK_SCREENSHOT_SEQ=1` for one every 600 frames). Host screenshots are
-   unreliable when the session is locked.
+   `NLVK_SCREENSHOT_SEQ=1` for one every 600 frames, which only fires at
+   multiples of 600 at or after `<n>` - pick `<n>` before the moment you want
+   and expect the first file a bit later). Host screenshots are unreliable when
+   the session is locked.
 7. The run dir used for automated tests is `~/Projects/ryzom/ryzom_live_vk2_mega`
-   (its `client.cfg` currently has `Shadows = 0`; the original is
-   `client.cfg.shadows1.bak`).
+   (`client.cfg.shadows1.bak` is the full config with `Shadows = 1`, which is
+   what the shadow-map tests use; the generated minimal `client.cfg` files in
+   `/tmp/opencode/rt-run.sh` work too, but keep the whole config when testing
+   client options so nothing else changes).
 
 ## glsl3vi inserts (GPU skinning) — merged
 
@@ -494,12 +585,11 @@ binding 4, `NlSkeleton` at binding 6). `GPU Skinning Insert` and
 textured. `compileVertexProgram failed` count is 0 for all 24+ programs.
 
 **The black characters in game are NOT a vertex-program problem**: with
-`Shadows = 1`, `CShadowMapManager` draws shadow casters into the main framebuffer
-because `CDriverVulkan::setRenderTarget()` is a stub returning false. The shadow
-material is black, hence black characters/NPCs. `Shadows = 0` works around it.
-Implementing render targets (`setRenderTarget`, `copyTargetToTexture`,
-`getRenderTargetSize`, offscreen `ITexture` support) is the next step and also
-unblocks bloom, FXAA and water reflection.
+`Shadows = 1`, `CShadowMapManager` drew shadow casters into the main framebuffer
+because `CDriverVulkan::setRenderTarget()` was a stub returning false. Render
+targets are now implemented on `vulkan-rendertargets` (see that section): the
+caster pass goes to an offscreen target and the avatar stays textured. The
+shadow *projection* still needs tex-coord generation in the simple path.
 
 Also fixed with this merge: the simple path now uses the material diffuse for lit
 draws and the mega VP's vertex-colour rules, and transforms light directions into
