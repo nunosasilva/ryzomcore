@@ -113,6 +113,7 @@ CDriverVulkan::CDriverVulkan()
 	, _WindowVisible(false)
 	, _ShuttingDown(false)
 	, _SwapchainLost(false)
+	, _SwapchainOutOfDate(false)
 	, _PresentLog(getenv("NLVK_PRESENT_LOG") != NULL)
 	, _LastAcquireResult(VK_SUCCESS)
 	, _LastFenceResult(VK_SUCCESS)
@@ -515,14 +516,22 @@ bool CDriverVulkan::createSwapchain()
 	if (!checkVk(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_PhysicalDevice, _Surface, &caps), "vkGetPhysicalDeviceSurfaceCapabilitiesKHR"))
 		return false;
 
-	_SwapchainExtent = caps.currentExtent;
-	if (_SwapchainExtent.width == 0xFFFFFFFFu)
+	// X11 reports the drawable size in currentExtent (0xFFFFFFFF means "the
+	// surface decides", e.g. Wayland). A minimised window reports 0x0, which
+	// vkCreateSwapchainKHR rejects: clamp every extent to the surface's valid
+	// range. beginFrame() stops rendering while the window has no size at all,
+	// so the clamped 1x1 swapchain is never presented.
+	uint32 surfaceWidth = caps.currentExtent.width;
+	uint32 surfaceHeight = caps.currentExtent.height;
+	if (surfaceWidth == 0xFFFFFFFFu)
 	{
-		_SwapchainExtent.width = _WindowWidth;
-		_SwapchainExtent.height = _WindowHeight;
-		_SwapchainExtent.width = std::max(caps.minImageExtent.width, std::min(caps.maxImageExtent.width, _SwapchainExtent.width));
-		_SwapchainExtent.height = std::max(caps.minImageExtent.height, std::min(caps.maxImageExtent.height, _SwapchainExtent.height));
+		surfaceWidth = _WindowWidth;
+		surfaceHeight = _WindowHeight;
 	}
+	_SwapchainExtent.width = std::max(caps.minImageExtent.width,
+		std::min(caps.maxImageExtent.width, std::max(1u, surfaceWidth)));
+	_SwapchainExtent.height = std::max(caps.minImageExtent.height,
+		std::min(caps.maxImageExtent.height, std::max(1u, surfaceHeight)));
 
 	uint32 formatCount = 0;
 	vkGetPhysicalDeviceSurfaceFormatsKHR(_PhysicalDevice, _Surface, &formatCount, NULL);
@@ -626,6 +635,14 @@ bool CDriverVulkan::createSwapchain()
 	}
 
 	nlinfo("Vulkan: swapchain %ux%u, %u images", _SwapchainExtent.width, _SwapchainExtent.height, imageCount);
+	// The surface extent is the drawable size (X11) clamped to what the surface
+	// accepts: cache it as the window size so getWindowSize() and the next
+	// frame's resize check agree with the images. The game loop does not call
+	// isActive(), so a window-manager resize is otherwise only noticed through
+	// an out-of-date present result.
+	_WindowWidth = _SwapchainExtent.width;
+	_WindowHeight = _SwapchainExtent.height;
+	_SwapchainOutOfDate = false;
 	++_SwapchainGeneration;
 	return true;
 }
@@ -1345,8 +1362,13 @@ bool CDriverVulkan::setMode(const GfxMode &mode)
 		_WindowWidth = mode.Width;
 		_WindowHeight = mode.Height;
 		XResizeWindow(_Display, _XWindow, _WindowWidth, _WindowHeight);
-		XFlush(_Display);
-		recreateSwapchain("setMode");
+		// Wait for the server to apply the new geometry: beginFrame() reads the
+		// surface extent when it recreates the swapchain at the next frame.
+		XSync(_Display, False);
+		// beginFrame() replaces the swapchain at the start of the next frame.
+		// Recreating it here could happen in the middle of one, after its fence
+		// was reset for a submission that the recreation would throw away.
+		_SwapchainOutOfDate = true;
 	}
 	return true;
 }
@@ -1365,8 +1387,29 @@ bool CDriverVulkan::recreateSwapchain(const char *reason)
 		nlwarning("Vulkan: window destroyed (%s); rendering stopped", reason);
 		return false;
 	}
+	if (!windowHasSize())
+	{
+		// Minimised, or a window-manager resize passing through 0x0: there is
+		// no drawable to create a swapchain for. Keep the current one and let
+		// beginFrame() skip the frames until the window has a size again.
+		if (_PresentLog)
+			nlinfo("Vulkan present: swapchain recreation deferred, window has no size (%s)", reason);
+		_SwapchainOutOfDate = true;
+		return false;
+	}
+	if (_FrameOpen)
+	{
+		// Destroying the swapchain now would pull the images out from under the
+		// frame that is being recorded, and that frame has already reset its
+		// fence for a submission this would skip: the next beginFrame() would
+		// then wait for it forever. Retry at the next frame boundary instead.
+		nlwarning("Vulkan: swapchain recreation requested while a frame is recorded (%s); deferred", reason);
+		_SwapchainOutOfDate = true;
+		return false;
+	}
 	if (_PresentLog)
 		nlinfo("Vulkan present: recreating swapchain (generation %u): %s", _SwapchainGeneration, reason);
+	_SwapchainOutOfDate = false;
 	destroySwapchain();
 	if (!createSwapchain())
 	{
@@ -1377,16 +1420,13 @@ bool CDriverVulkan::recreateSwapchain(const char *reason)
 		nlwarning("Vulkan: swapchain recreation failed (%s); rendering stopped", reason);
 		return false;
 	}
-	if (!createDepthResources())
-		return false;
-	if (!createFramebuffers())
-		nlwarning("Vulkan: framebuffer recreation failed");
-	if (_FrameOpen)
+	// A half-recreated swapchain cannot be rendered into (missing depth
+	// attachment or framebuffer); stop rather than use null handles.
+	if (!createDepthResources() || !createFramebuffers())
 	{
-		// Never leave a frame half recorded across a swapchain change.
-		_FrameOpen = false;
-		_RenderTargetTexture = NULL;
-		_RenderTargetInfo = NULL;
+		_SwapchainLost = true;
+		nlwarning("Vulkan: swapchain attachments could not be created (%s); rendering stopped", reason);
+		return false;
 	}
 	return true;
 }
@@ -1512,6 +1552,36 @@ bool CDriverVulkan::beginFrame()
 		++_SkippedFrames;
 		return false;
 	}
+	if (!windowHasSize())
+	{
+		// Minimised, or a resize passing through a 0x0 drawable: there is
+		// nothing valid to acquire from, and presenting would block on a
+		// surface nobody consumes. Ask X whether the window has a size again
+		// (cheap: only while there is nothing to draw into) and skip frames
+		// until then.
+		isActive();
+		if (!windowHasSize())
+		{
+			++_SkippedFrames;
+			return false;
+		}
+	}
+
+	// Replace the swapchain here, at a frame boundary. No image is acquired and
+	// no command buffer is recording, so the old images can be destroyed and
+	// the fences still mean what they say. A window-manager resize normally
+	// reaches the driver as an out-of-date present result; isActive(), which
+	// the game loop does not call every frame, can also report it during the
+	// loading screens, so compare the sizes as well.
+	if (_SwapchainOutOfDate ||
+		_SwapchainExtent.width != _WindowWidth || _SwapchainExtent.height != _WindowHeight)
+	{
+		if (!recreateSwapchain(_SwapchainOutOfDate ? "surface out of date" : "window resize"))
+		{
+			++_SkippedFrames;
+			return false;
+		}
+	}
 
 	uint32 frame = _FrameIndex;
 	const uint64 fenceWaitStart = _StatsEnabled ? nowNs() : 0;
@@ -1587,21 +1657,37 @@ bool CDriverVulkan::beginFrame()
 		}
 	}
 
+	// Acquire an image. A window resize often shows up here first: the surface
+	// no longer matches the swapchain, so the acquire returns OUT_OF_DATE.
+	// Replace the swapchain and retry once instead of failing the frame: the
+	// engine treats a false return from beginFrame() as "nothing to draw into"
+	// and keeps recording (setRenderTarget() ignores its return value), which
+	// used to leave the rest of the frame without a target.
 	const uint64 acquireStart = _StatsEnabled ? nowNs() : 0;
 	VkResult acquire = vkAcquireNextImageKHR(_Device, _Swapchain, UINT64_MAX,
 		_ImageAvailable[frame], VK_NULL_HANDLE, &_ImageIndex);
+	if (acquire == VK_ERROR_OUT_OF_DATE_KHR || acquire == VK_ERROR_SURFACE_LOST_KHR)
+	{
+		// A failed acquire signals neither the semaphore nor the fence, so the
+		// swapchain can be replaced and the acquire retried with the same ones.
+		if (_PresentLog)
+			nlinfo("Vulkan present: frame %llu acquire %d (%s), replacing the swapchain",
+				(unsigned long long)_SwapBufferCounter, (int)acquire, vkResultName(acquire));
+		if (!recreateSwapchain(acquire == VK_ERROR_SURFACE_LOST_KHR ? "acquire: surface lost" : "acquire: out of date"))
+			return false;
+		acquire = vkAcquireNextImageKHR(_Device, _Swapchain, UINT64_MAX,
+			_ImageAvailable[frame], VK_NULL_HANDLE, &_ImageIndex);
+	}
 	_LastAcquireResult = acquire;
 	if (_StatsEnabled && (acquire == VK_SUCCESS || acquire == VK_SUBOPTIMAL_KHR))
 		_StatsAcquireNs += nowNs() - acquireStart;
 	if (acquire == VK_ERROR_OUT_OF_DATE_KHR || acquire == VK_ERROR_SURFACE_LOST_KHR)
 	{
-		// The semaphore was not signalled, but it is only used again after the
-		// swapchain has been replaced, so nothing else has to be undone here.
+		// Still out of date with a fresh swapchain: skip this frame.
 		++_SkippedFrames;
 		if (_PresentLog)
 			nlinfo("Vulkan present: frame %llu skipped: acquire %d (%s)",
 				(unsigned long long)_SwapBufferCounter, (int)acquire, vkResultName(acquire));
-		recreateSwapchain(acquire == VK_ERROR_SURFACE_LOST_KHR ? "acquire: surface lost" : "acquire: out of date");
 		return false;
 	}
 	if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
@@ -1746,15 +1832,9 @@ bool CDriverVulkan::swapBuffers()
 	if (_SwapchainLost || _Swapchain == VK_NULL_HANDLE)
 		return false;
 
-	// Resize if the window changed.
-	if (_WindowWidth && _WindowHeight &&
-		(_WindowWidth != _SwapchainExtent.width || _WindowHeight != _SwapchainExtent.height) &&
-		_SwapchainExtent.width != 0)
-	{
-		if (!recreateSwapchain("window resize"))
-			return false;
-	}
-
+	// A window resize does not replace the swapchain here: the frame below was
+	// recorded for the current one. beginFrame() replaces it before acquiring
+	// the next image (see the comment there).
 	if (!_FrameOpen && !beginFrame())
 		return false;
 
@@ -1890,10 +1970,15 @@ bool CDriverVulkan::swapBuffers()
 	VkResult present = vkQueuePresentKHR(_GraphicsQueue, &pi);
 	if (present == VK_ERROR_OUT_OF_DATE_KHR || present == VK_SUBOPTIMAL_KHR)
 	{
+		// The surface no longer matches the swapchain (typically a window
+		// resize). Do not recreate it here: the frame was just submitted
+		// against it, and its fence has been reset for a submission the next
+		// beginFrame() would then wait for. Replacing it at the start of the
+		// next frame keeps the acquire, the recording and the fence consistent.
+		_SwapchainOutOfDate = true;
 		if (_PresentLog)
 			nlinfo("Vulkan present: frame %llu image %u present %d (%s)",
 				(unsigned long long)_SwapBufferCounter, _ImageIndex, (int)present, vkResultName(present));
-		recreateSwapchain(present == VK_ERROR_OUT_OF_DATE_KHR ? "present: out of date" : "present: suboptimal");
 	}
 	else if (present != VK_SUCCESS)
 		nlwarning("Vulkan: vkQueuePresentKHR failed (%d %s)", (int)present, vkResultName(present));
