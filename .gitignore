@@ -302,3 +302,6 @@ ryzom/tools/crash_reports/crash_*.md
 # Local build trees
 build/
 build-*/
+
+# Messages for the user (agent -> human), not for version control
+AGENTS_nuno.md
