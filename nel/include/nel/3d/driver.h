@@ -1479,6 +1479,18 @@ public:
 	/// Returns false on ANGLE/D3D11 where the GLSL-to-HLSL translator fails on large arrays.
 	virtual bool			supportLargeUBOArrays() const { return true; }
 
+	/** Return true if the driver can skin vertices on the GPU with the
+	 *	glsl3vi insert vertex program: bone palette UBO at UBBindingSkeleton,
+	 *	uint8 bone indices and float weights as vertex attributes.
+	 *	This is separate from MRM geomorph, which only needs
+	 *	supportVertexProgram(glsl3vi) (it uses the same insert program without
+	 *	a skeleton). A driver may support one and not the other.
+	 */
+	virtual bool			supportGPUSkinning() const
+	{
+		return supportVertexProgram(CVertexProgram::glsl3vi) && supportLargeUBOArrays();
+	}
+
 	// Adapter class
 	class CAdapter
 	{

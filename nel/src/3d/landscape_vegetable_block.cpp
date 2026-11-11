@@ -66,6 +66,10 @@ CLandscapeVegetableBlock::CLandscapeVegetableBlock()
 {
 	_VegetableClipBlock = nullptr;
 	_CurDistType= NL3D_VEGETABLE_BLOCK_NUMDIST;
+	// No instance group created yet: only a view center inside the farthest
+	// bucket can leave update() with nothing to do.
+	_SqrDistMin= CLVBSqrDistLUT::Array[NL3D_VEGETABLE_BLOCK_NUMDIST];
+	_SqrDistMax= FLT_MAX;
 
 	for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
 	{
@@ -209,8 +213,12 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 			}
 		}
 
-		// copy new dist type.
+		// copy new dist type, and cache the bucket bounds used by
+		// isInCurrentDistanceType() to skip this call while nothing can change.
 		_CurDistType= uint8(newDistType);
+		_SqrDistMin= CLVBSqrDistLUT::Array[newDistType];
+		_SqrDistMax= (newDistType < NL3D_VEGETABLE_BLOCK_NUMDIST)
+			? CLVBSqrDistLUT::Array[newDistType+1] : FLT_MAX;
 	}
 
 
