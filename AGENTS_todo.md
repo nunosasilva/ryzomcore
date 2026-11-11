@@ -561,6 +561,17 @@ Verified in game (`~/Projects/ryzom/ryzom_live_vk2_mega`, `Shadows = 1`,
 - `NLVK_MEGA=1` still tints the whole scene (fog parity), so it is not a usable
   default yet.
 
+## Accounts (one per concurrent client!)
+
+| account | password | slot | notes |
+|---|---|---|---|
+| `mats007` | `passDOSma` | 1 | main account |
+| `mats006` | `passDOSma` | 1 | second account, use it for a second concurrent client/agent |
+
+Only one client per account. When several agents need to run the game at the
+same time, assign each a different account explicitly in the agent prompt.
+Never run two clients with the same account.
+
 ## Login procedure (for humans and subagents)
 
 The live account is single-session. A client that is killed still owns the
