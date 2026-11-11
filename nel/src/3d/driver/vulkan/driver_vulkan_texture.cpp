@@ -134,6 +134,9 @@ VkFormat CDriverVulkan::compressedTextureFormat(CBitmap::TType format) const
 
 void CDriverVulkan::releaseTextureDrvInfo(CTextureDrvInfosVulkan &info)
 {
+	// Invalidate the per-stage bind cache: it may hold a pointer into this
+	// infos, and a later ITexture allocated at the same address must not hit it.
+	++_TextureGeneration;
 	_TextureUsed.erase(&info);
 	if (_AllocatedTextureMemory >= info.TextureMemory)
 		_AllocatedTextureMemory -= info.TextureMemory;
@@ -1162,6 +1165,23 @@ CTextureDrvInfosVulkan *CDriverVulkan::getTextureDrvInfos(ITexture &tex, bool *c
 {
 	if (created)
 		*created = false;
+
+	// Fast path: an untouched texture is already resolved to its driver infos.
+	// Rebuilding the share name (a lower-case copy plus two allocations) and
+	// searching the map for it is pure overhead in that case: setupTextureEx()
+	// returns as soon as it sees the untouched flag. The share name is fixed
+	// once a texture has been generated; anything that regenerates it sets the
+	// touched flag, which sends the texture through the lookup below.
+	if (!tex.touched() && tex.TextureDrvShare && tex.TextureDrvShare->DrvTexture)
+	{
+		if (_StatsEnabled)
+			++_StatsTexInfoHits;
+		if (created)
+			*created = false;
+		return static_cast<CTextureDrvInfosVulkan *>((ITextureDrvInfos *)tex.TextureDrvShare->DrvTexture);
+	}
+	if (_StatsEnabled)
+		++_StatsTexInfoMisses;
 
 	// First use by the engine: create the per-texture share object, and get it
 	// registered so that IDriver::release() tears it down with the driver.
