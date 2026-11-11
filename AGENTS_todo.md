@@ -101,6 +101,10 @@ Vulkan work: the GL3 mega shaders initialise and the client runs.
     gamescope -W 1280 -H 800 -w 1280 -h 800 -r 60 --backend wayland -- \
       env LD_LIBRARY_PATH=<repo>/build-vulkan/lib ./ryzom_client --nopatch 1
 
+**IMPORTANT**: If you don't use gamescope, xdotool and other input tools will
+not work, because they'll be running under X under Wayland, which are not
+configured to allow virtual inputs.
+
 - `ryzom_live_vk2` is a run dir (data/cfg/examples symlinked to
   `~/Projects/ryzom/ryzom_live`, `client.cfg` with `Driver3D="Vulkan"` at
   1280x800).
@@ -607,7 +611,7 @@ timeout + 30 s. Before the real login, force the session to be clean:
     ./ryzom_client mats007 passDOSma          # no slot: errors "already logged in" or waits at char select
     sleep 10
     kill %1                                    # or kill -9 the pid
-    sleep 30
+    sleep 40
     ./ryzom_client mats007 passDOSma slot 1 --nopatch 1
 
 No screenshots/keys needed for the guard step. Then use the game normally
