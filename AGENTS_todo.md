@@ -1047,7 +1047,8 @@ being retired waits for the upload-batch fence before it is freed.
 Run directory `/tmp/opencode/iv/run-vk` (data/cfg symlinked to
 `~/Projects/ryzom/ryzom_live`, `Driver3D="Vulkan"`, 1280x800, `Shadows = 0`,
 `InterfaceScaleAuto = 1`). Runner scripts: `/tmp/opencode/iv/{guard,run,gl_run}.sh`.
-Screenshots in `/tmp/opencode/iv/evidence/` (PPM bursts in `/var/tmp/iv/`).
+Screenshots in `/tmp/opencode/iv/evidence/` (with a `README.txt` naming each
+one; the PPM bursts are in `/var/tmp/iv/`).
 
 **Avatar.** The base build (`4b7aba749`, `glsl3vi` on by default) at character
 selection is exploded: legs on the floor, one arm floating, the clothes above
@@ -1085,10 +1086,14 @@ attachments.
 zooming): the merged Vulkan render and the legacy OpenGL client agree on the
 geometry. `trees_zoom_cmp.png` shows the same crop of both: the giant mushroom
 cap, its stem, the giant trunk behind it and the rock spire in the distance are
-at the same screen positions and sizes in both. So the "branches only 20 m up"
-of `megacheck1200.png` is not reproduced on this branch, and the reference
-client draws this spot the same way. The visible difference is fog/haze: the
-Vulkan render is much hazier, so the distant purple canopies wash out to white
+at the same screen positions and sizes in both. Cross-correlating the edge maps
+of the two full frames (320x200, search +-10 px) puts the best match at zero
+shift: NCC 0.309 for the CPU-skinning capture and 0.305 for
+`NLVK_GPUSKIN=1` against the reference, and 0.443 for this build's OpenGL
+driver against its Vulkan driver. So the "branches only 20 m up" of
+`megacheck1200.png` is not reproduced on this branch, and the reference client
+draws this spot the same way. The visible difference is fog/haze: the Vulkan
+render is much hazier, so the distant purple canopies wash out to white
 (`trees_side_by_side.png`). `NLVK_GPUSKIN=1` does not change the trees.
 
 **Flicker.** `NLVK_SCREENSHOT_EVERY=1` at character selection, frames 3000-3125
@@ -1103,11 +1108,14 @@ Debug build):
 
 | | in game | char selection | connect -> in game |
 |---|---|---|---|
-| base `4b7aba749` (glsl3vi on) | 30.7 ms/frame (32.6 fps) | - | 24-25 s |
-| merged, default (CPU skin) | 31.1-36.9 ms/frame (30 fps) | 8.3 ms/frame (120 fps) | 24 s |
-| merged, `NLVK_GPUSKIN=1` | 31.1-36.9 ms/frame | - | - |
+| base `4b7aba749` (glsl3vi on) | 31.0 ms/frame (32.2 fps) | - | 24-25 s |
+| merged, default (CPU skin) | 31.7-32.4 ms/frame (31 fps) | 8.3 ms/frame (120 fps) | 24 s |
+| merged, `NLVK_GPUSKIN=1` | 31.1-36.9 ms/frame (30 fps) | - | - |
 
-Both numbers come from 600-frame wall-clock deltas in the log. The driver's
+The in-game numbers are 600-frame wall-clock deltas from the log (`Vulkan:
+frame N`), the other column is the `NLVK_STATS` report every 120 frames; both
+builds render the same scene at ~1200 indexed draws/frame. The base and the
+merged build are the same within noise. The driver's
 per-draw CPU cost is 3.1 us descriptor+draw + 0.2 us index copy, i.e. ~4 ms of a
 ~31 ms frame, so the frame is GPU/engine bound and the removed device waits do
 not show up here. Loading time is identical (24-25 s); texture creation is not
