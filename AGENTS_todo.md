@@ -1843,3 +1843,24 @@ the client only warns about it.
 The per-draw descriptor set is not the current bottleneck (see the audit
 above); revisit it once a release build or engine-side CPU work changes the
 GPU/CPU balance.
+
+## User test of the static binary (2026-11-11) and the next work
+
+The static `ryzom_client_vulkan` works in the user's install with
+`Driver3D="Vulkan"`. Feedback:
+- **`Driver3D="Auto"` does not start** (Vulkan does).
+- Lots of output on stdout.
+- 1280x800, HIGH, same spot: OpenGL official ~100+ FPS, our Vulkan static debug
+  build ~30+ FPS, CPU 100% in both.
+
+Two agents are working on it:
+- `vulkan-driver-select` (mats005): fix Auto (prefer Vulkan when available),
+  keep OpenGL/OpenGL3 working, quieten stdout, and verify Auto/OpenGL3/Vulkan
+  from the same binary.
+- `vulkan-perf` (mats006): full Vulkan-vs-GL3 performance assessment (CPU/GPU,
+  draws, state changes, uploads), asset-format contribution, Debug vs FINAL,
+  and safe wins with before/after numbers.
+
+**Merge rule (user):** only merge into `main/atys-live-n-vulkan` once
+Auto/OpenGL/Vulkan have all been verified working at the same time from the
+same binary. Auto may prefer Vulkan when available.
