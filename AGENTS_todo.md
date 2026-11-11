@@ -2437,3 +2437,13 @@ The static Release client was also run from its install path as
 - The binary is stripped (`WITH_SYMBOLS=OFF`); `-DWITH_SYMBOLS=ON` if a
   symbolized optimized build is wanted for crash dumps (larger).
 - Nothing committed except the doc update; no client/gamescope left running.
+
+## Crash: key-rebind save -> FD_SET overflow (in progress)
+
+User report (optimized static, Release+FINAL_VERSION=OFF): press "k", rebind
+movement to WASD, click Save -> freeze, then `You were disconnected by the
+server` and `*** bit out of range 0 - FD_SETSIZE on fd_set ***: terminated`
+(core dumped). Agent `vulkan-fdset-crash` (mats005, worktree
+`f1fb99/vulkan-fdset-crash`, base `db380f605`) is reproducing it, checking
+whether it is Vulkan-specific (also with OpenGL3), hunting the fd leak /
+select() path and the save freeze, and fixing it.
