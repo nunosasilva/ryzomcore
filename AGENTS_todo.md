@@ -1906,3 +1906,96 @@ Packages needed to build the tool: `qtbase5-dev`, `libqt5opengl5-dev`,
 its translations for the changed driver label were not regenerated; the tool
 writes only the string form, so an unquoted numeric `Driver3D` in an existing
 `client.cfg` is not converted.
+
+## Auto driver selection and quiet stdout (2026-11-11, `vulkan-driver-select`)
+
+Worktree `~/.local/share/opencode/worktree/f1fb99/vulkan-driver-select`, base
+`d36eab23c`, branch `vulkan-driver-select` (not pushed, not merged). Account
+`mats005`; clients were only used up to the login screen.
+
+### Why Auto failed
+
+`Driver3D = "Auto"` never considered Vulkan. In `ryzom/client/src/init.cpp`
+it picked OpenGL3 on 64-bit builds, Direct3D on Windows and OpenGL otherwise.
+There was also no fallback: `CDRU::createGl3Driver()` throws when the shared
+driver library is missing, and a driver whose `setDisplay()` fails went
+straight to `ExitClientError`. On a layout where Vulkan was the working driver
+(missing/incompatible GL3 library), Auto exited instead of starting. The static
+driver registry itself is fine: `build-static/bin/ryzom_client_dev` contains
+`createGlDriverInstance`, `createGl3DriverInstance` and
+`createVulkanDriverInstance`.
+
+The exact user failure could not be reproduced with the old static binary:
+with Auto it selected OpenGL3 and reached the login screen both directly on the
+desktop and under gamescope. The structural selection/fallback bugs above are
+what this change fixes.
+
+### Changes
+
+- `getAutoDriverCandidates()`: Vulkan (when `NL_VULKAN_AVAILABLE`), OpenGL3
+  (64-bit), Direct3D (Windows), OpenGL. First candidate is tried first.
+- `createDriverSafe()`: catches the shared-driver exceptions (missing or
+  incompatible library), logs a visible warning and moves to the next
+  candidate.
+- If the created driver cannot create the display, the next candidate is tried
+  before giving up (`delete Driver` only after the replacement worked; its
+  `_WindowInit` is still false, so teardown is the partial-state path already
+  used on failure).
+- Selection is logged: `3D: display created with the <driver> driver`.
+- `client.cpp`: `DEFAULT_SD` (the printf/stdout displayer) is now removed from
+  the Debug and Info logs in every build, not only `#ifndef NL_DEBUG`. The
+  Warning, Error and Assert logs keep it, and `initLog()` still attaches
+  `client.log` to all five streams. Debug/info therefore go to `client.log`,
+  warnings/errors stay visible on stdout.
+
+### Verification (one binary each)
+
+Static `build-static/bin/ryzom_client_dev` (Debug, 534 MB), gamescope 1280x800:
+
+| Driver3D | Starts | Log line | Visual |
+|---|---|---|---|
+| Auto | yes | `3D: display created with the Vulkan driver` | `NLVK` capture `static-auto/login.png` |
+| OpenGL3 | yes | `3D: display created with the OpenGL3 driver` | host capture `static-gl3/host.png` |
+| Vulkan | yes | `3D: display created with the Vulkan driver` | `NLVK` capture `static-vk/login.ppm` |
+| OpenGL (legacy GL2) | yes | `3D: display created with the OpenGL driver` | host capture `static-gl/host.png` |
+| Auto + broken Vulkan ICD | yes | `WRN ... Vulkan: initVulkan failed` then `WRN ... the Vulkan driver could not create the display, using OpenGL3` and `INF ... display created with the OpenGL3 driver` | GL3 rendering already proven above |
+
+Dynamic `build-vulkan/bin/ryzom_client_dev` (same four drivers, plus two
+fallback runs): same selection lines. With `libnel_drv_vulkan.so` moved away,
+Auto logs `Loading library libnel_drv_vulkan.so failed` and
+`3D: cannot create the Vulkan driver: nel_drv_vulkan not found`, then selects
+OpenGL3 and reaches the login screen.
+
+Captures live in `/tmp/opencode/vkauto/` (`static-*`, `test-*`,
+`dyn-auto-final`); they are test artifacts, not committed.
+
+### stdout before/after
+
+Old `ryzom_client_dev_vulkan` (`fb2ce0563`) with Vulkan on Xvfb, 15 s:
+111 lines = 10 DBG + 35 INF + 64 WRN + 2 blank/control lines.
+
+New dynamic build, same Vulkan/Xvfb test: 67 lines = 0 DBG + 0 INF + 65 WRN.
+Representative lines that are now only in `client.log`:
+
+    INF ... initLog : RYZOM VERSION: DEV Omega / ...
+    DBG ... config_file.cpp ... CF: Adding config file '...'
+    INF ... driver_vulkan.cpp ... Vulkan: using 'AMD Radeon 840M (RADV GFX1153)'
+    INF ... driver_vulkan_texture.cpp ... Vulkan: compressed texture 1024x1024 ...
+    DBG ... driver_vulkan.cpp ... Vulkan: frame 600, ... indexed draws ...
+    INF ... init.cpp ... 3D: display created with the Vulkan driver
+
+Warnings are still printed, for example `Vulkan: initVulkan failed`,
+`PATH: File (...) not found` and the static-build
+`checkDriverVersion: Can't check video driver version`. The static old/new
+counts are 681 -> 90 lines (47 -> 0 DBG/INF); its 632 -> 64 warning difference
+is install-layout noise (`CPath::addSearchBigFile` duplicate adds when the
+binary sits next to `data/`), not something suppressed by this change.
+
+### Notes
+
+- `docs/vulkan-static-build.md` now documents that Auto prefers Vulkan.
+- Windows keeps its old GL3/D3D/GL preference order after Vulkan.
+- Remaining: stdout is still warning-noisy on installs with duplicate big-file
+  paths; that is intentional (warnings must stay visible). The per-frame Vulkan
+  stats are gone from the terminal and remain in `client.log`.
+- Do not merge before the user verifies the static binary in the real install.

@@ -70,11 +70,12 @@ ldd build-static/bin/ryzom_client_dev   # no libnel*.so, no libnel_drv_*.so
 ## Run from a normal install
 
 Copy `build-static/bin/ryzom_client_dev` into the install directory (for
-example `~/Projects/ryzom/ryzom_live`), and in that directory's `client.cfg`
-set:
+example `~/Projects/ryzom/ryzom_live`). `Driver3D = "Auto"` now selects Vulkan
+when it is compiled in and can create the display, and falls back to OpenGL3 or
+OpenGL otherwise. To force one driver, set it in that directory's `client.cfg`:
 
 ```
-Driver3D = "Vulkan";
+Driver3D = "Vulkan";    // or "OpenGL3", "OpenGL"
 ```
 
 `RootConfigFilename` in `client.cfg` must point at the `client_default.cfg` of
