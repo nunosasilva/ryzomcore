@@ -31,6 +31,7 @@
 #include "nel/3d/light.h"
 
 #include <cmath>
+#include <chrono>
 
 #include <glslang/Public/ShaderLang.h>
 #include <SPIRV/GlslangToSpv.h>
@@ -38,6 +39,13 @@
 
 using namespace std;
 using namespace NLMISC;
+
+/// Monotonic nanoseconds for the optional NLVK_STATS breakdown.
+static uint64 nowNs()
+{
+	return (uint64)std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 using namespace NL3D;
 
 namespace NLVULKAN {
@@ -1603,6 +1611,8 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	if (!_FrameOpen && !beginFrame())
 		return false;
 
+	const uint64 statsStart = _StatsEnabled ? nowNs() : 0;
+
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
 	if (!info || !info->_VertexBuffer)
 		return false;
@@ -1613,6 +1623,8 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	VkBuffer indexBuffer = getIndexUploadBuffer(_IndexValues + (uint64)firstIndex * indexStride, bytes, indexStride);
 	if (indexBuffer == VK_NULL_HANDLE)
 		return false;
+
+	const uint64 statsIndexed = _StatsEnabled ? nowNs() : 0;
 
 	CPipelineKey key;
 	key.VertexFormat = makeVertexLayoutHash(*_CurrentVB);
@@ -1665,6 +1677,13 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 		indexStride == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
 	vkCmdDrawIndexed(cmd, count, 1, 0, 0, 0);
 	++_IndexedDrawCount;
+	if (_StatsEnabled)
+	{
+		const uint64 statsEnd = nowNs();
+		++_StatsDraws;
+		_StatsIndexNs += statsIndexed - statsStart;
+		_StatsDescriptorNs += statsEnd - statsIndexed;
+	}
 	return true;
 }
 
