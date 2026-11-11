@@ -461,3 +461,50 @@ CPU-skinning path match the mega programs:
   stub that creates a 2D view, so the mega `samplerCube` variant would bind a 2D
   view and trip `VUID-vkCmdDrawIndexed-viewType-07752`. This also removes the
   black Specular-environment draws until real cube uploads exist.
+
+## Login procedure (for humans and subagents)
+
+The live account is single-session. A client that is killed still owns the
+session for the network timeout + 30 s, and every failed login attempt seems to
+restart that timer, so "Your account is already in online state" can persist for
+a while. Do it like this:
+
+1. Before starting: `pgrep -a ryzom_client` and `pgrep -a gamescope`. Only kill
+   clients you started yourself; never kill the user's session.
+2. Log in with: `./ryzom_client mats007 passDOSma slot 1 --nopatch 1`.
+3. To stop: leave the game through `Escape` -> "Quit Ryzom" -> "Quit Now"
+   (or `/tmp/opencode/ryzomtest/stop_client.sh` when the window is up), and wait
+   for the process to exit. Avoid `kill -9`.
+4. If the login says "already in online state": wait 2-3 minutes and try once
+   more; do not retry in a loop (each failure extends the wait).
+5. Wait at least 30 s between two automated runs, and never run two clients with
+   credentials at the same time.
+6. Screenshots: `NLVK_SCREENSHOT=<path>.ppm NLVK_SCREENSHOT_FRAME=<n>` (or
+   `NLVK_SCREENSHOT_SEQ=1` for one every 600 frames). Host screenshots are
+   unreliable when the session is locked.
+7. The run dir used for automated tests is `~/Projects/ryzom/ryzom_live_vk2_mega`
+   (its `client.cfg` currently has `Shadows = 0`; the original is
+   `client.cfg.shadows1.bak`).
+
+## glsl3vi inserts (GPU skinning) — merged
+
+Insert programs are spliced into the mega VP (`nlPreTransform`, `NlMorph` at
+binding 4, `NlSkeleton` at binding 6). `GPU Skinning Insert` and
+`GPU Skinning Simple Insert` compile and draw; the character-selection preview is
+textured. `compileVertexProgram failed` count is 0 for all 24+ programs.
+
+**The black characters in game are NOT a vertex-program problem**: with
+`Shadows = 1`, `CShadowMapManager` draws shadow casters into the main framebuffer
+because `CDriverVulkan::setRenderTarget()` is a stub returning false. The shadow
+material is black, hence black characters/NPCs. `Shadows = 0` works around it.
+Implementing render targets (`setRenderTarget`, `copyTargetToTexture`,
+`getRenderTargetSize`, offscreen `ITexture` support) is the next step and also
+unblocks bloom, FXAA and water reflection.
+
+Also fixed with this merge: the simple path now uses the material diffuse for lit
+draws and the mega VP's vertex-colour rules, and transforms light directions into
+eye space (this is what made objects black even without shadow maps). Cube
+materials stay on the simple path until cube upload exists.
+
+A full-pink screen seen during loading is the frame clear colour (the moor's fog
+colour) with no world geometry drawn yet; it is not a crash.
