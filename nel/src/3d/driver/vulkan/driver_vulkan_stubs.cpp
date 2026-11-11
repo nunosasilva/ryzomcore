@@ -89,6 +89,7 @@ void CDriverVulkan::getDepthRange(float &znear, float &zfar) const
 
 void CDriverVulkan::forceDXTCCompression(bool dxtcComp)
 {
+	_ForceDXTCCompression = dxtcComp;
 }
 
 void CDriverVulkan::setAnisotropicFilter(sint filter)

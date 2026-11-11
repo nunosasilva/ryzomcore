@@ -187,38 +187,6 @@ bool CDriverVulkan::initMega()
 		return false;
 	}
 
-	// Light table UBO, one buffer per frame slot so a frame still in flight is
-	// never overwritten. 128 entries is the maximum getMaxLightTableSize().
-	for (uint i = 0; i < 2; ++i)
-	{
-		VkBufferCreateInfo bci;
-		memset(&bci, 0, sizeof(bci));
-		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-		bci.size = NL_VK_MEGA_MAX_LIGHT_TABLE * sizeof(CLightTableUBOEntry);
-		bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-		bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		if (vkCreateBuffer(_Device, &bci, NULL, &_MegaLightTableBuffer[i]) != VK_SUCCESS)
-		{
-			nlwarning("Vulkan: mega light table buffer creation failed");
-			return false;
-		}
-		VkMemoryRequirements req;
-		vkGetBufferMemoryRequirements(_Device, _MegaLightTableBuffer[i], &req);
-		VkMemoryAllocateInfo mai;
-		memset(&mai, 0, sizeof(mai));
-		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		mai.allocationSize = req.size;
-		mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		if (vkAllocateMemory(_Device, &mai, NULL, &_MegaLightTableMemory[i]) != VK_SUCCESS)
-		{
-			nlwarning("Vulkan: mega light table memory allocation failed");
-			return false;
-		}
-		vkBindBufferMemory(_Device, _MegaLightTableBuffer[i], _MegaLightTableMemory[i], 0);
-		vkMapMemory(_Device, _MegaLightTableMemory[i], 0, VK_WHOLE_SIZE, 0, &_MegaLightTableMapped[i]);
-	}
-
 	// Placeholder for the user UBO bindings (4-6): no engine UBOs are bound
 	// yet, but the descriptors must be valid for the set to be usable.
 	{
@@ -290,20 +258,6 @@ void CDriverVulkan::shutdownMega()
 	{
 		vkDestroyShaderModule(_Device, _MegaVertexShader, NULL);
 		_MegaVertexShader = VK_NULL_HANDLE;
-	}
-	for (uint i = 0; i < 2; ++i)
-	{
-		if (_MegaLightTableBuffer[i])
-		{
-			vkDestroyBuffer(_Device, _MegaLightTableBuffer[i], NULL);
-			_MegaLightTableBuffer[i] = VK_NULL_HANDLE;
-		}
-		if (_MegaLightTableMemory[i])
-		{
-			vkFreeMemory(_Device, _MegaLightTableMemory[i], NULL);
-			_MegaLightTableMemory[i] = VK_NULL_HANDLE;
-		}
-		_MegaLightTableMapped[i] = NULL;
 	}
 	if (_MegaUserBuffer)
 	{
@@ -476,21 +430,20 @@ const CCameraUBOData &CDriverVulkan::stageMegaCameraUBO()
 
 void CDriverVulkan::stageMegaLightTableUBO()
 {
-	if (_MegaLightTableStaged)
-		return;
-	CLightTableUBOEntry *dst = (CLightTableUBOEntry *)_MegaLightTableMapped[_FrameIndex];
-	const uint count = _LightTableMode ? std::min(_LightTableSize, NL_VK_MEGA_MAX_LIGHT_TABLE) : 8;
+	// The table is uploaded through the per-frame uniform ring in
+	// bindMegaDescriptors(): it is small enough (12 KB) and this keeps it on
+	// the same host-visible buffer as the camera/object/material blocks.
+	const uint count = _LightTableMode ? std::min(_LightTableSize, (uint)NL_VK_MEGA_MAX_LIGHT_TABLE) : 8;
 	for (uint i = 0; i < NL_VK_MEGA_MAX_LIGHT_TABLE; ++i)
 	{
 		if (i < count && (_LightTableMode ? i < _LightTableSize : _Lights[i].Enabled))
-			dst[i] = _LightTableMode ? _LightTable[i].Entry : _Lights[i].Entry;
+			_MegaLightTableEntries[i] = _LightTableMode ? _LightTable[i].Entry : _Lights[i].Entry;
 		else
 		{
-			memset(&dst[i], 0, sizeof(dst[i]));
-			dst[i].mode = -1;
+			memset(&_MegaLightTableEntries[i], 0, sizeof(_MegaLightTableEntries[i]));
+			_MegaLightTableEntries[i].mode = -1;
 		}
 	}
-	_MegaLightTableStaged = true;
 }
 
 void CDriverVulkan::stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data)
@@ -805,9 +758,11 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	}
 
 	const uint32 cameraOffset = allocUniformBlock(&cameraData, sizeof(cameraData));
+	const uint32 lightTableOffset = allocUniformBlock(_MegaLightTableEntries, sizeof(_MegaLightTableEntries));
 	const uint32 objectOffset = allocUniformBlock(&objectData, sizeof(objectData));
 	const uint32 materialOffset = allocUniformBlock(&materialData, sizeof(materialData));
-	if (cameraOffset == 0xFFFFFFFF || objectOffset == 0xFFFFFFFF || materialOffset == 0xFFFFFFFF)
+	if (cameraOffset == 0xFFFFFFFF || lightTableOffset == 0xFFFFFFFF ||
+		objectOffset == 0xFFFFFFFF || materialOffset == 0xFFFFFFFF)
 	{
 		nlwarning("Vulkan: mega uniform ring exhausted");
 		return false;
@@ -818,8 +773,8 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	bufferInfos[0].buffer = _UniformRing;
 	bufferInfos[0].offset = cameraOffset;
 	bufferInfos[0].range = sizeof(cameraData);
-	bufferInfos[1].buffer = _MegaLightTableBuffer[_FrameIndex];
-	bufferInfos[1].offset = 0;
+	bufferInfos[1].buffer = _UniformRing;
+	bufferInfos[1].offset = lightTableOffset;
 	bufferInfos[1].range = NL_VK_MEGA_MAX_LIGHT_TABLE * sizeof(CLightTableUBOEntry);
 	bufferInfos[2].buffer = _UniformRing;
 	bufferInfos[2].offset = objectOffset;
