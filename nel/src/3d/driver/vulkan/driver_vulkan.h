@@ -117,18 +117,52 @@ struct CTextureVulkan
 {
 	CTextureVulkan()
 		: Image(VK_NULL_HANDLE), Memory(VK_NULL_HANDLE), View(VK_NULL_HANDLE), Sampler(VK_NULL_HANDLE)
-		, Width(0), Height(0), Layers(1), HasAlpha(false), Uploaded(false), SourceFormat(CBitmap::DonTKnow) {}
+		, Framebuffer(VK_NULL_HANDLE), Width(0), Height(0), Layers(1), HasAlpha(false), Uploaded(false)
+		, SourceFormat(CBitmap::DonTKnow), Usage(0), Layout(VK_IMAGE_LAYOUT_UNDEFINED), DepthTarget(-1) {}
 
 	VkImage			Image;
 	VkDeviceMemory	Memory;
 	VkImageView		View;
 	VkSampler		Sampler;
+	/// Created when the texture is used as a render target, so that one image
+	/// is both the colour attachment and the sampled texture. Always built
+	/// with the offscreen render pass.
+	VkFramebuffer	Framebuffer;
 	uint32			Width;
 	uint32			Height;
 	uint32			Layers;
 	bool			HasAlpha;
 	bool			Uploaded;
 	CBitmap::TType	SourceFormat;
+	/// Usage flags the image was created with; render targets need
+	/// COLOR_ATTACHMENT usage and are recreated if they were created without.
+	VkImageUsageFlags	Usage;
+	/// Current layout of Image. Sampled descriptors assume SHADER_READ_ONLY,
+	/// which is where both uploads and render-target passes leave the image.
+	VkImageLayout	Layout;
+	/// Index in CDriverVulkan::_DepthTargets of the depth/stencil attachment
+	/// shared with the other targets of this size (-1 when not a target).
+	sint32			DepthTarget;
+};
+
+/// Depth/stencil attachment shared by every offscreen target of a given size,
+/// like GL3's CDepthStencilFBO cache. The image is never destroyed before the
+/// device: targets of that size may come and go.
+struct CDepthTargetVulkan
+{
+	CDepthTargetVulkan()
+		: Image(VK_NULL_HANDLE), Memory(VK_NULL_HANDLE), View(VK_NULL_HANDLE)
+		, Format(VK_FORMAT_UNDEFINED), Width(0), Height(0), Initialized(false) {}
+
+	VkImage			Image;
+	VkDeviceMemory	Memory;
+	VkImageView		View;
+	VkFormat		Format;
+	uint32			Width;
+	uint32			Height;
+	/// False until the image has been transitioned out of UNDEFINED layout by
+	/// the first render pass that uses it.
+	bool			Initialized;
 };
 
 /// Pipeline state key: everything that changes the created VkPipeline.
@@ -162,6 +196,7 @@ struct CPipelineKey
 	uint32	UserVP;           // active user vertex program id (0 = builtin mega VP)
 	uint32	UserVPInsert;     // the id refers to a glsl3vi insert mega VP variant
 	uint32	MegaSpecular;     // mega PP adds the specularColor varying (from the VP)
+	uint32	Target;           // render pass the pipeline is used with (0 = swapchain, 1 = offscreen)
 
 	bool operator==(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
 	bool operator<(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) < 0; }
@@ -453,6 +488,26 @@ private:
 	std::vector<VkImageView> _SwapchainViews;
 	VkRenderPass			_RenderPass;
 	std::vector<VkFramebuffer> _Framebuffers;
+	/// Same attachments as _RenderPass but with LOAD ops: used to resume the
+	/// main pass after an offscreen target was rendered in the middle of a
+	/// frame. Render-pass compatible with _RenderPass, so it shares pipelines.
+	VkRenderPass			_ResumeRenderPass;
+	/// Colour + depth pass for render targets (RGBA8, same depth format).
+	VkRenderPass			_OffscreenRenderPass;
+	/// Depth/stencil images shared by offscreen targets of the same size.
+	std::vector<CDepthTargetVulkan>	_DepthTargets;
+
+	/// Render target state. _RenderTargetTexture is NULL while the main
+	/// swapchain pass is bound; while it is set, the offscreen pass of that
+	/// texture is the pass being recorded (_FrameOpen is still true).
+	ITexture				*_RenderTargetTexture;
+	CTextureVulkan			*_RenderTargetInfo;
+	/// Number of setRenderTarget() binds, reported with the frame counters.
+	uint64					_RenderTargetBinds;
+	bool					_RenderTargetLogged;
+	/// Viewport of the main target, saved when an offscreen target is bound
+	/// and restored by setRenderTarget(NULL), like the GL3 driver.
+	CViewport				_SavedViewport;
 
 	VkFormat				_DepthFormat;
 	VkImage					_DepthImage;
@@ -529,6 +584,24 @@ private:
 	void					recordScreenshotCopy(VkCommandBuffer cmd);
 	void					writeScreenshot(const char *path);
 
+	// --- Render targets (driver_vulkan_target.cpp) ---
+	/// Start the swapchain pass. 'first' begins the frame (clears the target),
+	/// otherwise the pass resumes after an offscreen target (loads it).
+	void					beginMainPass(VkCommandBuffer cmd, bool first);
+	/// Extent of the bound render target, or of the swapchain.
+	VkExtent2D				currentTargetExtent() const;
+	/// Bind the cached viewport/scissor, clamped to 'extent'.
+	void					applyViewportScissor(VkCommandBuffer cmd, VkExtent2D extent);
+	/// Depth/stencil attachment shared by the targets of this size.
+	sint32					getDepthTarget(uint32 width, uint32 height);
+	bool					createTargetFramebuffer(CTextureVulkan &target, VkRenderPass pass);
+	/// Make 'tex' usable as a render target (image with colour-attachment
+	/// usage, framebuffer); recreated when the texture size changes.
+	bool					ensureRenderTarget(ITexture &tex, CTextureVulkan &target);
+	void					beginOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target, VkExtent2D extent);
+	void					endOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target);
+	void					destroyDepthTargets();
+
 	VkShaderModule			createShaderModule(const std::vector<uint32> &code);
 	VkFormat				findDepthFormat() const;
 
@@ -575,6 +648,8 @@ private:
 	// --- Textures (driver_vulkan_texture.cpp) ---
 	CTextureVulkan			*getTextureVulkan(ITexture &tex);
 	bool					uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool upload);
+	bool					createTextureImage(uint32 width, uint32 height, uint mipCount,
+								VkImageUsageFlags usage, CTextureVulkan &out);
 	void					destroyTexture(CTextureVulkan &tex);
 	VkImageView				getWhiteTexture();
 
