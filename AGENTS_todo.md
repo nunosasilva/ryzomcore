@@ -2335,3 +2335,13 @@ symlinked to `~/Projects/ryzom/ryzom_live`, `client.cfg` with
   hardening separately.
 - `isActive()` still returns false for an unmapped window; the loading loop
   (`progress.cpp`) exits the client in that case. Pre-existing, untouched.
+
+## Optimized static build with debug commands — in progress
+
+Agent `vulkan-release-build` (mats005, worktree `f1fb99/vulkan-release-build`,
+base `a85aff4b0`) is finding what actually gates Lua scripting and
+`/setLightHour` (FINAL_VERSION vs WITH_RYZOM_LIVE vs build type), then building a
+**static optimized** binary that keeps those commands, verifying Lua and
+`/setLightHour`, and comparing fps against the Debug binary and the official
+client. The optimized binary will be installed as
+`~/Projects/ryzom/ryzom_live/ryzom_client_vulkan_opt`, keeping the Debug one.
