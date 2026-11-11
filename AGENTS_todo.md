@@ -1174,3 +1174,7 @@ debug build's Lua scripting can open the window if xdotool is inconvenient.
 - `valgrind` is installed (user). For the RSS issue prefer `--tool=massif`
   (two snapshots: login screen vs after N minutes in game) and
   `--leak-check=full` with suppressions; expect heavy Mesa/RADV/X11 noise.
+- User observation 2026-11-11: a running client showed ~1.1 GB RES (down from
+  >3 GB) at ~12 FPS. Confirm which build that was and record the RSS at each
+  measurement point in the memory work's report. FPS is explicitly not a
+  priority right now; correctness first.
