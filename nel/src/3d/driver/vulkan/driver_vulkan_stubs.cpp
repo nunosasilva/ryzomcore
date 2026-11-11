@@ -211,7 +211,7 @@ void CDriverVulkan::profileRenderedPrimitives(CPrimitiveProfile &pIn, CPrimitive
 
 uint32 CDriverVulkan::profileAllocatedTextureMemory()
 {
-	return 0;
+	return (uint32)std::min<uint64>(_AllocatedTextureMemory, 0xFFFFFFFFu);
 }
 
 uint32 CDriverVulkan::profileSetupedMaterials() const
@@ -226,11 +226,17 @@ uint32 CDriverVulkan::profileSetupedModelMatrix() const
 
 void CDriverVulkan::enableUsedTextureMemorySum(bool enable)
 {
+	_UsedTextureMemorySumEnabled = enable;
+	if (!enable)
+		_TextureUsed.clear();
 }
 
 uint32 CDriverVulkan::getUsedTextureMemory() const
 {
-	return 0;
+	uint64 memory = 0;
+	for (std::set<CTextureDrvInfosVulkan *>::const_iterator it = _TextureUsed.begin(); it != _TextureUsed.end(); ++it)
+		memory += (*it)->TextureMemory;
+	return (uint32)std::min<uint64>(memory, 0xFFFFFFFFu);
 }
 
 void CDriverVulkan::startProfileVBHardLock()
