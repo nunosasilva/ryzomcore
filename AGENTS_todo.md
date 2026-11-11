@@ -1369,3 +1369,10 @@ otherwise. The remaining open items are being worked by two agents:
   sources.
 - `vulkan-texperf` (mats006): in-place texture-update device waits, BC blits in
   stretchRect and remaining per-frame sync/stalls.
+
+## Pinning the time of day for comparisons (user tip)
+
+Ryzom's day/night cycle is about 1 hour of wall time. In a debug build
+(`-DFINAL_VERSION=OFF`) `/setLightHour 12` (or the equivalent Lua call) pins the
+client at noon. Use it for colour/fog/transparency comparisons so both drivers
+render the same lighting, and take captures at the same pinned hour.
