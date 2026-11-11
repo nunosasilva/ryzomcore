@@ -1243,8 +1243,6 @@ known gamescope `VkSwapchainPresentModeInfoKHR` and
 `vkCreateDevice-ppEnabledExtensionNames` VUIDs.
 
 Still open:
-- Fog/colour parity with GL3 (the Vulkan scene is darker and warmer).
-- `ForceDXTC` compression of RGBA source textures is still a no-op.
 - Blitting from a BC texture in `stretchRect()` is untested (FXAA/bloom only
   use RGBA render targets today).
 - The FullRewrite two-copy rotation assumes one write per buffer per frame
@@ -1344,14 +1342,9 @@ charsel.png, gpuskin.png, ingame2.png, flicker dumps in `/tmp/opencode/sd` are
 in `/var/tmp/sd/`).
 
 Still open:
-- Fog/colour parity with GL3 (the Vulkan scene is darker and warmer).
-- `ForceDXTC` compression of RGBA source textures is still a no-op.
-- Blitting from a BC texture in `stretchRect()` is untested (FXAA/bloom only
-  use RGBA render targets today).
 - The FullRewrite two-copy rotation assumes one write per buffer per frame
   (true for the skin manager); a third write to the same VB in one frame could
   still be seen by an earlier recorded draw.
-- In-place (non-first-time) texture updates still do a device wait + submit.
 - Depth buffer is shared by all swapchain images and by both frames in flight;
   correct today only because the render pass clears it at the start of every
   frame, but two in-flight frames still write the same depth image. Making it
@@ -1518,3 +1511,129 @@ base `a463c5e44`) is working on:
 - an audit: the shared-depth-buffer item is already fixed on main (`fb6e5b5e5`,
   one depth image per swapchain image), ForceDXTC and fog/colour parity belong
   to `vulkan-color-fog`.
+
+
+## Fog/colour parity and ForceDXTC (branch `vulkan-color-fog`, commit see log)
+
+Verified in game on `mats005` (character `Kykikos`), 1280x800, with the debug
+client's lighting pinned at noon via `/setLightHour 12` typed into the chat
+(the day/night cycle is ~1 h; without pinning, two runs see different light).
+Vulkan captures are `NLVK_SCREENSHOT` frame dumps; the GL3 reference is the
+window captured with `import` under gamescope. Evidence in
+`/tmp/opencode/fog/out/` (`glfinal-shot1.png`, `vkval-300.png`,
+`vkmega-final.png`, `vkdxtc2.png`, `vknodxtc.png`, `top-compare2.png`).
+
+What made Vulkan darker and warmer (three separate bugs):
+
+1. **Mega light table never reached the shaders.** It was staged into a
+   dedicated host-visible VkBuffer bound at descriptor binding 1, but the
+   vertex programs read zeros from it (a white-table test and a shader-side
+   `li.diffuse = 1` test both lit the scene; the CPU side showed a valid sun
+   entry). All mega/user-VP meshes (trees, mushrooms, vegetation) therefore
+   received only the ambient/self-illumination term. The table is now staged
+   in `_MegaLightTableEntries[NL_VK_MEGA_MAX_LIGHT_TABLE]` and uploaded at
+   draw time through the per-frame uniform ring, the same path as the
+   camera/object/material blocks; the separate buffers are gone. This is the
+   fix that makes the scene match GL3.
+2. **Simple-path lighting did not match the mega vertex program.** It
+   multiplied the ambient/self-illumination by the material diffuse, ignored
+   the material emissive, and had no clamp or `(f + (f>>7))/256` light-factor
+   expansion. It now computes `diffuse * lights + selfIllumination` exactly
+   like the mega VP, with self-illumination staged like the mega object UBO
+   (global + per-light ambient, times material ambient, plus emissive).
+3. **Simple-path TexEnv ignored the stage constant colour** and used `vColor`
+   for both diffuse and constant. This painted the sky fog dome (which gets
+   the fog colour through `setInstanceConstantColor`) white. Added
+   `texEnvConstant[4]` to `SSimpleUniforms`/the GLSL block and staged
+   `CMaterial::_TexEnvs[stage].ConstantColor`.
+
+The final colour path itself was already right: B8G8R8A8_UNORM swapchain (no
+sRGB), GL3 renders to a non-sRGB 24 bpp visual, and
+`setMonitorColorProperties` is a no-op in both drivers. UI panels are now
+pixel-identical (MAD 0.03), which proves the output/gamma path.
+
+Fog: `setupFog` parameters and colour were already identical between the
+drivers; both use the GL3 linear/exp/exp2 maths with `abs(ecPos.y/ecPos.w)` and
+the black-fog override for additive blends/passes. The old "mega object UBO
+fogEnabled = 0" override was already gone; `NLVK_MEGA=1` and the simple path
+now agree within ~1.6 units per region (the remaining canopy MAD is wind
+animation phase, not colour).
+
+**ForceDXTC.** There is no engine RGBA->DXT compressor in this tree:
+`CBitmap::convertToType(CBitmap::DXTC5)` only rewrites existing DXT1 data
+(`convertToDXTC5` returns false for RGBA), and
+`CHLSColorTexture::compressBlockRGB` is private, RGB-only (it leaves the alpha
+block untouched) and tied to HLS recolouring. GL3's ForceDXTC path is not a
+compressor either: it passes an RGBA pointer to `glTexImage2D` with a
+`GL_COMPRESSED_*` internal format, which GL does not define as a compression
+request. The Vulkan driver now has a small BC3 (DXT5) encoder in
+`driver_vulkan_texture.cpp` (8-value alpha palette, bounding-box 565 colour
+endpoints, clamped edge blocks), used when `forceDXTCCompression(true)` is
+set, the bitmap is RGBA with `ITexture::Auto`/`allowDegradation()`, and the
+device supports `textureCompressionBC`. Mips are built as RGBA and each level
+is compressed on upload; rectangle updates fall back to a full recompress.
+Verified with `ForceDXTC = 1;` in the run dir's `client.cfg` (backed up and
+restored): 18 RGBA textures uploaded as BC3, validation clean, and the
+non-DXTC capture differs only by expected DXT quantisation (ground MAD ~3).
+The encoder is bounding-box quality, not a cluster-fit encoder.
+
+Before/after region means (Vulkan vs GL3, pinned noon; R,G,B):
+- before: canopy (67.7,64.9,59.3) vs (109.6,101.3,97.2); trunk
+  (53.6,42.3,40.6) vs (94.0,70.2,66.9); far middle (90.0,88.1,87.2) vs
+  (111.1,103.8,102.1).
+- after: canopy (105.6,98.0,93.1) vs (105.2,97.5,92.7); trunk
+  (86.2,64.0,59.2) vs (88.2,64.5,60.4); far middle (84.8,81.3,72.6) vs
+  (85.3,80.9,72.3); sky +2.4, ground +1.7, UI 0.0.
+
+Remaining gaps:
+- The simple path still handles only directional lights (point/spot are
+  skipped) and has no specular vertex term; both exist in the mega VP.
+- Simple-path TexEnv has 4 stages and no EMBM (mega has 8 stages + EMBM).
+- The light table is re-uploaded (12 KB) per mega draw; it could be cached per
+  frame until the light state changes.
+
+## Integration with the texture-upload work (branch `vulkan-color-fog`)
+
+Rebased onto `main/atys-live-n-vulkan` `adb36ad9d` (which contains
+`0d6b19741` "upload textures with the frame, no per-update device wait",
+`a463c5e44` merge + handoff commits). Conflicts were limited to
+`driver_vulkan.cpp` (constructor init list: kept the new staging-ring fields,
+dropped the old light-table buffers), `driver_vulkan_texture.cpp` (the
+ForceDXTC early-out in `uploadTextureRegion` now sits in front of the new
+`STextureCopy`/`recordTextureCopy` path; the BC3 upload writes through
+`allocTextureStaging()`/`staging.Mapped`), and `AGENTS_todo.md` (kept both
+handoff sections). The new upload architecture is untouched: per-frame-slot
+upload command buffers submitted with the frame, host-visible staging ring,
+`beginTextureCopy`/`endTextureCopy` gone, no per-update device waits. The
+light table still goes through the per-frame uniform ring, and the simple
+lighting/TexEnv changes are unchanged.
+
+Verified in game on `mats005` (character `Kykikos`), 1280x800, post-rebase:
+
+* Vulkan vs GL3, clean back-to-back captures (no time pin, ~3 min apart, so
+  both drivers see the same client time): canopy +0.4/+0.2/+0.3, trunk
+  +0.4/+0.3/-0.0, far left -0.9/-0.6/-0.6, far middle +0.7/+0.7/+0.8, ground
+  -0.6/-0.5/-0.6, missions panel +0.1/-0.6/-0.0 (R,G,B, Vulkan minus GL3).
+  Evidence `/tmp/opencode/fog/out/{glclean.png, vkclean-1800.png}`.
+* Mega vs simple, both with the gdb-pinned hour (`set var
+  ForcedDayNightCycleHour=12` at the `main` breakpoint; more reliable than
+  typing into the chat, which can open UI windows): all scene regions within
+  +/-0.6, ground 0.0, missions panel 0.0. Evidence
+  `/tmp/opencode/fog/out/{vkgdb3-1800.png, vkmg-1800.png}`.
+* ForceDXTC: `client_default.cfg` defaults `ForceDXTC = 1`, so the normal runs
+  already exercise the path. Post-rebase validation run: **18** RGBA textures
+  compressed to BC3, `NLVK_VALIDATION=1` reports only the two known gamescope
+  VUIDs. No texture corruption; the earlier rainbow-looking frame was a game
+  debug key toggled by typing into the world, not the upload path.
+* `NLVK_STATS` in game (no validation, ForceDXTC on, ~805 indexed draws/frame):
+  12 windows, **17.39..24.27 ms/frame, mean 19.2 ms/frame (52 fps mean)**,
+  3.7 us descriptor+draw, 0.2 us index copy, 1323..4881 texture copies per
+  120-frame window (batched, no upload submits), 0.01..0.03 MiB staged/frame.
+  The absolute frame time is below the `vulkan-texperf` 29-30 ms measurement
+  because that run had ~1200 draws/frame and another client on the account;
+  the CPU cost per draw and the batched/no-wait upload path match it.
+
+Pinning note for future agents: `/setLightHour 12` via xdotool is fragile
+because the media-player dialog and the saved UI layout decide where clicks
+land. Running the client under gdb and setting `ForcedDayNightCycleHour = 12`
+at the `main` breakpoint is deterministic.

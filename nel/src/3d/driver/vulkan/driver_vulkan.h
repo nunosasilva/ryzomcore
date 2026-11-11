@@ -149,7 +149,7 @@ struct CTextureVulkan
 	CTextureVulkan()
 		: Image(VK_NULL_HANDLE), Memory(VK_NULL_HANDLE), MemorySize(0), View(VK_NULL_HANDLE), Sampler(VK_NULL_HANDLE)
 		, Framebuffer(VK_NULL_HANDLE), Width(0), Height(0), MipLevels(1), Layers(1), HasAlpha(false), Uploaded(false)
-		, Compressed(false), SourceFormat(CBitmap::DonTKnow), Format(VK_FORMAT_UNDEFINED), Usage(0)
+		, Compressed(false), CompressFromRGBA(false), SourceFormat(CBitmap::DonTKnow), Format(VK_FORMAT_UNDEFINED), Usage(0)
 		, Layout(VK_IMAGE_LAYOUT_UNDEFINED), DepthTarget(-1) {}
 
 	VkImage			Image;
@@ -173,6 +173,9 @@ struct CTextureVulkan
 	/// format), which makes the driver keep the texture bitmap compressed and
 	/// upload raw blocks instead of converting every texel to RGBA.
 	bool			Compressed;
+	/// True when the source bitmap is RGBA and the image is BC3: the upload
+	/// path compresses each mip on the CPU (ForceDXTCCompression).
+	bool			CompressFromRGBA;
 	CBitmap::TType	SourceFormat;
 	/// VkFormat of Image: NL_VK_TEXTURE_FORMAT for uncompressed textures,
 	/// the matching BC format for compressed ones.
@@ -627,6 +630,7 @@ private:
 	bool					_ZWrite;
 	bool					_ZTest;
 	CMaterial				*_CurrentMaterial;
+	bool					_ForceDXTCCompression;
 	bool					_FogColorOverrideBlack; // additive blends get black fog (GL3 behaviour)
 
 	bool					_FogEnabled;
@@ -802,10 +806,9 @@ private:
 	VkPipelineLayout			_MegaPipelineLayout;
 	VkShaderModule				_MegaVertexShader;
 	std::map<uint32, VkShaderModule>	_MegaPixelShaderVariants;
-	VkBuffer					_MegaLightTableBuffer[2];
-	VkDeviceMemory				_MegaLightTableMemory[2];
-	void						*_MegaLightTableMapped[2];
-	bool						_MegaLightTableStaged;
+	/// Staged light table, uploaded through the per-frame uniform ring at draw
+	/// time (same path as the camera/object/material blocks).
+	CLightTableUBOEntry			_MegaLightTableEntries[NL_VK_MEGA_MAX_LIGHT_TABLE];
 	VkBuffer					_MegaUserBuffer;
 	VkDeviceMemory				_MegaUserBufferMemory;
 	CCameraUBOData				_MegaCameraData;
@@ -991,8 +994,9 @@ private:
 		float	TexMatrix[4][16];		// 656 (user texture matrix per stage)
 		float	SpecularTexMtx[16];		// 912 (inverse view rotation, reflection texgen)
 		float	ModelView[16];			// 976 (eye-space position for texgen and fog)
-	};									// 1040
-	static_assert(sizeof(SSimpleUniforms) == 1040, "SSimpleUniforms must match the std140 NlSimple block");
+		float	TexEnvConstant[4][4];	// 1040 (TexEnv stage constant colours)
+	};									// 1104
+	static_assert(sizeof(SSimpleUniforms) == 1104, "SSimpleUniforms must match the std140 NlSimple block");
 
 	VkBuffer				_UniformRing;
 	VkDeviceMemory			_UniformRingMemory;
