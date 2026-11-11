@@ -67,6 +67,67 @@ inside it. Check with:
 ldd build-static/bin/ryzom_client_dev   # no libnel*.so, no libnel_drv_*.so
 ```
 
+## Optimized build that keeps the debug commands
+
+`CMAKE_BUILD_TYPE=Debug` compiles the engine at `-O0` and is the reason the
+static test client is slower than the official one. `CMAKE_BUILD_TYPE=Release`
+makes `CMakeModules/nel.cmake` set `-DNL_RELEASE -DNDEBUG -O3`, which is the
+dominant speed difference; `FINAL_VERSION=OFF` costs nothing measurable
+because `NL_NO_ASSERT` is defined for every build (see `nel/include/nel/misc/types_nl.h`), so the
+`#if !FINAL_VERSION` blocks are mostly no-op asserts.
+
+What actually gates the commands:
+
+| feature | gate | where |
+|---|---|---|
+| `/setLightHour` | `FINAL_VERSION=OFF` — the command is inside `#if !FINAL_VERSION` | `ryzom/client/src/commands.cpp:1471` (`#if !FINAL_VERSION`) to `:5185`; `NLMISC_COMMAND(setLightHour, ...)` at `:5018` |
+| `/luaScript`, `/luaInfo`, `/luaObject` | compiled in every build; enabled at runtime by `AllowDebugLua = 1;` in `client.cfg` (default false) | `commands.cpp`, `ryzom/client/src/client_cfg.cpp:714` |
+| `/luaGC` | `FINAL_VERSION=OFF` | `commands.cpp:5333` |
+| `WITH_RYZOM_LIVE` | nothing — it only selects the ryzom.com URLs | `CMakeLists.txt:136` |
+
+So build the same static configuration with `-DCMAKE_BUILD_TYPE=Release` and
+`-DFINAL_VERSION=OFF` (the rest unchanged, including the static external
+fallback):
+
+```sh
+CXXFLAGS="-D__STDCPP_DEFAULT_NEW_ALIGNMENT__=16" \
+cmake -S . -B build-static-release -G Ninja \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DFINAL_VERSION=OFF \
+  -DWITH_RYZOM_LIVE=OFF \
+  -DWITH_RYZOM_CLIENT=ON \
+  -DWITH_RYZOM_SERVER=OFF \
+  -DWITH_RYZOM_TOOLS=OFF \
+  -DWITH_NEL_TESTS=OFF \
+  -DWITH_NEL_SAMPLES=OFF \
+  -DWITH_QT=OFF -DWITH_QT5=OFF \
+  -DWITH_DRIVER_OPENGL=ON \
+  -DWITH_DRIVER_OPENGL3=ON \
+  -DWITH_DRIVER_VULKAN=ON \
+  -DWITH_LUA51=OFF \
+  -DLUA_INCLUDE_DIR=/usr/include/lua5.3 \
+  "-DLUA_LIBRARIES=/usr/lib/x86_64-linux-gnu/liblua5.3.so;/usr/lib/x86_64-linux-gnu/libm.so" \
+  -DLUABIND_INCLUDE_DIR=$HOME/Projects/ryzom/luabind-install/include \
+  -DLUABIND_LIBRARY_RELEASE=$HOME/Projects/ryzom/luabind-install/lib/libluabind_lua53.a \
+  -DBREAKPAD_INCLUDE_DIR=$HOME/Projects/ryzom/breakpad/src \
+  -DBREAKPAD_CLIENT_LIB=$HOME/Projects/ryzom/breakpad/src/client/linux/libbreakpad_client.a \
+  -DWITH_STATIC=ON \
+  -DWITH_STATIC_DRIVERS=ON \
+  -DWITH_STATIC_LIBXML2=OFF \
+  -DWITH_STATIC_CURL=OFF \
+  -DWITH_STATIC_EXTERNAL=OFF
+
+ninja -C build-static-release ryzom_client
+```
+
+The output keeps the `_dev` name (`bin/ryzom_client_dev`, about 35 MB:
+`WITH_SYMBOLS=OFF` strips it, add `-DWITH_SYMBOLS=ON` if crash dumps need
+symbols). Copy it next to the debug build as `ryzom_client_vulkan_opt` so both
+can be kept. `/luaScript` needs `AllowDebugLua = 1;` in `client.cfg`;
+`/setLightHour 12` works as a normal chat command and a negative value resets
+the automatic cycle.
+
 ## Run from a normal install
 
 Copy `build-static/bin/ryzom_client_dev` into the install directory (for
