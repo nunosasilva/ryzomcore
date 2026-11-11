@@ -1171,3 +1171,6 @@ rendering work.
 The in-game configuration window (opened/closed with the `u` key) shows an FPS
 counter in its top-right. Use it to cross-check `NLVK_STATS=1` numbers; the
 debug build's Lua scripting can open the window if xdotool is inconvenient.
+- `valgrind` is installed (user). For the RSS issue prefer `--tool=massif`
+  (two snapshots: login screen vs after N minutes in game) and
+  `--leak-check=full` with suppressions; expect heavy Mesa/RADV/X11 noise.
