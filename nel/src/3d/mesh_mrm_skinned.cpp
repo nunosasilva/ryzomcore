@@ -618,8 +618,11 @@ void	CMeshMRMSkinnedGeom::render(IDriver *drv, CTransformShape *trans, float pol
 	nlassert(!(mi->isSkinned() && skeleton));
 
 
-	// GPU geomorph path: replaces slow debug VB unpacking
-	if (_GPUSkinBuilt && trans->getOwnerScene()->isGPUSkinningEnabled())
+	// GPU geomorph path: replaces slow debug VB unpacking. No skeleton is
+	// bound here (useSkeleton = 0), so this only needs the glsl3vi insert
+	// program, not bone skinning support.
+	if (_GPUSkinBuilt && trans->getOwnerScene()->isGPUSkinningEnabled()
+		&& drv->supportVertexProgram(IProgram::glsl3vi))
 	{
 		drv->setupModelMatrix(trans->getWorldMatrix());
 		bool bkupNorm= drv->isForceNormalize();

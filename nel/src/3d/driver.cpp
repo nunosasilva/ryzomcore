@@ -39,7 +39,7 @@ namespace NL3D
 {
 
 // ***************************************************************************
-const uint32 IDriver::InterfaceVersion = 0x74; // user UBO bind API
+const uint32 IDriver::InterfaceVersion = 0x75; // GPU skinning capability query
 
 // ***************************************************************************
 IDriver::IDriver() : _SyncTexDrvInfos( "IDriver::_SyncTexDrvInfos" )

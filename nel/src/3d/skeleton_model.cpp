@@ -1521,9 +1521,11 @@ void			CSkeletonModel::renderSkinList(NLMISC::CObjectVector<CTransform*, false> 
 	CRenderTrav			&rdrTrav= getOwnerScene()->getRenderTrav();
 	IDriver				*drv= rdrTrav.getDriver();
 
-	// Check if GPU skinning is available (driver supports glsl3vi profile, large UBO arrays, and scene has it enabled)
-	bool gpuSkinAvailable = drv && drv->supportVertexProgram(IProgram::glsl3vi)
-		&& drv->supportLargeUBOArrays()
+	// Check if GPU skinning is available: the driver must be able to upload a
+	// bone palette and read uint8 bone indices (see IDriver::supportGPUSkinning,
+	// which is separate from plain glsl3vi insert support because MRM geomorph
+	// uses the same insert program without a skeleton).
+	bool gpuSkinAvailable = drv && drv->supportGPUSkinning()
 		&& getOwnerScene()->isGPUSkinningEnabled();
 
 	// Try GPU skinning first: render GPU-capable skins, collect non-GPU skins for CPU path
