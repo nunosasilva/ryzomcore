@@ -36,6 +36,8 @@ CDisplaySettingsWidget::CDisplaySettingsWidget( QWidget *parent ) :
 
 	connect( autoRadioButton, SIGNAL( clicked( bool ) ), this, SLOT( onSomethingChanged() ) );
 	connect( openglRadioButton, SIGNAL( clicked( bool ) ), this, SLOT( onSomethingChanged() ) );
+	connect( opengl3RadioButton, SIGNAL( clicked( bool ) ), this, SLOT( onSomethingChanged() ) );
+	connect( vulkanRadioButton, SIGNAL( clicked( bool ) ), this, SLOT( onSomethingChanged() ) );
 	connect( direct3dRadioButton, SIGNAL( clicked( bool ) ), this, SLOT( onSomethingChanged() ) );
 	connect( fullscreenRadioButton, SIGNAL( clicked( bool ) ), this, SLOT( onSomethingChanged() ) );
 	connect( windowedRadioButton, SIGNAL( clicked( bool ) ), this, SLOT( onSomethingChanged() ) );
@@ -46,6 +48,8 @@ CDisplaySettingsWidget::CDisplaySettingsWidget( QWidget *parent ) :
 	connect( videomodeComboBox, SIGNAL( currentIndexChanged( int ) ), this, SLOT( onSomethingChanged() ) );
 	connect( autoRadioButton, SIGNAL( clicked( bool ) ), this, SLOT( updateVideoModes() ) );
 	connect( openglRadioButton, SIGNAL( clicked( bool ) ), this, SLOT( updateVideoModes() ) );
+	connect( opengl3RadioButton, SIGNAL( clicked( bool ) ), this, SLOT( updateVideoModes() ) );
+	connect( vulkanRadioButton, SIGNAL( clicked( bool ) ), this, SLOT( updateVideoModes() ) );
 	connect( direct3dRadioButton, SIGNAL( clicked( bool ) ), this, SLOT( updateVideoModes() ) );
 }
 
@@ -65,6 +69,12 @@ void CDisplaySettingsWidget::load()
 		break;
 	case DRV_OPENGL:
 		openglRadioButton->setChecked( true );
+		break;
+	case DRV_OPENGL3:
+		opengl3RadioButton->setChecked( true );
+		break;
+	case DRV_VULKAN:
+		vulkanRadioButton->setChecked( true );
 		break;
 	case DRV_DIRECT3D:
 		direct3dRadioButton->setChecked( true );
@@ -103,6 +113,10 @@ void CDisplaySettingsWidget::save()
 
 	if( openglRadioButton->isChecked() )
 		s.config.setString( "Driver3D", std::string( "OpenGL" ) );
+	else if( opengl3RadioButton->isChecked() )
+		s.config.setString( "Driver3D", std::string( "OpenGL3" ) );
+	else if( vulkanRadioButton->isChecked() )
+		s.config.setString( "Driver3D", std::string( "Vulkan" ) );
 #ifdef Q_OS_WIN32
 	else if( direct3dRadioButton->isChecked() )
 		s.config.setString( "Driver3D", std::string( "Direct3D" ) );
@@ -194,6 +208,8 @@ uint32 CDisplaySettingsWidget::findVideoModeIndex( CVideoMode *mode )
 	//| --------------------------------------|
 	//| Auto            | OpenGL modes        |
 	//| OpenGL          | OpenGL modes        |
+	//| OpenGL3         | OpenGL modes        |
+	//| Vulkan          | OpenGL modes        |
 	//| Direct3D        | Direct3D modes      |
 	//| --------------------------------------|
 	//
@@ -224,17 +240,16 @@ uint32 CDisplaySettingsWidget::findVideoModeIndex( CVideoMode *mode )
 
 E3DDriver CDisplaySettingsWidget::getDriverFromConfigString(std::string &str) const
 {
-	if( str.compare( "0" ) == 0 )
+	if( str.compare( "0" ) == 0 || NLMISC::nlstricmp( str, "Auto" ) == 0 )
 		return DRV_AUTO;
-	if( str.compare( "1" ) == 0 )
+	if( str.compare( "1" ) == 0 || NLMISC::nlstricmp( str, "OpenGL" ) == 0 )
 		return DRV_OPENGL;
-	if( str.compare( "2" ) == 0 )
+	if( str.compare( "2" ) == 0 || NLMISC::nlstricmp( str, "Direct3D" ) == 0 )
 		return DRV_DIRECT3D;
-	if( str.compare( "OpenGL" ) == 0 )
-		return DRV_OPENGL;
-	if( str.compare( "Direct3D" ) == 0)
-		return DRV_DIRECT3D;
-
+	if( str.compare( "4" ) == 0 || NLMISC::nlstricmp( str, "OpenGL3" ) == 0 )
+		return DRV_OPENGL3;
+	if( str.compare( "5" ) == 0 || NLMISC::nlstricmp( str, "Vulkan" ) == 0 )
+		return DRV_VULKAN;
 
 	return DRV_AUTO;
 }

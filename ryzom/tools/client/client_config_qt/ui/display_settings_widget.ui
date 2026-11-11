@@ -23,7 +23,7 @@
       <item>
        <widget class="QLabel" name="videoDriverLabel">
         <property name="text">
-         <string>Specify if Ryzom is to be run in OpenGL or Direct3D:</string>
+         <string>Specify which 3D driver Ryzom is to use:</string>
         </property>
        </widget>
       </item>
@@ -38,6 +38,20 @@
        <widget class="QRadioButton" name="openglRadioButton">
         <property name="text">
          <string>OpenGL</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="opengl3RadioButton">
+        <property name="text">
+         <string>OpenGL3</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="vulkanRadioButton">
+        <property name="text">
+         <string>Vulkan</string>
         </property>
        </widget>
       </item>
