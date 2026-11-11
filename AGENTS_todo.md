@@ -1,6 +1,7 @@
 # Port Ryzom to Vulkan — handoff
 
-_Last updated: 2026-11-11, texgen + fog + bloom/FXAA (branch `vulkan-fog-bloom`)_
+_Last updated: 2026-11-11, `vulkan-transforms-perf` merged and verified in game
+(branch `vulkan-integrate-verify`, see the last section)_
 
 ## Status in one line
 
@@ -20,8 +21,11 @@ from `origin/atys-n-gl3`, `88e72dc35`) + the Vulkan driver, pushed to `origin`.
 The vertex-program work is on local branch `vulkan-nelvp` (nelvp/glsl330v, not
 pushed), `vulkan-skinning` (glsl3vi insert programs + GPU skinning, based on
 `b7c8b0200`, not pushed), `vulkan-rendertargets` (render targets + shadow maps,
-based on `6b20a9341`, not pushed) and `vulkan-fog-bloom` (simple-path texgen +
-fog, bloom/FXAA, based on `d7334636c`, not pushed).
+based on `6b20a9341`, not pushed), `vulkan-fog-bloom` (simple-path texgen +
+fog, bloom/FXAA, based on `d7334636c`, not pushed) and `vulkan-transforms-perf`
+(deferred destroys, batched first-time texture uploads, NLVK_STATS, `glsl3vi`
+opt-in; merged into `vulkan-integrate-verify` on top of `4b7aba749` and verified
+in game, see the last section).
 
 The GL2 and GL3 drivers are kept. `Driver3D="OpenGL3"` was re-tested after the
 Vulkan work: the GL3 mega shaders initialise and the client runs.
@@ -978,3 +982,158 @@ were forbidden. **Everything below compiles but has not been run in game.**
    transitions are the risk). If anything looks wrong, the fallback is a
    one-line change: pass `false` from `uploadTextureVulkan()` to
    `uploadTexturePixels()` to get the old synchronous path back.
+
+## Integration of `vulkan-transforms-perf` + in-game verification (branch `vulkan-integrate-verify`)
+
+Merge commit `4089cdd6b` (`git merge --no-ff vulkan-transforms-perf` on top of
+`4b7aba749`). The only textual conflict was `driver_vulkan_texture.cpp/.h`; both
+sides had rewritten the uploader.
+
+### What was kept from each side
+
+Main (font/colour fix), unchanged semantics:
+- `prepareTexturePixels()` only decompresses compressed formats; an
+  uncompressed bitmap is read where it is, so `CTextureFont`'s Alpha atlas keeps
+  its one coverage byte per texel (no `convertToType()` on the source).
+- `convertRowToRGBA()` / `copyTextureRect()` expand each row from the bitmap's
+  own format (RGBA / Alpha / Luminance / AlphaLuminance) into tightly packed
+  RGBA8, and the staging buffer is filled whole-mip by whole-mip.
+- The partial-rect path: `uploadTextureRegion()` (touchRect / streaming),
+  `setupTextureEx()` sends only the touched rects, or the whole mip chain when
+  the texture was fully invalidated or is mipmapped.
+
+Branch (`vulkan-transforms-perf`):
+- Batched first-time uploads: one upload command buffer per frame, submitted at
+  `swapBuffers()` before the frame, the frame waits on its semaphore
+  (`VK_PIPELINE_STAGE_ALL_COMMANDS_BIT`), so a new texture costs no
+  `vkQueueWaitIdle`.
+- Deferred destroys tagged with the swap-buffer frame (no `vkDeviceWaitIdle` in
+  `beginFrame`).
+- User-UBO ring cache in `stageUserUB()`, `NLVK_STATS`, `NLVK_GPUSKIN`
+  (glsl3vi opt-in, CPU skinning default) and `NLVK_SCREENSHOT_EVERY`.
+
+Resolution: the uploader keeps the new per-format row expansion, which is
+independent of where the copy is recorded. `beginTextureCopy()` /
+`endTextureCopy()` hold the whole decision in one place: a copy for an image no
+in-flight frame can reference (a brand-new image, or one that already has a copy
+in the current batch) is recorded into the per-frame batch; anything else (an
+in-place update of an image a frame may be sampling: animated textures, font
+glyph tiles) stays in the old synchronous one-off command buffer. A resource
+being retired waits for the upload-batch fence before it is freed.
+
+### Fixes that came out of the verification (same branch)
+
+1. `NLVK_SCREENSHOT_EVERY` wrote every dump to the same file (only
+   `NLVK_SCREENSHOT_SEQ` used the `prefix.<frame>.ppm` name). Both now name the
+   file after the frame, and `NLVK_SCREENSHOT_EVERY` overrides the 600-frame
+   period of `SEQ`.
+2. `VUID-vkCmdDraw-None-09600` (pre-existing, also on `4b7aba749`): an image
+   created without pixels (`uploadTextureVulkan(..., upload=false)`, the
+   streaming path) only ever had mip 0 transitioned by `uploadTextureRegion()`,
+   while the view and the sampler cover every mip. The remaining mips stayed in
+   `UNDEFINED`, and every draw sampling the texture was flagged. The image is
+   now transitioned to `SHADER_READ_ONLY_OPTIMAL` for all mips when it is created
+   without pixels.
+3. `VUID-vkDestroyBuffer-buffer-00922` (introduced by the branch's deferred
+   destroy): a resource retired *between* frames can be referenced by the most
+   recent submission, which belongs to the other frame slot, and that slot's
+   fence is not the one waited in `beginFrame()`. Retiring after three swap
+   frames (`tag + 3 <= counter`, and nothing at all during the first three
+   frames) is the first provably safe point. Reproduced at the index-ring growth
+   during startup, gone after the change.
+
+### In-game verification (mats006 / passDOSma, slot 1 = Danilli)
+
+Run directory `/tmp/opencode/iv/run-vk` (data/cfg symlinked to
+`~/Projects/ryzom/ryzom_live`, `Driver3D="Vulkan"`, 1280x800, `Shadows = 0`,
+`InterfaceScaleAuto = 1`). Runner scripts: `/tmp/opencode/iv/{guard,run,gl_run}.sh`.
+Screenshots in `/tmp/opencode/iv/evidence/` (PPM bursts in `/var/tmp/iv/`).
+
+**Avatar.** The base build (`4b7aba749`, `glsl3vi` on by default) at character
+selection is exploded: legs on the floor, one arm floating, the clothes above
+the head (`charsel_base_build.png`). With `NLVK_GPUSKIN=1` the merged build
+reproduces exactly that (`charsel_merged_gpuskin.png`), so the insert path is
+confirmed as the cause of the displaced equipment. With the new default
+(`glsl3vi` off, CPU skinning) the avatar is coherent: head with red hair,
+shoulders, arms and hands at the sides, legs and shoes in place
+(`charsel_merged_cpu.png`, in game `ingame_merged_cpu_runA.png`).
+
+Still wrong in game and at character selection: a large beige/tan
+triangulated smear around the body, as if a few vertices of a clothing mesh
+were skinned by a wrong bone or read with the wrong vertex layout
+(`charsel_merged_cpu_crop.png`, `ingame_merged_cpu_crop.png`). It is present
+with and without `NLVK_GPUSKIN`, so it is not the insert path. It is
+Vulkan-only: the same merged binary and the same data render the same
+character perfectly with the OpenGL driver (`p_gl2-wide.png`), and the legacy
+`~/Projects/ryzom/ryzom_live` client shows the same clean avatar. Not a
+regression of this merge (the merge only touches texture upload and deferred
+destroys), but it is the next avatar bug to chase.
+
+Also Vulkan-only, same "some meshes are not drawn" family: the in-game HUD in
+Vulkan only draws the chat and the missions window, while the OpenGL driver of
+the same build draws the top status bar, the quickbar, the compass/minimap and
+the right-hand "Windows/Actions" panel (`p_gl2-wide.png`). Char selection and
+the login form draw their full UI.
+
+`The Bone for the Head is missing` / `The Bone for the Chest 'Bip01 Spine1' is
+missing` in the log are **not** driver-related: the same build logs them with
+the OpenGL driver (182 times) and still renders the avatar correctly. They come
+from `CCharacterCL::computeSomeBoneId()` and only disable the name/look-at
+attachments.
+
+**Giant trees.** Same spot, same camera (default `CameraDistance = 8`, no
+zooming): the merged Vulkan render and the legacy OpenGL client agree on the
+geometry. `trees_zoom_cmp.png` shows the same crop of both: the giant mushroom
+cap, its stem, the giant trunk behind it and the rock spire in the distance are
+at the same screen positions and sizes in both. So the "branches only 20 m up"
+of `megacheck1200.png` is not reproduced on this branch, and the reference
+client draws this spot the same way. The visible difference is fog/haze: the
+Vulkan render is much hazier, so the distant purple canopies wash out to white
+(`trees_side_by_side.png`). `NLVK_GPUSKIN=1` does not change the trees.
+
+**Flicker.** `NLVK_SCREENSHOT_EVERY=1` at character selection, frames 3000-3125
+(126 consecutive driver dumps, `/var/tmp/iv/g_charsel.ppm.*`, analysed with
+`/tmp/opencode/iv/flicker.py`): per-frame mean luminance 51.26..52.17 (28.5% of
+the pixels are the black UI side panel in every frame), no frame below 51, no
+sudden drop against its neighbours. There is no black frame in the driver
+output. Note the burst costs ~450 ms/frame (fence wait + readback per dump).
+
+**Performance** (`NLVK_STATS=1`, 1280x800, RADV, ~1200 indexed draws/frame,
+Debug build):
+
+| | in game | char selection | connect -> in game |
+|---|---|---|---|
+| base `4b7aba749` (glsl3vi on) | 30.7 ms/frame (32.6 fps) | - | 24-25 s |
+| merged, default (CPU skin) | 31.1-36.9 ms/frame (30 fps) | 8.3 ms/frame (120 fps) | 24 s |
+| merged, `NLVK_GPUSKIN=1` | 31.1-36.9 ms/frame | - | - |
+
+Both numbers come from 600-frame wall-clock deltas in the log. The driver's
+per-draw CPU cost is 3.1 us descriptor+draw + 0.2 us index copy, i.e. ~4 ms of a
+~31 ms frame, so the frame is GPU/engine bound and the removed device waits do
+not show up here. Loading time is identical (24-25 s); texture creation is not
+the bottleneck of that phase in a Debug build. Remaining sync hot spots: every
+in-place texture update (animated textures, one per font glyph tile) still does
+`vkDeviceWaitIdle` + submit + `vkQueueWaitIdle`; batching those needs an
+ordering rule against the previous frame's fence.
+
+**Validation** (`NLVK_VALIDATION=1`, in game, 100 s): clean except
+`VUID-VkSwapchainPresentModeInfoKHR-swapchainCount-*` (gamescope WSI, known) and
+`VUID-vkCreateDevice-ppEnabledExtensionNames-01387` (gamescope's
+`VK_EXT_surface_maintenance1`, known). The two real VUIDs found and fixed are
+described above.
+
+### Left to do
+
+- The beige smear on the avatar (Vulkan only, not the insert path). First
+  experiment: `NLVK_NOVP=1` to see whether it is a user-program draw, then dump
+  the vertex layout hash and attributes of the smeared draw; it looks like a
+  skinning/vertex-layout problem for one clothing mesh.
+- In-game HUD windows missing in Vulkan with the same build/data (draws that
+  never reach the screen). Same investigation style as above.
+- Fog/haze is much stronger in Vulkan than in the OpenGL client at the same
+  spot (`trees_side_by_side.png`), so distant vegetation washes out.
+- In-place texture updates still stall the device (see above).
+- `WM_DELETE_WINDOW` shutdown: the Vulkan client starts releasing but then hits
+  `vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed` while recreating the
+  swapchain during teardown and has to be killed. Use Escape -> Quit Ryzom ->
+  Quit Now for a clean logout (the logout packet is only sent on that path).
