@@ -36,10 +36,18 @@
 
 #include <cstring>
 #include <algorithm>
+#include <chrono>
 
 using namespace std;
 using namespace NLMISC;
 using namespace NL3D;
+
+/// Monotonic nanoseconds for the optional NLVK_STATS frame breakdown.
+static uint64 nowNs()
+{
+	return (uint64)std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 namespace NLVULKAN {
 
@@ -185,6 +193,15 @@ CDriverVulkan::CDriverVulkan()
 	_ActiveUserVP = NULL;
 	_NelvpActiveUB = NULL;
 	memset(_BoundUserUB, 0, sizeof(_BoundUserUB));
+	memset(_UserUBStageCache, 0, sizeof(_UserUBStageCache));
+	memset(_UserUBStageOffset, 0, sizeof(_UserUBStageOffset));
+	memset(_UserUBStageSize, 0, sizeof(_UserUBStageSize));
+	_StatsEnabled = getenv("NLVK_STATS") != NULL;
+	_StatsDraws = 0;
+	_StatsDescriptorNs = 0;
+	_StatsIndexNs = 0;
+	_StatsWindowStartNs = 0;
+	_StatsWindowFrames = 0;
 	_VPSpecularOutput = true;
 	_NextUserVPId = 0;
 	_ActiveUserPP = NULL;
@@ -209,6 +226,11 @@ CDriverVulkan::CDriverVulkan()
 	memset(_MegaPassSelfIllumination, 0, sizeof(_MegaPassSelfIllumination));
 	_MegaPassZeroLightFactors = false;
 	_MegaPassFogBlack = false;
+	_UploadCommandBuffer = VK_NULL_HANDLE;
+	_UploadFence = VK_NULL_HANDLE;
+	_UploadDone = VK_NULL_HANDLE;
+	_UploadRecording = false;
+	_UploadSubmitted = false;
 	for (uint i = 0; i < 2; ++i)
 	{
 		_MegaLightTableBuffer[i] = VK_NULL_HANDLE;
@@ -690,14 +712,17 @@ bool CDriverVulkan::createCommands()
 	if (!checkVk(vkCreateCommandPool(_Device, &pci, NULL, &_CommandPool), "vkCreateCommandPool"))
 		return false;
 
-	_CommandBuffers.resize(2);
+	_CommandBuffers.resize(3);
 	VkCommandBufferAllocateInfo cbi;
 	memset(&cbi, 0, sizeof(cbi));
 	cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	cbi.commandPool = _CommandPool;
 	cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	cbi.commandBufferCount = 2;
-	return checkVk(vkAllocateCommandBuffers(_Device, &cbi, &_CommandBuffers[0]), "vkAllocateCommandBuffers");
+	cbi.commandBufferCount = 3;
+	if (!checkVk(vkAllocateCommandBuffers(_Device, &cbi, &_CommandBuffers[0]), "vkAllocateCommandBuffers"))
+		return false;
+	_UploadCommandBuffer = _CommandBuffers[2];
+	return true;
 }
 
 bool CDriverVulkan::createSyncObjects()
@@ -718,6 +743,12 @@ bool CDriverVulkan::createSyncObjects()
 		if (!checkVk(vkCreateSemaphore(_Device, &sci, NULL, &_ImageAvailable[i]), "vkCreateSemaphore"))
 			return false;
 	}
+	// Upload batch: the fence starts signaled so the first batch has nothing to
+	// wait for; the semaphore orders the frame's commands after the uploads.
+	if (!checkVk(vkCreateFence(_Device, &fci, NULL, &_UploadFence), "vkCreateFence(upload)"))
+		return false;
+	if (!checkVk(vkCreateSemaphore(_Device, &sci, NULL, &_UploadDone), "vkCreateSemaphore(upload)"))
+		return false;
 	return true;
 }
 
@@ -944,7 +975,7 @@ void CDriverVulkan::shutdownVulkan()
 	{
 		for (uint i = 0; i < _PendingTextureDestroy.size(); ++i)
 		{
-			CTextureVulkan tex = _PendingTextureDestroy[i];
+			CTextureVulkan tex = _PendingTextureDestroy[i].second;
 			if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
 			if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
 			if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
@@ -952,14 +983,17 @@ void CDriverVulkan::shutdownVulkan()
 		}
 		for (uint i = 0; i < _PendingBufferDestroy.size(); ++i)
 		{
-			vkDestroyBuffer(_Device, _PendingBufferDestroy[i].first, NULL);
-			if (_PendingBufferDestroy[i].second)
-				vkFreeMemory(_Device, _PendingBufferDestroy[i].second, NULL);
+			vkDestroyBuffer(_Device, _PendingBufferDestroy[i].second.first, NULL);
+			if (_PendingBufferDestroy[i].second.second)
+				vkFreeMemory(_Device, _PendingBufferDestroy[i].second.second, NULL);
 		}
 		_PendingTextureDestroy.clear();
 		_PendingBufferDestroy.clear();
+		freeUploadStaging();
 	}
 
+	if (_UploadFence) { vkDestroyFence(_Device, _UploadFence, NULL); _UploadFence = VK_NULL_HANDLE; }
+	if (_UploadDone) { vkDestroySemaphore(_Device, _UploadDone, NULL); _UploadDone = VK_NULL_HANDLE; }
 	for (uint i = 0; i < _Fences.size(); ++i)
 		if (_Fences[i]) vkDestroyFence(_Device, _Fences[i], NULL);
 	for (uint i = 0; i < _ImageAvailable.size(); ++i)
@@ -1248,27 +1282,52 @@ bool CDriverVulkan::beginFrame()
 	uint32 frame = _FrameIndex;
 	vkWaitForFences(_Device, 1, &_Fences[frame], VK_TRUE, UINT64_MAX);
 
-	// Everything recorded for this frame slot is finished; safe to reset the
-	// per-draw descriptor sets and release unused textures.
+	// Frame `frame` (and therefore everything recorded for it) is finished.
+	// Resources retired two or more frames ago cannot be referenced by any
+	// command buffer that is still executing - with two frame slots in flight,
+	// the other slot's last submission is at most one frame old - so they can
+	// be freed here without a device-wide wait.
 	vkResetDescriptorPool(_Device, _DescriptorPools[frame], 0);
-	if (!_PendingTextureDestroy.empty() || !_PendingBufferDestroy.empty())
-		vkDeviceWaitIdle(_Device);
-	for (uint i = 0; i < _PendingTextureDestroy.size(); ++i)
 	{
-		CTextureVulkan tex = _PendingTextureDestroy[i];
-		if (tex.Framebuffer) vkDestroyFramebuffer(_Device, tex.Framebuffer, NULL);
-		if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
-		if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
-		if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
-		if (tex.Memory) vkFreeMemory(_Device, tex.Memory, NULL);
+		// A resource retired here can be referenced by the upload batch of an
+		// earlier frame, so make sure that batch has finished before freeing
+		// anything: it is a tiny copy-only submission, normally long done.
+		if (_UploadSubmitted && (!_PendingTextureDestroy.empty() || !_PendingBufferDestroy.empty()))
+		{
+			vkWaitForFences(_Device, 1, &_UploadFence, VK_TRUE, UINT64_MAX);
+			_UploadSubmitted = false;
+			freeUploadStaging();
+		}
+		const uint64 retireBefore = _SwapBufferCounter >= 2 ? _SwapBufferCounter - 2 : 0;
+		for (size_t i = 0; i < _PendingTextureDestroy.size(); )
+		{
+			if (_PendingTextureDestroy[i].first > retireBefore)
+			{
+				++i;
+				continue;
+			}
+			CTextureVulkan tex = _PendingTextureDestroy[i].second;
+			if (tex.Framebuffer) vkDestroyFramebuffer(_Device, tex.Framebuffer, NULL);
+			if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
+			if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
+			if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
+			if (tex.Memory) vkFreeMemory(_Device, tex.Memory, NULL);
+			_PendingTextureDestroy[i] = _PendingTextureDestroy.back();
+			_PendingTextureDestroy.pop_back();
+		}
+		for (size_t i = 0; i < _PendingBufferDestroy.size(); )
+		{
+			if (_PendingBufferDestroy[i].first > retireBefore)
+			{
+				++i;
+				continue;
+			}
+			vkDestroyBuffer(_Device, _PendingBufferDestroy[i].second.first, NULL);
+			vkFreeMemory(_Device, _PendingBufferDestroy[i].second.second, NULL);
+			_PendingBufferDestroy[i] = _PendingBufferDestroy.back();
+			_PendingBufferDestroy.pop_back();
+		}
 	}
-	_PendingTextureDestroy.clear();
-	for (uint i = 0; i < _PendingBufferDestroy.size(); ++i)
-	{
-		vkDestroyBuffer(_Device, _PendingBufferDestroy[i].first, NULL);
-		vkFreeMemory(_Device, _PendingBufferDestroy[i].second, NULL);
-	}
-	_PendingBufferDestroy.clear();
 
 	VkResult acquire = vkAcquireNextImageKHR(_Device, _Swapchain, UINT64_MAX,
 		_ImageAvailable[frame], VK_NULL_HANDLE, &_ImageIndex);
@@ -1300,6 +1359,9 @@ bool CDriverVulkan::beginFrame()
 	_RenderTargetInfo = NULL;
 	_IndexRingOffset = 0;
 	_UniformRingOffset = 0;
+	// Cached user-block offsets point into this frame's ring, which starts at 0.
+	memset(_UserUBStageCache, 0, sizeof(_UserUBStageCache));
+	memset(_UserUBStageSize, 0, sizeof(_UserUBStageSize));
 	_MegaLightTableStaged = false;
 	if (_SwapBufferCounter == 0)
 	{
@@ -1402,8 +1464,16 @@ bool CDriverVulkan::swapBuffers()
 	const char *screenshotPath = getenv("NLVK_SCREENSHOT");
 	if (screenshotPath)
 	{
+		const char *everyEnv = getenv("NLVK_SCREENSHOT_EVERY");
 		if (getenv("NLVK_SCREENSHOT_SEQ"))
 			wantScreenshot = _SwapBufferCounter >= (uint64)_ScreenshotFrame && (_SwapBufferCounter % 600) == 0;
+		else if (everyEnv && atoi(everyEnv) > 0)
+		{
+			// Consecutive-frame dumps, for short glitches (flicker) that a
+			// 600-frame sequence would miss.
+			const uint64 every = (uint64)atoi(everyEnv);
+			wantScreenshot = _SwapBufferCounter >= (uint64)_ScreenshotFrame && (_SwapBufferCounter % every) == 0;
+		}
 		else
 			wantScreenshot = _SwapBufferCounter == (uint64)_ScreenshotFrame;
 	}
@@ -1413,13 +1483,23 @@ bool CDriverVulkan::swapBuffers()
 	if (!checkVk(vkEndCommandBuffer(cmd), "vkEndCommandBuffer"))
 		return false;
 
-	VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	// Submit the deferred first-time texture uploads first; the frame waits on
+	// their completion semaphore, so no CPU stall is needed.
+	const bool uploadsPending = submitUploadBatch();
+
+	VkPipelineStageFlags waitStages[2];
+	waitStages[0] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	waitStages[1] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	VkSemaphore waitSemaphores[2];
+	waitSemaphores[0] = _ImageAvailable[frame];
+	waitSemaphores[1] = _UploadDone;
+
 	VkSubmitInfo si;
 	memset(&si, 0, sizeof(si));
 	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	si.waitSemaphoreCount = 1;
-	si.pWaitSemaphores = &_ImageAvailable[frame];
-	si.pWaitDstStageMask = &waitStage;
+	si.waitSemaphoreCount = uploadsPending ? 2 : 1;
+	si.pWaitSemaphores = waitSemaphores;
+	si.pWaitDstStageMask = waitStages;
 	si.commandBufferCount = 1;
 	si.pCommandBuffers = &cmd;
 	si.signalSemaphoreCount = 1;
@@ -1468,6 +1548,31 @@ bool CDriverVulkan::swapBuffers()
 		nldebug("Vulkan: frame %llu, %u vertex draws, %u indexed draws, %u pipelines, %llu target binds",
 			(unsigned long long)_SwapBufferCounter, _ArrayDrawCount, _IndexedDrawCount,
 			(uint)_PipelineCache.size(), (unsigned long long)_RenderTargetBinds);
+
+	// NLVK_STATS: wall-clock frame time plus the CPU cost of the per-draw
+	// paths. The counters are cumulative since the previous report.
+	if (_StatsEnabled)
+	{
+		const uint64 now = nowNs();
+		if (_StatsWindowStartNs == 0)
+			_StatsWindowStartNs = now;
+		++_StatsWindowFrames;
+		if (_StatsWindowFrames >= 120)
+		{
+			const double windowMs = (now - _StatsWindowStartNs) / 1e6;
+			const double perFrame = windowMs / (double)_StatsWindowFrames;
+			const double perDraw = _StatsDraws ? (double)_StatsDescriptorNs / 1e3 / (double)_StatsDraws : 0.0;
+			const double perIndex = _StatsDraws ? (double)_StatsIndexNs / 1e3 / (double)_StatsDraws : 0.0;
+			nlinfo("Vulkan stats: %llu frames, %.2f ms/frame (%.1f fps), %llu draws, %.1f us descriptor+draw, %.1f us index copy",
+				(unsigned long long)_StatsWindowFrames, perFrame, perFrame > 0.0 ? 1000.0 / perFrame : 0.0,
+				(unsigned long long)_StatsDraws, perDraw, perIndex);
+			_StatsWindowStartNs = now;
+			_StatsWindowFrames = 0;
+			_StatsDraws = 0;
+			_StatsDescriptorNs = 0;
+			_StatsIndexNs = 0;
+		}
+	}
 
 	return true;
 }
