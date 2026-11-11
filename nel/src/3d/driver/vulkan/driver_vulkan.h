@@ -53,6 +53,14 @@ using namespace NLMISC;
 
 class CDriverVulkan;
 
+/// Texture upload staging ring sizes. The initial size is what a spot load
+/// needs; the loading phase can push one frame past it (tens of MiB of
+/// textures in a single frame) and the ring doubles up to the maximum. In game
+/// the traffic is tiny, so the ring is shrunk back once it stays below a
+/// quarter of the initial size (see CDriverVulkan::swapBuffers()).
+const uint32 NL_VK_STAGING_RING_INITIAL = 8u * 1024u * 1024u;
+const uint32 NL_VK_STAGING_RING_MAX = 64u * 1024u * 1024u;
+
 /// Driver-side data of a compiled user vertex program.
 ///
 /// A program is either a nelvp assembly program converted to Vulkan GLSL by
@@ -606,6 +614,11 @@ private:
 	std::vector<VkFence>	_Fences;
 	std::vector<VkSemaphore> _ImageAvailable;
 	std::vector<VkSemaphore> _RenderFinished;
+	/// NLVK_STATS: two GPU timestamps per frame slot (start/end of the frame
+	/// command buffer), used for the GPU-time column of the report.
+	VkQueryPool				_GpuTimeQuery;
+	bool					_GpuTimeEnabled;
+	double					_GpuTimePeriod;
 
 	uint32					_FrameIndex;
 	uint32					_ImageIndex;
@@ -751,6 +764,22 @@ private:
 	uint64					_StatsDraws;
 	uint64					_StatsDescriptorNs;
 	uint64					_StatsIndexNs;
+	/// Breakdown of the per-draw region: pipeline-key build, pipeline lookup,
+	/// descriptor/binding setup, and the final vertex/index/draw commands.
+	uint64					_StatsKeyNs;
+	uint64					_StatsPipelineNs;
+	uint64					_StatsBindNs;
+	uint64					_StatsSubmitNs;
+	/// CPU frame recording and the waits that bound it, per NLVK_STATS window.
+	uint64					_StatsCpuNs;
+	uint64					_StatsFenceWaitNs;
+	uint64					_StatsAcquireNs;
+	/// GPU time between the frame's two timestamps, per NLVK_STATS window.
+	uint64					_StatsGpuNs;
+	uint64					_StatsGpuSamples;
+	uint64					_StatsStagingPeak;
+	/// Time at which the current frame started recording (0 outside a frame).
+	uint64					_FrameCpuStartNs;
 	/// Texture copies recorded and bytes staged, per NLVK_STATS window.
 	uint64					_StatsTextureCopies;
 	uint64					_StatsUploadBytes;
@@ -938,7 +967,16 @@ private:
 	/// BC self-test readback (TRANSFER_DST).
 	VkBuffer				createStagingBuffer(VkDeviceSize size, VkDeviceMemory *memory, void **mapped,
 								VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+	/// Allocate a ring of `size` bytes (two halves) and retire the previous
+	/// one at a frame boundary.
+	bool					createStagingRing(uint32 size);
 	bool					growStagingRing(uint32 required);
+	/// Give the idle frames after loading their memory back: the ring is
+	/// rebuilt at its initial size once no upload has used it for a while.
+	void					shrinkStagingRing();
+	/// Frames since the staging ring was last used; the idle shrink runs after
+	/// a long enough stretch (a texture burst resets the counter).
+	uint32					_StagingRingIdleFrames;
 	/// Upload all mip levels of the bitmap.
 	bool					uploadTexturePixels(ITexture &tex, CTextureVulkan &out);
 	/// Upload a sub-rectangle of one mip level, leaving the rest of the image
