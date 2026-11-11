@@ -2019,3 +2019,222 @@ Any change must keep the other drivers working (OpenGL/GL3), preferably by
 putting the mechanism in shared engine code rather than the Vulkan driver
 alone. Dispatch a dedicated subagent after `vulkan-perf` is merged; it must
 report candidates with cost/benefit and implement the safe ones with numbers.
+
+## Performance assessment, Vulkan vs GL3/GL2, Debug vs FINAL (branch `vulkan-perf`)
+
+Goal: explain the user's 30 fps (Vulkan) vs 100+ fps (official OpenGL client)
+at 1280x800 HIGH on the same spot, and remove the driver-side part of it.
+
+### Verdict in one line
+
+**The 3x was mostly the build type, not the driver.** The same Debug binary
+runs the same spot at 30 fps on Vulkan and 37-42 fps on GL3, while the FINAL
+build of the same code runs 80-100 fps on Vulkan and 85-88 fps on GL3. On top
+of that, the Vulkan driver did ~20% redundant CPU work per frame (texture
+share-name rebuilds and a 12 KiB light-table copy per mega draw); both are
+fixed, and FINAL Vulkan is now **faster than GL3 and GL2 in the same tree**
+(118 fps vs 87 vs 75 at the same spot, same lighting).
+
+### Measurement setup
+
+- Worktree `f1fb99/vulkan-perf` at `d36eab23c`, branch `vulkan-perf`.
+- Accounts: `mats006` slot 1 (character **Danili**, the client's own login
+  spot: forest edge, birch trees, grass, flowers), HIGH settings
+  (`Shadows=1 FXAA=1 Bloom=1 SquareBloom=1 CloudQuality=320 ForceDXTC=1`),
+  1280x800, `InterfaceScaleAuto=1`, sound off.
+- Run dir `/tmp/opencode/ryzomperf/live`: own `client.cfg` and
+  `client_default.cfg`, `data`/`examples` symlinked to the user's install
+  (`~/Projects/ryzom/ryzom_live`), driver switched in `client.cfg`.
+- `gamescope --backend headless -W 1280 -H 800 -w 1280 -h 800 -r 240` so the
+  client never shows a window on the desktop and FIFO present is not capped at
+  60 Hz. Everything runs through the same wrapper, so all numbers share the
+  same WSI path.
+- Drivers: `Driver3D="Vulkan"`, `"OpenGL3"` and `"OpenGl"` (the legacy GL2
+  driver, closest to the official client) from the same binaries.
+- Timings: `NLVK_STATS=1` (driver timestamps + CPU record + per-draw cost),
+  a temporary env-gated `NLGL_STATS` frame-time print in the two GL drivers for
+  the GL side (**removed again before the commit**, see the patch note at the
+  end), and the in-game `u` window FPS counter as a cross-check.
+- CPU profiles: `sudo perf record -F 199 --call-graph fp` + `perf report`
+  (perf_event_paranoid=4 on this box, so `sudo` is required).
+- Debug build = `build-vulkan` (`-DCMAKE_BUILD_TYPE=Debug`), FINAL build =
+  `build-final` (`-DCMAKE_BUILD_TYPE=Release -DFINAL_VERSION=ON`), both with
+  all three drivers as shared modules.
+- Watch out: another agent's build (4x cc1plus) or the user's own client moves
+  the wall clock by 10-20%. The A/B numbers below were taken back to back in
+  the same session and lighting; the "night" and "sunset" rows are different
+  in-game times of day (GPU time differs, CPU time does not).
+
+### Results (frames per second, same spot, same binary)
+
+| build | driver | ms/frame | fps | CPU record | GPU time |
+|---|---|---|---|---|---|
+| Debug | Vulkan, before | 32.4-33.3 | 30-31 | 27.6-27.9 ms | 6.5-6.7 ms |
+| Debug | Vulkan, after | **22.6-23.0** | **43-44** | 19.0-19.2 ms | 6.7-7.1 ms |
+| Debug | OpenGL3 | 23.8-27.3 | 37-42 | - | - |
+| FINAL | Vulkan, before (sunset) | 12.3-12.6 | 79-81 | 10.4-10.7 ms | 6.7-6.8 ms |
+| FINAL | Vulkan, after (sunset) | **9.86-9.98** | **100-101** | 7.9-8.0 ms | 6.4-6.5 ms |
+| FINAL | Vulkan, before (night) | 10.45-10.72 | 93-96 | 8.9-9.2 ms | 4.7 ms |
+| FINAL | Vulkan, after (night) | **8.35-8.52** | **117-120** | 6.9-7.0 ms | 4.6-4.7 ms |
+| FINAL | OpenGL3 | 11.4-11.7 | 85-88 | - | - |
+| FINAL | OpenGl (GL2) | 13.3-13.7 | 73-75 | - | - |
+| FINAL | Vulkan `NLVK_MEGA=1`, after | 8.30-8.54 | 117-120 | 6.8-7.0 ms | 5.3-5.5 ms |
+
+The fair before/after pairs are the two with the same time of day: **-21% frame
+time in FINAL** (both sunset and night) and **-32% in Debug**. The GL drivers
+were measured twice (Debug and FINAL) with identical scene and spot.
+
+Per-draw driver cost (`NLVK_STATS` "descriptor+draw"): 3.7-3.8 us Debug and
+2.7-3.0 us FINAL before; **1.6-1.7 us after**, of which 0.2 us is the index
+copy. The `u` window cross-check: with the validation layer on (12.8 fps from
+`NLVK_STATS`) the window reads **FPS: 12**; screenshot
+`/tmp/opencode/ryzomperf/shot.2700.png`.
+
+### Where the frame went (perf, self time by shared object)
+
+Debug, Vulkan (33 ms/frame):
+
+| DSO | self |
+|---|---|
+| libnel3d (engine 3D) | 33.0% |
+| libnelmisc | 23.2% (mostly the texture share-name strings) |
+| libnel_drv_vulkan | 14.9% |
+| libnelgui | 7.8% |
+| ryzom_client_dev | 7.0% |
+| libvulkan_radeon (RADV) | 4.8% |
+| libc / kernel | 5.1% |
+
+`CDriverVulkan::getTextureDrvInfos` alone was **18.6% of the Debug frame**
+(inclusive): every `updateMaterialState()` rebuilt the share name of every
+texture stage (a lower-case string copy plus two allocations) and searched a
+`std::map` under the driver lock for it, 1445 times per frame. That is
+Vulkan-specific: GL3 keeps the last bound texture per stage and skips the
+setup entirely.
+
+Debug, OpenGL3 (25 ms/frame) for comparison: libnel3d 34.0%, **libgallium
+(Mesa) 17.7%**, libnel_drv_opengl3 11.8%, libnelgui 9.5%, client 9.2%,
+libnelmisc 7.5%. Note `libnelmisc` is 23.2% on Vulkan and 7.5% on GL3: the
+difference is the share-name work.
+
+FINAL, Vulkan (12.5 ms/frame), before the fixes: libnel3d 26.8%,
+**libnel_drv_vulkan 18.5%** (of which `stageMegaLightTableUBO()` **8.4%**,
+`bindMegaDescriptors()` 2.9%), libvulkan_radeon 11.4%, libnelmisc 10.7%,
+libc 7.4%, libnelgui 7.2%, client 5.7%. After the fixes: driver **11.0%**,
+RADV 14.3%, and no single driver symbol above 2%.
+
+So in Debug the frame is engine-bound because the engine is Debug code; in
+FINAL the GPU takes 4.6-6.8 ms (55-65% of the frame) and the CPU work is the
+remaining ~3.5-5 ms, of which the driver was ~1.5 ms and is now ~0.6 ms.
+
+### Asset format: not the cause
+
+Inventory of the 235 packs the client loads (`/tmp/opencode/ryzomperf/
+texture_inventory.py`, reads the BNP tables and the DDS/TGA headers):
+
+| format | entries | MiB on disk |
+|---|---|---|
+| DXT5 / BC3 | 20781 | 3354.9 |
+| DXT1 / BC1 | 7199 | 578.7 |
+| DXT3 / BC2 | 7 | 0.3 |
+| TGA 16bpp | 1906 | 95.0 |
+| TGA 8bpp (paletted) | 891 | 16.4 |
+| TGA 24bpp | 318 | 1.6 |
+| TGA 32bpp | 132 | 61.7 |
+| PNG | 311 | 88.5 |
+
+27283 of the DDS files carry a full mip chain. 3342 entries are <=64 px on the
+smaller axis, 12715 <=256 px, 15177 >256 px. In game the client holds
+**329 MB** of textures, uploaded as 1681 BC textures (log line "compressed
+texture ... uploaded as BC"); `ForceDXTC=1` converts the RGBA ones to BC3 at
+load. Per frame the client re-stages **0.00-0.01 MiB** in ~1680 small region
+copies (font atlas glyph tiles and animated textures) - no per-frame
+decompression, no per-frame format conversion.
+
+Meshes: the driver never converts vertices. `getPipeline()` builds the
+`VkVertexInputAttributeDescription` set once per vertex layout from the
+`CVertexBuffer`'s own types and caches it; the layout is part of the pipeline
+key. The layouts the spot actually draws (`NLVK_STATS` vertex-format
+histogram, draws/frame): `0x407/36B` 538, `0xc1d/60B` 331, `0x7/32B` 126,
+`0x40f/44B` 82, `0x7d/56B` 13, `0x1/12B` 10, `0x5/20B` 4, `0x3d/48B` 3,
+`0x405/24B` 1 - i.e. interleaved float/normal/uv/packed-colour vertices of
+12-60 bytes, the same bytes GL3 consumes.
+
+Verdict: **the asset format is not a cause of the gap.** The data is already
+in the Vulkan-friendly format (BC1/BC3 with mips). What a hypothetical new
+format would buy: BC for the remaining ~3900 TGA/PNG entries (mostly small UI
+and sprite textures, 263 MiB on disk, 4x VRAM if left RGBA) and BC5 for normal
+maps. Neither shows up in the frame profile; the only measurable asset cost is
+loading time, and that is already BC.
+
+### What was changed (all in `nel/src/3d/driver/vulkan/`)
+
+1. **Texture infos fast path** (`getTextureDrvInfos`): an untouched texture
+   already has its `CTextureDrvInfosVulkan` in `TextureDrvShare->DrvTexture`;
+   return it instead of rebuilding the share name and searching the map.
+   Anything that regenerates a texture sets the touched flag, which keeps the
+   old path. Measured: 1670-1730 of the ~1680 per-frame resolutions skip the
+   lookup (NLVK_STATS "texture infos" line), 2-4 lookups per frame remain.
+   Debug: getTextureDrvInfos 18.6% -> ~0.2% of the frame.
+2. **Per-stage texture bind cache** (`updateMaterialState`): when the same
+   `ITexture` is already bound to that stage and is untouched, skip
+   `setupTextureEx()` completely. Invalidated by a `_TextureGeneration`
+   counter bumped when a texture drv infos dies, so a recycled `ITexture`
+   address can never hit a stale entry.
+3. **Per-frame light table** (`bindMegaDescriptors`): the 128-entry (12 KiB)
+   light-table block is uploaded once per frame (or after `setLight*()` /
+   `setLightTableEntry()` / ring growth) instead of once per mega draw. This
+   was 8.4% of the FINAL frame; with `NLVK_MEGA=1` it was ~12 KiB memcpy per
+   draw.
+4. **Pipeline-bind caching** (`bindPipeline`): `vkCmdBindPipeline` is skipped
+   when the pipeline is already bound in this command buffer. Actual binds
+   drop from 1.00 to **0.41-0.42 per draw** (the scene has ~6-70 pipelines).
+5. **Blend-constant caching** (`setBlendConstants`): `vkCmdSetBlendConstants`
+   only when the value changed (it was issued for every draw of both paths).
+6. **`NLVK_STATS` grew the numbers the assessment needed**: draws, pipeline
+   binds, descriptor sets and texture stage binds per frame, the
+   vertex-format histogram (flags/stride x draws, most frequent first), and
+   the texture-infos hit/lookup counters. Sample line:
+   `Vulkan stats: state/frame: 1102 draws, 454 pipeline binds (0.41/draw),
+   1147 descriptor sets (1.04/draw), 1439 texture stage binds (1.31/draw)`.
+
+Unchanged: the simple path (default), the mega path's rendering, the GL2/GL3
+drivers (the temporary `NLGL_STATS` patch used to measure them was reverted),
+and the visual output (same textures, same UI, validation clean).
+
+### Verification
+
+- Builds: `build-vulkan` (Debug) and `build-final` (Release+FINAL) both link
+  `ryzom_client`, `libnel_drv_vulkan.so`, `libnel_drv_opengl3.so`,
+  `libnel_drv_opengl.so` cleanly.
+- `NLVK_VALIDATION=1 NLVK_STATS=1` in game: only the two known gamescope WSI
+  VUIDs and the benign "vertex attribute not consumed" warnings (same as
+  before this branch).
+- `NLVK_MEGA=1 NLVK_VALIDATION=1` in game: clean, renders correctly
+  (`/tmp/opencode/ryzomperf/megashot.8000.png`).
+- Screenshots after the fixes: `/tmp/opencode/ryzomperf/shot.1800.png`,
+  `/tmp/opencode/ryzomperf/smoke.4500.png`, `/tmp/opencode/ryzomperf/
+  finalshot.11400.png` (night and dawn lighting, HUD, avatar, landscape).
+- Client shut down with SIGTERM; no `*.dmp` in the run dir.
+
+### Remaining plan
+
+- **Descriptor caching**: retest it now (the AGENTS_todo note asked for
+  exactly this). At 1.04 sets/draw and 1.6 us/draw total the ceiling is
+  ~0.3-0.5 us/draw; the prior attempt was a wash in a 33 ms Debug frame, it
+  deserves one more look in a 8.5 ms FINAL frame where RADV is 14% of it.
+  Cache key would be the 4/8 stage images + samplers with dynamic offsets.
+- **The mega path is now the fastest configuration** (8.30 ms vs 8.35-8.52 ms
+  and one less texture stage in some passes) and its per-draw UBO staging is
+  still 4 blocks; if PPL/water get implemented there it should become the
+  default instead of an opt-in.
+- The remaining per-frame CPU is engine-side (`libnel3d` 27-33%,
+  `libnelgui` 7-8%, `libnelmisc` 10-11% of FINAL). Landscape vegetable
+  update, interface window updates and matrix math are the top symbols; none
+  of that is driver-specific.
+- GPU is now the majority of the frame at 120 fps (4.6 ms of 8.4 ms). The
+  next wins there are bloom/FXAA/shadow passes (7.8 target binds/frame), not
+  the main pass.
+- To reproduce the GL-side numbers, the temporary patch was a 12-line
+  `NLGL_STATS` block at the end of `CDriverGL3::swapBuffers()` and
+  `CDriverGL::swapBuffers()` printing `NLMISC::CTime` deltas every 120
+  frames; it is not in the commit.
