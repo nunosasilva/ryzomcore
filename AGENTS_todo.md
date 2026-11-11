@@ -2335,3 +2335,95 @@ symlinked to `~/Projects/ryzom/ryzom_live`, `client.cfg` with
   hardening separately.
 - `isActive()` still returns false for an unmapped window; the loading loop
   (`progress.cpp`) exits the client in that case. Pre-existing, untouched.
+
+## Optimized static client with Lua and /setLightHour (branch `vulkan-release-build`)
+
+Worktree `f1fb99/vulkan-release-build` at `a85aff4b0`, branch
+`vulkan-release-build`. Goal: the static client given to the user was
+`CMAKE_BUILD_TYPE=Debug`, much slower than the official client, while still
+needing the test commands. Built the same static configuration with
+`Release` + `FINAL_VERSION=OFF`; it is 1.54x faster than the Debug static
+client and on par with the official GL2 client at the same spot.
+
+### What actually gates the features
+
+| feature | gate | source |
+|---|---|---|
+| `/setLightHour` | `FINAL_VERSION=OFF` | `ryzom/client/src/commands.cpp:1471` opens `#if !FINAL_VERSION` for everything after the "COMMANDS after should NOT appear IN the FINAL VERSION" banner, closed at `:5185`. `NLMISC_COMMAND(setLightHour, ...)` is at `:5018`, inside it. The nested `#if FINAL_VERSION` privilege check at `:5028` is dead code. |
+| `/luaScript`, `/luaInfo`, `/luaObject` | compiled in every build; runtime `AllowDebugLua = 1;` in `client.cfg` (default `false`, `client_cfg.cpp:714`) | `commands.cpp:5238`+ (after the `#endif` at `:5185`) |
+| `/luaGC` | `FINAL_VERSION=OFF` | `commands.cpp:5333` |
+| `WITH_RYZOM_LIVE` | **nothing**; only picks the ryzom.com URLs | `CMakeLists.txt:136` |
+
+`FINAL_VERSION` is added as `-DFINAL_VERSION=1` when ON (`CMakeLists.txt:246`)
+and defaults to `0` in `nel/include/nel/misc/types_nl.h:43`.
+`CMAKE_BUILD_TYPE=Release` gives `-DNL_RELEASE -DNDEBUG -O3`
+(`CMakeModules/nel.cmake:1083`); `NL_DEBUG`/`_DEBUG` are Debug-only. Neither
+`NL_RELEASE` nor `NDEBUG` gates commands or Lua. The user brief's claim that
+`-DWITH_RYZOM_LIVE=OFF` enables debug commands is wrong; it is only the URLs.
+
+`FINAL_VERSION=OFF` does not cost measurable performance: `types_nl.h`
+unconditionally defines `NL_NO_ASSERT`, so the `#if !FINAL_VERSION` asserts
+are no-ops, and the other blocks are dev-only config reads and a few Lua
+bindings (e.g. `openDoc`/`launchProgram`).
+
+### Build
+
+`CXXFLAGS="-D__STDCPP_DEFAULT_NEW_ALIGNMENT__=16"`, the options from
+`docs/vulkan-static-build.md`, plus:
+
+    -DCMAKE_BUILD_TYPE=Release -DFINAL_VERSION=OFF
+    -DWITH_STATIC=ON -DWITH_STATIC_DRIVERS=ON
+    -DWITH_STATIC_LIBXML2=OFF -DWITH_STATIC_CURL=OFF -DWITH_STATIC_EXTERNAL=OFF
+
+`ninja -C build-static-release -j 8 ryzom_client` -> `bin/ryzom_client_dev`,
+**36,620,952 bytes stripped** (Debug static is 533,980,792). `ldd` has no
+`libnel*` and no `libnel_drv_*`; the Vulkan device is the static
+`createVulkanDriverInstance()` (no "Using the library" line).
+
+Installed as `~/Projects/ryzom/ryzom_live/ryzom_client_vulkan_opt` (md5
+`43a0effe7b5257724ab291bcb8f3a47f`); the Debug binary
+`ryzom_client_vulkan` is untouched. Run it from the install with the same
+`Driver3D` config (`client.cfg`) and no `LD_LIBRARY_PATH`.
+
+### In-game verification (mats005, slot 1, Kykikos, 1280x800, HIGH)
+
+Headless gamescope 1280x800 @240 Hz, `NLVK_STATS=1`, run dir
+`/tmp/opencode/relrun/live` (cfg + symlinked data; `AllowDebugLua = 1;`),
+evidence in `/tmp/opencode/relrun/runs/`.
+
+- `/setLightHour 12` typed in chat: scene goes from night to noon
+  (`opt-vk/now.png`), `/setLightHour 22` gives dusk
+  (`opt-vk/hour22.png`), and it sticks for the following minutes.
+- `/luaScript messageBox("LUA_OK: optimized static luaScript works")` shows
+  the box (`opt-vk/lua.png`); Lua errors from a deliberately wrong
+  `displaySystemInfo` call come out in `client.log` as well.
+- `ldd` on the installed copy: no NeL libraries.
+
+### FPS at the same spot (all runs identical cfg/UI, light pinned to noon)
+
+| build | driver | ms/frame (median) | fps |
+|---|---|---|---|
+| new static Release + FINAL_VERSION=OFF | Vulkan | 9.44 (9.10-13.60) | **106** |
+| current static Debug `ryzom_client_vulkan` | Vulkan | 14.55 (12.88-17.32) | **69** |
+| official `ryzom_client` (FV 4.1.0.0) | OpenGL (GL2) | u counter | **95-100** |
+
+The official client cannot be pinned (`/setLightHour` is FINAL-only) and was
+measured at its natural daylight, from the `u` configuration window
+(`runs/official-gl2/u-window*.png`). The Vulkan numbers are medians of 25/30
+`NLVK_STATS` 120-frame windows; the old pre-driver-fix Debug number (32.4 ms,
+31 fps) is in the `vulkan-perf` section above and is not comparable with this
+tree. The same Debug binary is faster now because it includes the per-draw
+optimizations, which is why the remaining build-type gap is 1.54x, not 3x.
+
+The static Release client was also run from its install path as
+`ryzom_client_vulkan_opt`: it enters the game and its own frame log reads
+600 frames per 4.0-5.0 s (~120-150 fps) in the current (dimmer) light.
+
+### Left
+
+- `AllowDebugLua = 1;` still has to be added to the user's `client.cfg` for
+  `/luaScript` (setLightHour does not need it). It is not in the install's
+  cfg yet; do not edit the user's install without asking.
+- The binary is stripped (`WITH_SYMBOLS=OFF`); `-DWITH_SYMBOLS=ON` if a
+  symbolized optimized build is wanted for crash dumps (larger).
+- Nothing committed except the doc update; no client/gamescope left running.
