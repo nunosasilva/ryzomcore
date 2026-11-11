@@ -2238,3 +2238,12 @@ and the visual output (same textures, same UI, validation clean).
   `NLGL_STATS` block at the end of `CDriverGL3::swapBuffers()` and
   `CDriverGL::swapBuffers()` printing `NLMISC::CTime` deltas every 120
   frames; it is not in the commit.
+
+## CPU -> GPU offload audit — in progress
+
+Agent `vulkan-offload` (`mats006`, worktree `f1fb99/vulkan-offload`, base
+`1dec94a8b`) is profiling the FINAL build's remaining engine CPU and moving the
+safe, high-value work to the GPU, preferring shared engine code so OpenGL/GL3
+keep working. Candidates: skinning/palette transforms, MRM geomorph, particle
+and vegetation updates, per-frame vertex/index generation, matrix math,
+texture conversion/mipmaps, sorting, lightmap/fog.
