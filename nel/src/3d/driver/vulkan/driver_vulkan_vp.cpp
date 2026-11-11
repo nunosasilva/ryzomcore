@@ -35,9 +35,11 @@
  * program is active; the mega pixel stage and its descriptor layout stay
  * untouched, which is what the engine expects of a user vertex program.
  *
- * The glsl3vi "insert" profile (GPU skinning / MRM geomorph snippets spliced
- * into the mega vertex program) is not supported: supportVertexProgram()
- * returns false for it, so the engine keeps its CPU skinning paths.
+ * The glsl3vi "insert" profile (GPU skinning / MRM geomorph snippets) has no
+ * shader of its own: the snippet defines nlPreTransform() and is spliced into
+ * every mega vertex program variant, like the GL3 driver. The insert program's
+ * UniformBufferFormats declare its user blocks (NlMorph at binding 4,
+ * NlSkeleton at binding 6) which the draw stages into the descriptor ring.
  */
 
 #include "stdvulkan.h"
@@ -804,9 +806,13 @@ static bool generateUserUBO(std::stringstream &ss, const CUniformBufferFormat &u
 	return true;
 }
 
-/// Builtin UBO blocks + the engine's own user UBO blocks, in the same order
-/// as assembleMegaSource().
-static std::string buildUserUBOHeaders(const std::map<sint, CSmartPtr<CUniformBufferFormat> > &formats,
+} /* anonymous namespace */
+
+/// Builtin UBO blocks + the engine's own user UBO blocks. Both the raw GLSL
+/// programs assembled here and the insert mega VP variants assembled by
+/// assembleMegaSource() (driver_vulkan_mega_render.cpp) use it, so the block
+/// order and bindings cannot drift apart.
+std::string buildVertexProgramUBOHeaders(const std::map<sint, CSmartPtr<CUniformBufferFormat> > &formats,
 	bool &ok)
 {
 	ok = true;
@@ -837,6 +843,8 @@ static std::string buildUserUBOHeaders(const std::map<sint, CSmartPtr<CUniformBu
 	}
 	return ss.str();
 }
+
+namespace /* anonymous */ {
 
 // ---------------------------------------------------------------------------
 // Raw GLSL vertex programs
@@ -906,7 +914,7 @@ static bool buildRawGLSLVertexProgram(IProgram::CSource *src, std::string &outSo
 {
 	std::string headers;
 	bool headersOk = true;
-	headers = buildUserUBOHeaders(src->UniformBufferFormats, headersOk);
+	headers = buildVertexProgramUBOHeaders(src->UniformBufferFormats, headersOk);
 	if (!headersOk)
 		return false;
 
@@ -971,6 +979,7 @@ CProgramDrvInfosVulkan::CProgramDrvInfosVulkan(CDriverVulkan *drv, ItGPUPrgDrvIn
 	, Id(0)
 	, FirstDrawLogged(false)
 	, OutputsSpecularColor(false)
+	, IsInsertProgram(false)
 {
 }
 
@@ -1014,11 +1023,27 @@ uint CProgramDrvInfosVulkan::getUniformIndex(const char *name) const
 void CDriverVulkan::releaseUserVPShader(uint32 id)
 {
 	std::map<uint32, VkShaderModule>::iterator it = _UserVPShaders.find(id);
-	if (it == _UserVPShaders.end())
-		return;
-	if (_Device && it->second != VK_NULL_HANDLE)
-		vkDestroyShaderModule(_Device, it->second, NULL);
-	_UserVPShaders.erase(it);
+	if (it != _UserVPShaders.end())
+	{
+		if (_Device && it->second != VK_NULL_HANDLE)
+			vkDestroyShaderModule(_Device, it->second, NULL);
+		_UserVPShaders.erase(it);
+	}
+
+	// glsl3vi insert programs own one mega VP variant per cache key.
+	std::map<uint64, VkShaderModule>::iterator insertIt = _InsertVPShaders.begin();
+	while (insertIt != _InsertVPShaders.end())
+	{
+		if ((uint32)(insertIt->first >> 2) != id)
+		{
+			++insertIt;
+			continue;
+		}
+		if (_Device && insertIt->second != VK_NULL_HANDLE)
+			vkDestroyShaderModule(_Device, insertIt->second, NULL);
+		insertIt = _InsertVPShaders.erase(insertIt);
+	}
+
 	if (_ActiveUserVP && _ActiveUserVP->Id == id)
 	{
 		_ActiveUserVP = NULL;
@@ -1040,12 +1065,68 @@ bool CDriverVulkan::supportVertexProgram(CVertexProgram::TProfile profile) const
 	{
 	case IProgram::nelvp:
 	case IProgram::glsl330v:
+	case IProgram::glsl3vi:
+		// glsl3vi is supported: the snippet is spliced into the mega vertex
+		// program, which is what GPU skinning and MRM geomorph need.
 		return true;
 	default:
-		// glsl3vi (VP insert / GPU skinning) is not implemented; the engine
-		// keeps its CPU skinning path when this returns false.
 		return false;
 	}
+}
+
+bool CDriverVulkan::compileInsertVertexProgram(CVertexProgram *program, IProgram::CSource *insertSrc)
+{
+	// A glsl3vi source defines nlPreTransform() and the user UBO blocks it
+	// reads; it has no main() and cannot be compiled on its own. Splice it
+	// into the mega vertex program, as the GL3 driver does.
+	const std::string insertSource(insertSrc->SourcePtr, insertSrc->SourceLen);
+	if (insertSource.empty())
+	{
+		nlwarning("Vulkan: insert vertex program '%s' has an empty source", insertSrc->DisplayName.c_str());
+		program->m_CompileFailed = true;
+		return false;
+	}
+
+	// Variant selection matches the mega path this driver draws with: the
+	// pixel stage is always the fog/PPL variant, and supportVertexProgramClipPlanes()
+	// is false, so (fogOrPpl=1, hwClip=0) is the only selectable variant. The
+	// cache key keeps the GL3 variant bits so the others can be added later.
+	const uint fogOrPpl = 1;
+	const uint hwClip = 0;
+
+	std::string body;
+	megavkVPGenerate(body, fogOrPpl != 0, insertSource.c_str());
+	std::string source;
+	if (!assembleMegaSource(body, &insertSrc->UniformBufferFormats, source))
+	{
+		nlwarning("Vulkan: insert vertex program '%s' could not be assembled for Vulkan",
+			insertSrc->DisplayName.c_str());
+		program->m_CompileFailed = true;
+		return false;
+	}
+
+	VkShaderModule module = VK_NULL_HANDLE;
+	if (!compileShader(source.c_str(), &module, true))
+	{
+		nlwarning("Vulkan: insert vertex program '%s' failed to compile (fogOrPpl=%u, hwClip=%u)",
+			insertSrc->DisplayName.c_str(), fogOrPpl, hwClip);
+		program->m_CompileFailed = true;
+		return false;
+	}
+
+	CProgramDrvInfosVulkan *drvInfo = new CProgramDrvInfosVulkan(this,
+		_GPUPrgDrvInfos.insert(_GPUPrgDrvInfos.end(), (IProgramDrvInfos *)NULL));
+	drvInfo->Id = ++_NextUserVPId;
+	drvInfo->DisplayName = insertSrc->DisplayName;
+	drvInfo->IsInsertProgram = true;
+	// The mega vertex stage always writes specularColor.
+	drvInfo->OutputsSpecularColor = true;
+	_InsertVPShaders[insertVertexShaderKey(drvInfo->Id, fogOrPpl, hwClip)] = module;
+	program->m_DrvInfo = drvInfo;
+	program->buildInfo(insertSrc);
+	nlinfo("Vulkan: compiled insert vertex program '%s' (mega VP, fogOrPpl=%u, hwClip=%u)",
+		insertSrc->DisplayName.c_str(), fogOrPpl, hwClip);
+	return true;
 }
 
 bool CDriverVulkan::compileVertexProgram(CVertexProgram *program)
@@ -1060,16 +1141,11 @@ bool CDriverVulkan::compileVertexProgram(CVertexProgram *program)
 		return false;
 
 	// glsl3vi programs are snippets spliced into the mega vertex program, not
-	// complete shaders. Not supported yet.
+	// complete shaders; compile the mega VP variants they can select.
 	for (int i = 0; i < (int)program->getSourceNb(); ++i)
 	{
 		if (program->getSource(i)->Profile == IProgram::glsl3vi)
-		{
-			nlwarning("Vulkan: VP insert program '%s' (glsl3vi) is not supported, keeping the engine fallback",
-				program->getSource(i)->DisplayName.c_str());
-			program->m_CompileFailed = true;
-			return false;
-		}
+			return compileInsertVertexProgram(program, program->getSource(i));
 	}
 
 	// Prefer a complete GLSL program when the engine provides one (wind tree,
@@ -1225,21 +1301,28 @@ bool CDriverVulkan::hasActiveUserVPS()
 {
 	if (!_ActiveUserVP || _ActiveUserVP->Id == 0)
 		return false;
+	if (_ActiveUserVP->IsInsertProgram)
+	{
+		// Insert programs run a mega VP variant; the draw selects the fog/PPL
+		// variant (see compileInsertVertexProgram()).
+		return _InsertVPShaders.find(insertVertexShaderKey(_ActiveUserVP->Id, 1, 0))
+			!= _InsertVPShaders.end();
+	}
 	return _UserVPShaders.find(_ActiveUserVP->Id) != _UserVPShaders.end();
 }
 
-CUniformBuffer *CDriverVulkan::activeUserVPUB()
+CUniformBuffer *CDriverVulkan::activeUserUB(TUBBinding binding)
 {
 	if (!_ActiveUserVP)
 		return NULL;
-	if (_ActiveUserVP->IsNelvpConverted)
+	if (binding == UBBindingVertexProgram && _ActiveUserVP->IsNelvpConverted)
 		return _ActiveUserVP->NelvpConstantUB;
-	return _BoundUserUB[UBBindingVertexProgram];
+	return _BoundUserUB[binding];
 }
 
-bool CDriverVulkan::stageUserVPUB(VkDescriptorBufferInfo &info)
+bool CDriverVulkan::stageUserUB(TUBBinding binding, VkDescriptorBufferInfo &info)
 {
-	CUniformBuffer *ub = activeUserVPUB();
+	CUniformBuffer *ub = activeUserUB(binding);
 	const uint32 size = ub ? (uint32)ub->Format.size() : 0;
 	if (!ub || size == 0 || !ub->data())
 	{
