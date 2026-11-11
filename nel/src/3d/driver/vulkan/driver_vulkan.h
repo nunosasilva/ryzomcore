@@ -549,6 +549,12 @@ private:
 	bool					_ShuttingDown;
 	/// The swapchain could not be recreated (surface gone): stop presenting.
 	bool					_SwapchainLost;
+	/// The surface rejected the swapchain (an acquire or present returned
+	/// VK_ERROR_OUT_OF_DATE_KHR) or a mode change asked for a new one.
+	/// beginFrame() replaces it before acquiring the next image: the
+	/// replacement must never happen while a frame is being recorded, see
+	/// recreateSwapchain().
+	bool					_SwapchainOutOfDate;
 	/// NLVK_PRESENT_LOG=1: trace acquire/present per frame.
 	bool					_PresentLog;
 	/// Results of the calls of the frame being presented (for the present log).
@@ -687,6 +693,10 @@ private:
 	bool					recreateSwapchain(const char *reason);
 	/// True while the X window still exists (X errors are not fatal).
 	bool					windowAlive();
+	/// True when the window has a drawable size. A minimised window (or a
+	/// window-manager resize passing through 0x0) has none, and no swapchain
+	/// can be created for it.
+	bool					windowHasSize() const { return _WindowWidth > 0 && _WindowHeight > 0; }
 	void					recordFrameCommands(VkCommandBuffer cmd);
 	bool					beginFrame();
 	void					dumpScreenshot(const char *path);
