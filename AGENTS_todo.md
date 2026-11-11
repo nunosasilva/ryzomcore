@@ -1165,3 +1165,9 @@ character selection, in game after N minutes, after moving between areas).
 Implement texture eviction (`ITexture::TextureDrvShare` / ITextureDrvInfos) and
 check for double allocations. This is a task that can run concurrently with
 rendering work.
+
+## Measuring FPS in game (user tip)
+
+The in-game configuration window (opened/closed with the `u` key) shows an FPS
+counter in its top-right. Use it to cross-check `NLVK_STATS=1` numbers; the
+debug build's Lua scripting can open the window if xdotool is inconvenient.
