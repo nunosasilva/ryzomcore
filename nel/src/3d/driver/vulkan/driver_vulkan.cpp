@@ -89,6 +89,12 @@ CDriverVulkan::CDriverVulkan()
 	, _Swapchain(VK_NULL_HANDLE)
 	, _SwapchainFormat(VK_FORMAT_UNDEFINED)
 	, _RenderPass(VK_NULL_HANDLE)
+	, _ResumeRenderPass(VK_NULL_HANDLE)
+	, _OffscreenRenderPass(VK_NULL_HANDLE)
+	, _RenderTargetTexture(NULL)
+	, _RenderTargetInfo(NULL)
+	, _RenderTargetBinds(0)
+	, _RenderTargetLogged(false)
 	, _DepthFormat(VK_FORMAT_UNDEFINED)
 	, _DepthImage(VK_NULL_HANDLE)
 	, _DepthMemory(VK_NULL_HANDLE)
@@ -515,7 +521,41 @@ bool CDriverVulkan::createRenderPass()
 	rpci.pSubpasses = &subpass;
 	rpci.dependencyCount = 1;
 	rpci.pDependencies = &dependency;
-	return checkVk(vkCreateRenderPass(_Device, &rpci, NULL, &_RenderPass), "vkCreateRenderPass");
+	if (!checkVk(vkCreateRenderPass(_Device, &rpci, NULL, &_RenderPass), "vkCreateRenderPass"))
+		return false;
+
+	// Same attachments, LOAD instead of CLEAR: resumes the main pass in the
+	// middle of a frame after an offscreen target was bound. Render-pass
+	// compatible with _RenderPass, so both share the cached pipelines.
+	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+	attachments[0].initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+	attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+	attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	if (!checkVk(vkCreateRenderPass(_Device, &rpci, NULL, &_ResumeRenderPass), "vkCreateRenderPass(resume)"))
+		return false;
+
+	// Offscreen pass: RGBA8 colour target, same depth format as the window, so
+	// the same depth/stencil attachments can be shared by every target of a
+	// given size. Both attachments are loaded: the engine clears what it needs.
+	attachments[0].format = NL_VK_TEXTURE_FORMAT;
+	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+	attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachments[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachments[1].format = _DepthFormat;
+	attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+	attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	if (!checkVk(vkCreateRenderPass(_Device, &rpci, NULL, &_OffscreenRenderPass), "vkCreateRenderPass(offscreen)"))
+		return false;
+
+	return true;
 }
 
 VkFormat CDriverVulkan::findDepthFormat() const
@@ -952,8 +992,11 @@ void CDriverVulkan::shutdownVulkan()
 		if (_ScreenshotBuffer) { vkDestroyBuffer(_Device, _ScreenshotBuffer, NULL); _ScreenshotBuffer = VK_NULL_HANDLE; }
 		if (_ScreenshotMemory) { vkFreeMemory(_Device, _ScreenshotMemory, NULL); _ScreenshotMemory = VK_NULL_HANDLE; }
 
-		// The render pass is kept for the lifetime of the device.
+		// The render passes are kept for the lifetime of the device.
+		if (_OffscreenRenderPass) { vkDestroyRenderPass(_Device, _OffscreenRenderPass, NULL); _OffscreenRenderPass = VK_NULL_HANDLE; }
+		if (_ResumeRenderPass) { vkDestroyRenderPass(_Device, _ResumeRenderPass, NULL); _ResumeRenderPass = VK_NULL_HANDLE; }
 		if (_RenderPass) { vkDestroyRenderPass(_Device, _RenderPass, NULL); _RenderPass = VK_NULL_HANDLE; }
+		destroyDepthTargets();
 
 		vkDestroyDevice(_Device, NULL);
 		_Device = VK_NULL_HANDLE;
@@ -1072,6 +1115,8 @@ void CDriverVulkan::recreateSwapchain()
 	{
 		// Never leave a frame half recorded across a swapchain change.
 		_FrameOpen = false;
+		_RenderTargetTexture = NULL;
+		_RenderTargetInfo = NULL;
 	}
 }
 
@@ -1181,6 +1226,7 @@ bool CDriverVulkan::beginFrame()
 	for (uint i = 0; i < _PendingTextureDestroy.size(); ++i)
 	{
 		CTextureVulkan tex = _PendingTextureDestroy[i];
+		if (tex.Framebuffer) vkDestroyFramebuffer(_Device, tex.Framebuffer, NULL);
 		if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
 		if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
 		if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
@@ -1217,68 +1263,11 @@ bool CDriverVulkan::beginFrame()
 	if (!checkVk(vkBeginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer"))
 		return false;
 
-	VkClearValue clears[2];
-	memset(clears, 0, sizeof(clears));
-	if (getenv("NLVK_FORCECLEAR"))
-	{
-		clears[0].color.float32[0] = 1.f;
-		clears[0].color.float32[1] = 0.f;
-		clears[0].color.float32[2] = 1.f;
-		clears[0].color.float32[3] = 1.f;
-	}
-	else
-	{
-		clears[0].color.float32[0] = _ClearColor.R / 255.f;
-		clears[0].color.float32[1] = _ClearColor.G / 255.f;
-		clears[0].color.float32[2] = _ClearColor.B / 255.f;
-		clears[0].color.float32[3] = _ClearColor.A / 255.f;
-	}
-	clears[1].depthStencil.depth = _ClearDepth;
-	clears[1].depthStencil.stencil = (uint32)_ClearStencil;
-
-	VkRenderPassBeginInfo rbi;
-	memset(&rbi, 0, sizeof(rbi));
-	rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-	rbi.renderPass = _RenderPass;
-	rbi.framebuffer = _Framebuffers[_ImageIndex];
-	rbi.renderArea.offset.x = 0;
-	rbi.renderArea.offset.y = 0;
-	rbi.renderArea.extent = _SwapchainExtent;
-	rbi.clearValueCount = 2;
-	rbi.pClearValues = clears;
-	vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-
-	// Apply the cached viewport and scissor (they may have been set before the
-	// frame was opened; defaults are full screen).
-	{
-		float x = _Viewport.getX() * _SwapchainExtent.width;
-		float y = _Viewport.getY() * _SwapchainExtent.height;
-		float w = _Viewport.getWidth() * _SwapchainExtent.width;
-		float h = _Viewport.getHeight() * _SwapchainExtent.height;
-		VkViewport vkViewport;
-		vkViewport.x = x;
-		vkViewport.y = (float)_SwapchainExtent.height - y;
-		vkViewport.width = w > 0.f ? w : (float)_SwapchainExtent.width;
-		vkViewport.height = h > 0.f ? -h : -(float)_SwapchainExtent.height;
-		vkViewport.minDepth = 0.f;
-		vkViewport.maxDepth = 1.f;
-		vkCmdSetViewport(cmd, 0, 1, &vkViewport);
-
-		VkRect2D scissorRect;
-		scissorRect.offset.x = (sint32)(_Scissor.X * _SwapchainExtent.width);
-		scissorRect.offset.y = (sint32)(_SwapchainExtent.height - (_Scissor.Y + _Scissor.Height) * _SwapchainExtent.height);
-		scissorRect.extent.width = (uint32)(_Scissor.Width * _SwapchainExtent.width);
-		scissorRect.extent.height = (uint32)(_Scissor.Height * _SwapchainExtent.height);
-		if (scissorRect.extent.width == 0 || scissorRect.extent.height == 0)
-		{
-			scissorRect.offset.x = 0;
-			scissorRect.offset.y = 0;
-			scissorRect.extent = _SwapchainExtent;
-		}
-		vkCmdSetScissor(cmd, 0, 1, &scissorRect);
-	}
+	beginMainPass(cmd, true);
 
 	_FrameOpen = true;
+	_RenderTargetTexture = NULL;
+	_RenderTargetInfo = NULL;
 	_IndexRingOffset = 0;
 	_UniformRingOffset = 0;
 	_MegaLightTableStaged = false;
@@ -1310,7 +1299,7 @@ bool CDriverVulkan::clear2D(CRGBA rgba)
 		attachment.clearValue.color.float32[3] = rgba.A / 255.f;
 		VkClearRect rect;
 		memset(&rect, 0, sizeof(rect));
-		rect.rect.extent = _SwapchainExtent;
+		rect.rect.extent = currentTargetExtent();
 		rect.layerCount = 1;
 		vkCmdClearAttachments(_CommandBuffers[_FrameIndex], 1, &attachment, 1, &rect);
 		return true;
@@ -1331,7 +1320,7 @@ bool CDriverVulkan::clearZBuffer(float zval)
 		attachment.clearValue.depthStencil.depth = zval;
 		VkClearRect rect;
 		memset(&rect, 0, sizeof(rect));
-		rect.rect.extent = _SwapchainExtent;
+		rect.rect.extent = currentTargetExtent();
 		rect.layerCount = 1;
 		vkCmdClearAttachments(_CommandBuffers[_FrameIndex], 1, &attachment, 1, &rect);
 	}
@@ -1368,6 +1357,14 @@ bool CDriverVulkan::swapBuffers()
 
 	uint32 frame = _FrameIndex;
 	VkCommandBuffer cmd = _CommandBuffers[frame];
+
+	// The engine must always unbind its render targets; recover if it did not,
+	// otherwise the swapchain pass would never be ended.
+	if (_RenderTargetInfo)
+	{
+		nlwarning("Vulkan: swapBuffers() with a render target still bound, restoring the window target");
+		setRenderTarget(NULL, 0, 0, 0, 0, 0, 0);
+	}
 
 	vkCmdEndRenderPass(cmd);
 
@@ -1438,9 +1435,9 @@ bool CDriverVulkan::swapBuffers()
 	_FrameOpen = false;
 
 	if ((_SwapBufferCounter % 600) == 0)
-		nldebug("Vulkan: frame %llu, %u vertex draws, %u indexed draws, %u pipelines",
+		nldebug("Vulkan: frame %llu, %u vertex draws, %u indexed draws, %u pipelines, %llu target binds",
 			(unsigned long long)_SwapBufferCounter, _ArrayDrawCount, _IndexedDrawCount,
-			(uint)_PipelineCache.size());
+			(uint)_PipelineCache.size(), (unsigned long long)_RenderTargetBinds);
 
 	return true;
 }
