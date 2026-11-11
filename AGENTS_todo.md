@@ -1505,3 +1505,16 @@ so the gain is entirely the removed device waits/serialisation.
 - The FullRewrite two-copy rotation assumes one write per buffer per frame.
 - Depth buffer shared by both frames in flight.
 - The character-selection "black frame" is not reproducible from the driver.
+
+## Descriptor-set caching / perf audit — in progress
+
+Agent `vulkan-descriptors` (`mats006`, worktree `f1fb99/vulkan-descriptors`,
+base `a463c5e44`) is working on:
+- caching the per-draw descriptor sets (3.0-3.1 us/draw, ~3.5 ms of a 29 ms
+  frame at ~1170 draws) in a frame-safe way (2 frames in flight), with
+  before/after `NLVK_STATS` numbers;
+- confirming the CPU/GPU balance and whether more CPU-side work is worthwhile;
+- the staging ring's 64 MiB loading peak (~0.02 MiB/frame in game);
+- an audit: the shared-depth-buffer item is already fixed on main (`fb6e5b5e5`,
+  one depth image per swapchain image), ForceDXTC and fog/colour parity belong
+  to `vulkan-color-fog`.
