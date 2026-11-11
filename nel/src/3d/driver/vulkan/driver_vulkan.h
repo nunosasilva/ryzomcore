@@ -659,6 +659,17 @@ private:
 	CUniformBuffer			*activeUserUB(TUBBinding binding);
 	/// Copy that block into the per-frame ring for the descriptor at 'binding'.
 	bool					stageUserUB(TUBBinding binding, VkDescriptorBufferInfo &info);
+	/// Per-draw staging cache for user uniform blocks (see stageUserUB).
+	CUniformBuffer			*_UserUBStageCache[UBBindingCount];
+	uint32					_UserUBStageOffset[UBBindingCount];
+	uint32					_UserUBStageSize[UBBindingCount];
+	/// NLVK_STATS=1: per-draw CPU cost counters, logged every 600 frames.
+	bool					_StatsEnabled;
+	uint64					_StatsDraws;
+	uint64					_StatsDescriptorNs;
+	uint64					_StatsIndexNs;
+	uint64					_StatsWindowStartNs;
+	uint64					_StatsWindowFrames;
 	/// Compile a glsl3vi snippet into the mega VP variants it can select.
 	bool					compileInsertVertexProgram(CVertexProgram *program, IProgram::CSource *insertSrc);
 
@@ -740,9 +751,31 @@ private:
 	bool						_MegaPassFogBlack;
 
 	std::map<ITexture *, CTextureVulkan>	_TexturesVulkan;
-	std::vector<CTextureVulkan>				_PendingTextureDestroy;
-	std::vector<std::pair<VkBuffer, VkDeviceMemory> >	_PendingBufferDestroy;
-	bool					uploadTexturePixels(ITexture &tex, CTextureVulkan &out, CBitmap::TType sourceFormat);
+	/// Textures retired during the given swap-buffer frame. They are freed once
+	/// that frame and the one after it are both known to be finished (two frame
+	/// slots in flight), without a device-wide wait.
+	std::vector<std::pair<uint64, CTextureVulkan> >	_PendingTextureDestroy;
+	std::vector<std::pair<uint64, std::pair<VkBuffer, VkDeviceMemory> > >	_PendingBufferDestroy;
+
+	// --- Deferred first-time texture uploads ---
+	// Newly created images cannot be referenced by a frame that is already in
+	// flight, so their pixel copies are recorded into one upload command buffer
+	// and submitted once per frame instead of one submit + wait per texture.
+	// In-place updates of an existing image stay synchronous: an in-flight
+	// frame may still be sampling it.
+	VkCommandBuffer			_UploadCommandBuffer;
+	VkFence					_UploadFence;
+	VkSemaphore				_UploadDone;
+	bool					_UploadRecording;
+	bool					_UploadSubmitted;
+	std::vector<std::pair<VkBuffer, VkDeviceMemory> >	_UploadStaging;
+	/// Images with a copy recorded in the current upload batch. A second copy
+	/// of the same image must join the batch too, so that both layout
+	/// transitions execute in recording order.
+	std::vector<VkImage>	_UploadBatchImages;
+	bool					beginUploadBatch();
+	bool					submitUploadBatch();
+	bool					uploadTexturePixels(ITexture &tex, CTextureVulkan &out, CBitmap::TType sourceFormat, bool deferred);
 	/// stretchRect() implementation: scaled image blit between two NeL textures.
 	bool					stretchRectImage(ITexture *srcText, NLMISC::CRect &srcRect, ITexture *destText, NLMISC::CRect &destRect);
 	std::map<uint32, std::vector<VkVertexInputAttributeDescription> >	_VertexLayouts;
@@ -855,7 +888,7 @@ public:
 	static const char		*driverName() { return "Vulkan"; }
 	VkDevice				getDevice() const { return _Device; }
 	bool					isFrameOpen() const { return _FrameOpen; }
-	void					deferDestroyBuffer(VkBuffer buffer, VkDeviceMemory memory) { _PendingBufferDestroy.push_back(std::make_pair(buffer, memory)); }
+	void					deferDestroyBuffer(VkBuffer buffer, VkDeviceMemory memory) { _PendingBufferDestroy.push_back(std::make_pair(_SwapBufferCounter, std::make_pair(buffer, memory))); }
 	/// Release a user VP shader module and forget its cache entry.
 	void					releaseUserVPShader(uint32 id);
 	/// Release a user PP shader module and forget its cache entry.
