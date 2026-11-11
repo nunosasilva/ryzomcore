@@ -38,6 +38,7 @@
 #include <nel/3d/program.h>
 
 #include <string>
+#include <map>
 
 namespace NLVULKAN {
 
@@ -153,12 +154,29 @@ extern const char *VulkanMaterialHeader;
 /// The port always uses the fully UBO-backed variant (camera, light table,
 /// object and material blocks). fogOrPpl adds the ecPos/worldPos varyings that
 /// the fog and per-pixel lighting code in the pixel program reads.
-void megavkVPGenerate(std::string &result, bool fogOrPpl);
+///
+/// insertSource is a glsl3vi snippet (GPU skinning / MRM geomorph) that defines
+/// nlPreTransform(inout vec4, inout vec3, inout vec4, inout vec4). When set, it
+/// is spliced into the program and called on the vertex inputs before the
+/// model-view-projection transform, exactly like the GL3 mega generator.
+void megavkVPGenerate(std::string &result, bool fogOrPpl, const char *insertSource = NULL);
 
 /// Generate the Vulkan mega pixel program.
 /// fogOrPpl adds fog and per-pixel lighting, cube makes sampler1 a samplerCube
 /// (the Specular material), specular adds the vertex specular term.
 void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specular);
+
+/// Builtin UBO blocks plus the user blocks described by a vertex program's
+/// UniformBufferFormats (implemented in driver_vulkan_vp.cpp). Returns false
+/// when a block uses a feature the generator does not support.
+std::string buildVertexProgramUBOHeaders(
+	const std::map<sint, NLMISC::CSmartPtr<NL3D::CUniformBufferFormat> > &formats, bool &ok);
+
+/// Complete shader source from a generated body: its #version line, the builtin
+/// UBO blocks, the optional user VP blocks, then the rest of the body.
+bool assembleMegaSource(const std::string &body,
+	const std::map<sint, NLMISC::CSmartPtr<NL3D::CUniformBufferFormat> > *userUBOs,
+	std::string &outSource);
 
 } /* namespace NLVULKAN */
 

@@ -85,6 +85,11 @@ public:
 	/// True when the program writes the specular colour varying; selects the
 	/// mega pixel program variant, same contract as GL3's m_VPSpecularOutput.
 	bool							OutputsSpecularColor;
+	/// True for a glsl3vi insert program (GPU skinning / MRM geomorph). Such a
+	/// program has no standalone shader: the executable is a mega vertex
+	/// program variant with the engine's nlPreTransform() snippet spliced in,
+	/// stored in the driver's _InsertVPShaders map instead of _UserVPShaders.
+	bool							IsInsertProgram;
 };
 
 /// A Vulkan vertex buffer created on behalf of a NeL CVertexBuffer.
@@ -155,6 +160,7 @@ struct CPipelineKey
 	uint32	Mega;             // use the mega VP/PP instead of the simple shader
 	uint32	MegaCube;         // mega PP samples a cubemap at sampler1 (Specular)
 	uint32	UserVP;           // active user vertex program id (0 = builtin mega VP)
+	uint32	UserVPInsert;     // the id refers to a glsl3vi insert mega VP variant
 	uint32	MegaSpecular;     // mega PP adds the specularColor varying (from the VP)
 
 	bool operator==(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
@@ -166,6 +172,16 @@ struct CPipelineVulkan
 {
 	VkPipeline			Pipeline;
 };
+
+/// Key of a glsl3vi mega vertex program variant: the insert program id plus
+/// the two GL3 variant bits. Only (fogOrPpl=1, hwClip=0) is generated for now:
+/// the mega pixel stage is always the fog/PPL variant and the driver reports
+/// no hardware clip plane support. Keeping the bits in the key leaves room for
+/// the remaining variants without invalidating the insert program identity.
+inline uint64 insertVertexShaderKey(uint32 programId, uint fogOrPpl, uint hwClip)
+{
+	return ((uint64)programId << 2) | ((uint64)(fogOrPpl & 1u) << 1) | (hwClip & 1u);
+}
 
 class CDriverVulkan : public IDriver
 {
@@ -548,10 +564,13 @@ private:
 	// --- User vertex programs (driver_vulkan_vp.cpp) ---
 	/// True when a compiled user VP is selected and its shader exists.
 	bool					hasActiveUserVPS();
-	/// The engine UBO that the active user VP reads at binding 4.
-	CUniformBuffer			*activeUserVPUB();
-	/// Copy the active user VP's uniform data into the per-frame ring.
-	bool					stageUserVPUB(VkDescriptorBufferInfo &info);
+	/// The engine UBO the active user VP reads at a binding (nelvp programs
+	/// answer UBBindingVertexProgram with their constant register block).
+	CUniformBuffer			*activeUserUB(TUBBinding binding);
+	/// Copy that block into the per-frame ring for the descriptor at 'binding'.
+	bool					stageUserUB(TUBBinding binding, VkDescriptorBufferInfo &info);
+	/// Compile a glsl3vi snippet into the mega VP variants it can select.
+	bool					compileInsertVertexProgram(CVertexProgram *program, IProgram::CSource *insertSrc);
 
 	// --- Textures (driver_vulkan_texture.cpp) ---
 	CTextureVulkan			*getTextureVulkan(ITexture &tex);
@@ -599,6 +618,8 @@ private:
 	bool						_VPSpecularOutput;
 	uint32						_NextUserVPId;
 	std::map<uint32, VkShaderModule>	_UserVPShaders;
+	/// glsl3vi insert mega VP variants, keyed by insertVertexShaderKey().
+	std::map<uint64, VkShaderModule>	_InsertVPShaders;
 
 	// --- Mega lightmap multi-pass staging ---
 	// Mirrors the GL3 driver: the engine draws a LightMap material once per
@@ -632,18 +653,19 @@ private:
 		float	MVP[16];				// 0
 		float	NormalMatrix[12];		// 64
 		float	Color[4];				// 112
-		float	Ambient[4];				// 128
-		float	AlphaRef;				// 144
-		sint32	Flags;					// 148
-		uint32	TexEnv[4];				// 152
-		uint32	UvRouting;				// 168
-		uint32	Pad0;					// 172
-		float	LightDirOrPos[4][4];	// 176
-		float	LightDiffuse[4][4];		// 240
-		sint32	LightCount;				// 304
-		sint32	Pad1[3];				// 308
+		float	Diffuse[4];				// 128
+		float	Ambient[4];				// 144
+		float	AlphaRef;				// 160
+		sint32	Flags;					// 164
+		uint32	TexEnv[4];				// 168
+		uint32	UvRouting;				// 184
+		uint32	Pad0;					// 188
+		float	LightDirOrPos[4][4];	// 192
+		float	LightDiffuse[4][4];		// 256
+		sint32	LightCount;				// 320
+		sint32	Pad1[3];				// 324
 	};
-	static_assert(sizeof(SSimpleUniforms) == 320, "SSimpleUniforms must match the std140 NlSimple block");
+	static_assert(sizeof(SSimpleUniforms) == 336, "SSimpleUniforms must match the std140 NlSimple block");
 
 	VkBuffer				_UniformRing;
 	VkDeviceMemory			_UniformRingMemory;

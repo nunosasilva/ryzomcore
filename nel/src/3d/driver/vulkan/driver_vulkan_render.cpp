@@ -28,6 +28,7 @@
 
 #include "nel/3d/viewport.h"
 #include "nel/3d/scissor.h"
+#include "nel/3d/light.h"
 
 #include <cmath>
 
@@ -50,6 +51,7 @@ static const char *s_UniformBlockGLSL =
 	"    mat4 mvp;\n"
 	"    mat3 normalMatrix;\n"
 	"    vec4 color;\n"
+	"    vec4 diffuse;\n"
 	"    vec4 ambient;\n"
 	"    float alphaRef;\n"
 	"    int flags;\n"
@@ -110,9 +112,20 @@ static std::string buildVertexShader(uint32 flags)
 		"    vec4 pos = nl.mvp * vec4(attrPosition, 1.0);\n"
 		"    pos.z = (pos.z + pos.w) * 0.5;\n"
 		"    gl_Position = pos;\n"
-		"    vec4 vcol = nl.color;\n";
+		"    // Lit materials use the diffuse colour (like the mega vertex program),\n"
+		"    // unlit materials use the material colour.\n"
+		"    vec4 vcol = ((nl.flags & 32) != 0) ? nl.diffuse : nl.color;\n";
 	if (hasColor)
-		src += "    vcol *= attrColor;\n";
+		src +=
+		"    // The primary color only replaces the material color on unlit draws\n"
+		"    // (mega VP behaviour); when lighting is on it is used only when the\n"
+		"    // material opts into pre-lit vertex colors. CPU-skinned meshes carry\n"
+		"    // an uninitialised or black primary color otherwise, which used to\n"
+		"    // make them render as black silhouettes.\n"
+		"    if ((nl.flags & 32) == 0)\n"
+		"        vcol = attrColor;\n"
+		"    else if ((nl.flags & 64) != 0)\n"
+		"        vcol *= attrColor;\n";
 	if (hasNormal)
 		src +=
 		"    if ((nl.flags & 32) != 0) {\n"
@@ -370,6 +383,12 @@ static void buildVertexLayout(CVertexBuffer &vb, vector<VkVertexInputAttributeDe
 		attribute.offset = vb.getValueOffEx((CVertexBuffer::TValue)i);
 		uint components = 0;
 		attribute.format = vertexFormatForType(vb.getValueType(i), components);
+		// GPU skinning stores raw bone indices in UChar4. GL3 binds that
+		// attribute as an integer attribute (GL_FALSE normalize), so the shader
+		// reads 0..255 in a vec4; the Vulkan equivalent is a scaled format,
+		// which converts the raw bytes to float without normalizing them.
+		if (i == CVertexBuffer::PaletteSkin && vb.getValueType(i) == CVertexBuffer::UChar4)
+			attribute.format = VK_FORMAT_R8G8B8A8_USCALED;
 		// Drop components that the format does not provide.
 		(void)components;
 		attributes.push_back(attribute);
@@ -428,12 +447,26 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	{
 		if (key.UserVP != 0)
 		{
-			std::map<uint32, VkShaderModule>::iterator vpIt = _UserVPShaders.find(key.UserVP);
-			vertexShader = vpIt != _UserVPShaders.end() ? vpIt->second : VK_NULL_HANDLE;
-			if (vertexShader == VK_NULL_HANDLE)
+			if (key.UserVPInsert)
 			{
-				nlwarning("Vulkan: user vertex program %u is no longer compiled", key.UserVP);
-				return VK_NULL_HANDLE;
+				std::map<uint64, VkShaderModule>::iterator insertIt = _InsertVPShaders.find(
+					insertVertexShaderKey(key.UserVP, 1, 0));
+				vertexShader = insertIt != _InsertVPShaders.end() ? insertIt->second : VK_NULL_HANDLE;
+				if (vertexShader == VK_NULL_HANDLE)
+				{
+					nlwarning("Vulkan: insert vertex program %u has no mega VP variant", key.UserVP);
+					return VK_NULL_HANDLE;
+				}
+			}
+			else
+			{
+				std::map<uint32, VkShaderModule>::iterator vpIt = _UserVPShaders.find(key.UserVP);
+				vertexShader = vpIt != _UserVPShaders.end() ? vpIt->second : VK_NULL_HANDLE;
+				if (vertexShader == VK_NULL_HANDLE)
+				{
+					nlwarning("Vulkan: user vertex program %u is no longer compiled", key.UserVP);
+					return VK_NULL_HANDLE;
+				}
 			}
 		}
 		else
@@ -1152,6 +1185,24 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	u.Color[2] = _MaterialColor.B / 255.f;
 	u.Color[3] = _MaterialColor.A / 255.f;
 
+	// Same split as the mega vertex program: lit draws use the diffuse colour,
+	// unlit draws use the material colour.
+	if (_CurrentMaterial)
+	{
+		const CRGBA diffuse = _CurrentMaterial->getDiffuse();
+		u.Diffuse[0] = diffuse.R / 255.f;
+		u.Diffuse[1] = diffuse.G / 255.f;
+		u.Diffuse[2] = diffuse.B / 255.f;
+		u.Diffuse[3] = diffuse.A / 255.f;
+	}
+	else
+	{
+		u.Diffuse[0] = u.Color[0];
+		u.Diffuse[1] = u.Color[1];
+		u.Diffuse[2] = u.Color[2];
+		u.Diffuse[3] = u.Color[3];
+	}
+
 	CRGBA matAmbient = _CurrentMaterial ? _CurrentMaterial->getAmbient() : CRGBA(255, 255, 255, 255);
 	CRGBA ambient = (_ObjectAmbient.A || _ObjectAmbient.R || _ObjectAmbient.G || _ObjectAmbient.B) ? _ObjectAmbient : _AmbientColor;
 	u.Ambient[0] = (ambient.R / 255.f) * (matAmbient.R / 255.f);
@@ -1197,9 +1248,14 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 				continue;
 			const SLightState &light = _LightTable[index];
 			float factor = _LightFactors[i] / 255.f;
-			u.LightDirOrPos[lightCount][0] = light.DirOrPos.x;
-			u.LightDirOrPos[lightCount][1] = light.DirOrPos.y;
-			u.LightDirOrPos[lightCount][2] = light.DirOrPos.z;
+			// The shader lights eye-space normals, so transform the world-space
+			// light data exactly like the mega vertex program's viewMatrix does.
+			const CVector lightEye = light.Mode == CLight::DirectionalLight
+				? _ViewMatrix.mulVector(light.DirOrPos)
+				: _ViewMatrix.mulPoint(light.DirOrPos);
+			u.LightDirOrPos[lightCount][0] = lightEye.x;
+			u.LightDirOrPos[lightCount][1] = lightEye.y;
+			u.LightDirOrPos[lightCount][2] = lightEye.z;
 			u.LightDirOrPos[lightCount][3] = light.Mode == 0 ? 0.f : 1.f;
 			u.LightDiffuse[lightCount][0] = (light.Diffuse.R / 255.f) * factor;
 			u.LightDiffuse[lightCount][1] = (light.Diffuse.G / 255.f) * factor;
@@ -1214,9 +1270,12 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 		{
 			if (!_Lights[i].Enabled)
 				continue;
-			u.LightDirOrPos[lightCount][0] = _Lights[i].DirOrPos.x;
-			u.LightDirOrPos[lightCount][1] = _Lights[i].DirOrPos.y;
-			u.LightDirOrPos[lightCount][2] = _Lights[i].DirOrPos.z;
+			const CVector lightEye = _Lights[i].Mode == CLight::DirectionalLight
+				? _ViewMatrix.mulVector(_Lights[i].DirOrPos)
+				: _ViewMatrix.mulPoint(_Lights[i].DirOrPos);
+			u.LightDirOrPos[lightCount][0] = lightEye.x;
+			u.LightDirOrPos[lightCount][1] = lightEye.y;
+			u.LightDirOrPos[lightCount][2] = lightEye.z;
 			u.LightDirOrPos[lightCount][3] = _Lights[i].Mode == 0 ? 0.f : 1.f;
 			u.LightDiffuse[lightCount][0] = _Lights[i].Diffuse.R / 255.f;
 			u.LightDiffuse[lightCount][1] = _Lights[i].Diffuse.G / 255.f;
