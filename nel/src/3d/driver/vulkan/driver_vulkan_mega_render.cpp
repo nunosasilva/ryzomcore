@@ -712,14 +712,14 @@ uint32 CDriverVulkan::allocUniformBlock(const void *data, uint32 size)
 	if (align < 16)
 		align = 16;
 	uint32 offset = (_UniformRingOffset + align - 1) & ~(align - 1);
-	if (offset + size > _UniformRingSize)
+	if (offset + size > _UniformRingFrameBase + _UniformRingHalf)
 	{
 		// Wrapping would overwrite blocks already referenced by the command
 		// buffer being recorded. Grow instead; the old buffer stays alive until
 		// the next frame boundary (see growUniformRing()).
 		if (!growUniformRing(size))
 			return 0xFFFFFFFF;
-		offset = 0;
+		offset = (_UniformRingOffset + align - 1) & ~(align - 1);
 	}
 	memcpy((uint8 *)_UniformRingMapped + offset, data, size);
 	_UniformRingOffset = offset + size;
@@ -728,8 +728,8 @@ uint32 CDriverVulkan::allocUniformBlock(const void *data, uint32 size)
 
 bool CDriverVulkan::growUniformRing(uint32 required)
 {
-	uint32 newSize = _UniformRingSize ? _UniformRingSize : 1024 * 1024;
-	while (newSize < required || newSize <= _UniformRingSize)
+	uint32 newSize = _UniformRingSize ? _UniformRingSize : 4 * 1024 * 1024;
+	while (newSize < required * 2 || newSize <= _UniformRingSize)
 		newSize *= 2;
 
 	VkBufferCreateInfo bci;
@@ -770,7 +770,9 @@ bool CDriverVulkan::growUniformRing(uint32 required)
 	_UniformRingMemory = memory;
 	_UniformRingMapped = mapped;
 	_UniformRingSize = newSize;
-	_UniformRingOffset = 0;
+	_UniformRingHalf = newSize / 2;
+	_UniformRingFrameBase = _FrameIndex * _UniformRingHalf;
+	_UniformRingOffset = _UniformRingFrameBase;
 	// Cached user-block offsets referred to the old buffer.
 	memset(_UserUBStageCache, 0, sizeof(_UserUBStageCache));
 	memset(_UserUBStageSize, 0, sizeof(_UserUBStageSize));

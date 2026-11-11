@@ -908,11 +908,44 @@ void CDriverVulkan::drawTestTriangle(VkCommandBuffer cmd)
 
 CVBDrvInfosVulkan::CVBDrvInfosVulkan(CDriverVulkan *drv, ItVBDrvInfoPtrList it, CVertexBuffer *vb)
 	: IVBDrvInfos(drv, it, vb)
-	, _VertexBuffer(VK_NULL_HANDLE)
-	, _Memory(VK_NULL_HANDLE)
-	, _Mapped(NULL)
+	, _Dynamic(false)
+	, _SlotCount(1)
+	, _Slot(0)
+	, _LockFrame(~0ull)
+	, _Drawn(false)
+	, _DrawBuffer(VK_NULL_HANDLE)
+	, _DrawOffset(0)
 	, _Size(0)
 {
+	for (uint i = 0; i < MaxSlots; ++i)
+	{
+		_VertexBuffer[i] = VK_NULL_HANDLE;
+		_Memory[i] = VK_NULL_HANDLE;
+		_Mapped[i] = NULL;
+		_SlotFrame[i] = ~0ull;
+	}
+
+	// Buffers the engine rewrites while a previous draw or frame can still be
+	// reading them need more than one copy. Streams are rewritten every frame
+	// (their contents are undefined after swapBuffers), so they live in the
+	// per-frame vertex ring; FullRewrite buffers keep their contents between
+	// rewrites and use one persisted buffer per frame in flight.
+	switch (vb ? vb->getBufferUsage() : CVertexBuffer::CpuReadWrite)
+	{
+	case CVertexBuffer::FullStream:
+	case CVertexBuffer::SmallStream:
+		_Dynamic = true;
+		_SlotCount = 0;
+		break;
+	case CVertexBuffer::FullRewrite:
+		_Dynamic = false;
+		_SlotCount = MaxSlots;
+		break;
+	default:
+		_Dynamic = false;
+		_SlotCount = 1;
+		break;
+	}
 }
 
 CVBDrvInfosVulkan::~CVBDrvInfosVulkan()
@@ -922,9 +955,10 @@ CVBDrvInfosVulkan::~CVBDrvInfosVulkan()
 	CDriverVulkan *driver = static_cast<CDriverVulkan *>(_Driver);
 	if (driver && driver->getDevice())
 	{
-		// The buffer may still be referenced by a recorded or in-flight frame.
-		if (_VertexBuffer)
-			driver->deferDestroyBuffer(_VertexBuffer, _Memory);
+		// The buffers may still be referenced by a recorded or in-flight frame.
+		for (uint i = 0; i < _SlotCount; ++i)
+			if (_VertexBuffer[i])
+				driver->deferDestroyBuffer(_VertexBuffer[i], _Memory[i]);
 	}
 }
 
@@ -932,49 +966,105 @@ void CVBDrvInfosVulkan::ensureCapacity(uint32 size)
 {
 	if (size <= _Size)
 		return;
+	_Size = size;
+
+	// Ring-backed buffers only need the size: their storage is carved out of
+	// the driver's vertex ring on every lock.
+	if (_Dynamic)
+		return;
+
 	CDriverVulkan *driver = static_cast<CDriverVulkan *>(_Driver);
 	VkDevice device = driver->getDevice();
-	if (_VertexBuffer)
+	for (uint slot = 0; slot < _SlotCount; ++slot)
 	{
-		// The buffer may still be referenced by a recorded or in-flight frame:
-		// destroy it at the next frame boundary, never immediately.
-		driver->deferDestroyBuffer(_VertexBuffer, _Memory);
-		_VertexBuffer = VK_NULL_HANDLE;
-		_Memory = VK_NULL_HANDLE;
+		if (_VertexBuffer[slot])
+		{
+			// The buffer may still be referenced by a recorded or in-flight
+			// frame: destroy it at the next frame boundary, never immediately.
+			driver->deferDestroyBuffer(_VertexBuffer[slot], _Memory[slot]);
+			_VertexBuffer[slot] = VK_NULL_HANDLE;
+			_Memory[slot] = VK_NULL_HANDLE;
+			_Mapped[slot] = NULL;
+		}
 	}
 
-	VkBufferCreateInfo bci;
-	memset(&bci, 0, sizeof(bci));
-	bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-	bci.size = size;
-	bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-	bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	if (vkCreateBuffer(device, &bci, NULL, &_VertexBuffer) != VK_SUCCESS)
+	for (uint slot = 0; slot < _SlotCount; ++slot)
 	{
-		nlwarning("Vulkan: vertex buffer creation failed (%u bytes)", size);
-		return;
+		VkBufferCreateInfo bci;
+		memset(&bci, 0, sizeof(bci));
+		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bci.size = size;
+		bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		if (vkCreateBuffer(device, &bci, NULL, &_VertexBuffer[slot]) != VK_SUCCESS)
+		{
+			nlwarning("Vulkan: vertex buffer creation failed (%u bytes)", size);
+			_VertexBuffer[slot] = VK_NULL_HANDLE;
+			continue;
+		}
+		VkMemoryRequirements req;
+		vkGetBufferMemoryRequirements(device, _VertexBuffer[slot], &req);
+		VkMemoryAllocateInfo mai;
+		memset(&mai, 0, sizeof(mai));
+		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		mai.allocationSize = req.size;
+		mai.memoryTypeIndex = driver->findMemoryType(req.memoryTypeBits,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		if (vkAllocateMemory(device, &mai, NULL, &_Memory[slot]) != VK_SUCCESS)
+		{
+			nlwarning("Vulkan: vertex buffer memory allocation failed (%u bytes)", size);
+			vkDestroyBuffer(device, _VertexBuffer[slot], NULL);
+			_VertexBuffer[slot] = VK_NULL_HANDLE;
+			continue;
+		}
+		vkBindBufferMemory(device, _VertexBuffer[slot], _Memory[slot], 0);
+		vkMapMemory(device, _Memory[slot], 0, VK_WHOLE_SIZE, 0, &_Mapped[slot]);
 	}
-	VkMemoryRequirements req;
-	vkGetBufferMemoryRequirements(device, _VertexBuffer, &req);
-	VkMemoryAllocateInfo mai;
-	memset(&mai, 0, sizeof(mai));
-	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	mai.allocationSize = req.size;
-	mai.memoryTypeIndex = driver->findMemoryType(req.memoryTypeBits,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	if (vkAllocateMemory(device, &mai, NULL, &_Memory) != VK_SUCCESS)
-	{
-		nlwarning("Vulkan: vertex buffer memory allocation failed (%u bytes)", size);
-		return;
-	}
-	vkBindBufferMemory(device, _VertexBuffer, _Memory, 0);
-	vkMapMemory(device, _Memory, 0, VK_WHOLE_SIZE, 0, &_Mapped);
-	_Size = size;
+	_Slot = 0;
+	for (uint i = 0; i < MaxSlots; ++i)
+		_SlotFrame[i] = ~0ull;
+	_LockFrame = ~0ull;
+	_Drawn = false;
+	_DrawBuffer = _VertexBuffer[_Slot];
+	_DrawOffset = 0;
 }
 
 uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 {
-	return (uint8 *)_Mapped + begin;
+	CDriverVulkan *driver = static_cast<CDriverVulkan *>(_Driver);
+	if (_Dynamic)
+	{
+		if (readOnly)
+		{
+			if (!driver->vertexRingMapped())
+				return NULL;
+			return (uint8 *)driver->vertexRingMapped() + _DrawOffset + begin;
+		}
+		const uint32 offset = driver->allocVertexRing(_Size);
+		if (offset == 0xFFFFFFFFu)
+			return NULL;
+		_DrawBuffer = driver->vertexRingBuffer();
+		_DrawOffset = offset;
+		return (uint8 *)driver->vertexRingMapped() + offset + begin;
+	}
+
+	// FullRewrite buffers are rewritten now and then. Alternate between the
+	// per-frame copies so the copy a running frame reads is not the one the
+	// CPU is about to overwrite, and keep drawing from the copy last written.
+	const uint64 now = driver ? driver->getSwapBufferCounter() : 0;
+	if (!readOnly && _SlotCount > 1 && (now != _LockFrame || _Drawn))
+	{
+		// Move to the other copy when this one was drawn with since its last
+		// write, or when a frame that can still be reading it is in flight.
+		if (_Drawn || (_SlotFrame[_Slot] != ~0ull && _SlotFrame[_Slot] + 2 > now))
+			_Slot = (_Slot + 1) % _SlotCount;
+		_LockFrame = now;
+		_SlotFrame[_Slot] = now;
+	}
+	_Drawn = false;
+	_DrawBuffer = _VertexBuffer[_Slot];
+	_DrawOffset = 0;
+	return (uint8 *)_Mapped[_Slot] + begin;
 }
 
 void CVBDrvInfosVulkan::unlock(uint begin, uint end)
@@ -1028,17 +1118,84 @@ bool CDriverVulkan::activeIndexBuffer(CIndexBuffer &ib)
 }
 
 // ---------------------------------------------------------------------------
-// Per-frame index upload (small ring, reset each frame)
+// Per-frame vertex upload ring
+// ---------------------------------------------------------------------------
+
+uint32 CDriverVulkan::allocVertexRing(uint32 size)
+{
+	const uint32 required = _VertexRingOffset + size;
+	const bool grow = (_VertexRing == VK_NULL_HANDLE ||
+		required > _VertexRingFrameBase + _VertexRingHalf);
+	if (grow)
+	{
+		// Each frame has its own half: a previous frame may still be reading
+		// the vertices it uploaded at the same offsets.
+		uint32 newSize = _VertexRingSize ? _VertexRingSize : 4 * 1024 * 1024u;
+		while (newSize < size * 2 || newSize <= _VertexRingSize)
+			newSize *= 2;
+		VkBufferCreateInfo bci;
+		memset(&bci, 0, sizeof(bci));
+		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bci.size = newSize;
+		bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		VkBuffer buffer = VK_NULL_HANDLE;
+		if (vkCreateBuffer(_Device, &bci, NULL, &buffer) != VK_SUCCESS)
+			return 0xFFFFFFFFu;
+		VkMemoryRequirements req;
+		vkGetBufferMemoryRequirements(_Device, buffer, &req);
+		VkMemoryAllocateInfo mai;
+		memset(&mai, 0, sizeof(mai));
+		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		mai.allocationSize = req.size;
+		mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		if (vkAllocateMemory(_Device, &mai, NULL, &memory) != VK_SUCCESS)
+		{
+			vkDestroyBuffer(_Device, buffer, NULL);
+			return 0xFFFFFFFFu;
+		}
+		vkBindBufferMemory(_Device, buffer, memory, 0);
+		void *mapped = NULL;
+		if (vkMapMemory(_Device, memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS)
+		{
+			vkDestroyBuffer(_Device, buffer, NULL);
+			vkFreeMemory(_Device, memory, NULL);
+			return 0xFFFFFFFFu;
+		}
+		// Draws already recorded in this frame reference the old buffer; it is
+		// released once no in-flight frame can use it.
+		if (_VertexRing)
+			deferDestroyBuffer(_VertexRing, _VertexRingMemory);
+		_VertexRing = buffer;
+		_VertexRingMemory = memory;
+		_VertexRingMapped = mapped;
+		_VertexRingSize = newSize;
+		_VertexRingHalf = newSize / 2;
+		_VertexRingFrameBase = _FrameIndex * _VertexRingHalf;
+		_VertexRingOffset = _VertexRingFrameBase;
+		nlinfo("Vulkan: vertex ring grown to %u bytes", newSize);
+	}
+	const uint32 offset = (_VertexRingOffset + 3) & ~3u;
+	_VertexRingOffset = offset + size;
+	return offset;
+}
+
+// ---------------------------------------------------------------------------
+// Per-frame index upload ring
 // ---------------------------------------------------------------------------
 
 VkBuffer CDriverVulkan::getIndexUploadBuffer(const void *data, uint32 size, uint32 stride)
 {
 	(void)stride;
 	const uint32 required = _IndexRingOffset + size;
-	if (_IndexRing == VK_NULL_HANDLE || required > _IndexRingSize)
+	if (_IndexRing == VK_NULL_HANDLE || required > _IndexRingFrameBase + _IndexRingHalf)
 	{
-		uint32 newSize = _IndexRingSize ? _IndexRingSize : 64 * 1024 * 1024u;
-		while (newSize < size || newSize < required)
+		// Each frame has its own half: the previous frame may still be reading
+		// the indices it copied at the same offsets.
+		uint32 newSize = _IndexRingSize ? _IndexRingSize : 2 * 1024 * 1024u;
+		while (newSize < size * 2 || newSize <= _IndexRingSize)
 			newSize *= 2;
 		VkBufferCreateInfo bci;
 		memset(&bci, 0, sizeof(bci));
@@ -1080,7 +1237,9 @@ VkBuffer CDriverVulkan::getIndexUploadBuffer(const void *data, uint32 size, uint
 		_IndexRingMemory = memory;
 		_IndexRingMapped = mapped;
 		_IndexRingSize = newSize;
-		_IndexRingOffset = 0;
+		_IndexRingHalf = newSize / 2;
+		_IndexRingFrameBase = _FrameIndex * _IndexRingHalf;
+		_IndexRingOffset = _IndexRingFrameBase;
 		nlinfo("Vulkan: index ring grown to %u bytes", newSize);
 	}
 	// Always 4-byte align: 16- and 32-bit index draws share this ring, and
@@ -1137,7 +1296,15 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 		{
 			bool allUploaded = false;
 			if (setupTextureEx(*texture, true, allUploaded, false))
+			{
 				_StageTextures[stage] = getTextureVulkan(*texture);
+				if (_UsedTextureMemorySumEnabled)
+				{
+					CTextureDrvInfosVulkan *info = findTextureDrvInfos(*texture);
+					if (info)
+						_TextureUsed.insert(info);
+				}
+			}
 		}
 	}
 	_TexturesDirty = true;
@@ -1164,6 +1331,12 @@ sint CDriverVulkan::beginMaterialMultiPass()
 		return 1;
 
 	computeLightMapInfos(*_CurrentMaterial);
+	if (!_LightMapLogged)
+	{
+		_LightMapLogged = true;
+		nlinfo("Vulkan: LightMap mega path active: %u lightmaps in %u pass(es), %u per pass",
+			_NLightMaps, _NLightMapPass, _NLightMapPerPass);
+	}
 	memcpy(_BaseStageTextures, _StageTextures, sizeof(_BaseStageTextures));
 	_MegaMultiPassActive = true;
 	return (sint)std::max(_NLightMapPass, (uint)1);
@@ -1486,7 +1659,7 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 
 	// Upload into the per-frame uniform ring.
 	const uint32 slot = (sizeof(u) + 15) & ~15u;
-	if (_UniformRingOffset + slot > _UniformRingSize)
+	if (_UniformRingOffset + slot > _UniformRingFrameBase + _UniformRingHalf)
 	{
 		if (!growUniformRing(slot))
 			return false;
@@ -1559,7 +1732,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 		return false;
 
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
-	if (!info || !info->_VertexBuffer)
+	if (!info || !info->currentBuffer())
 		return false;
 
 	CPipelineKey key;
@@ -1597,9 +1770,11 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 			return false;
 	}
 
-	VkDeviceSize offset = 0;
-	vkCmdBindVertexBuffers(cmd, 0, 1, &info->_VertexBuffer, &offset);
+	VkDeviceSize offset = info->currentOffset();
+	VkBuffer vb = info->currentBuffer();
+	vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 	vkCmdDraw(cmd, count, 1, firstVertex, 0);
+	info->_Drawn = true;
 	++_ArrayDrawCount;
 	return true;
 }
@@ -1614,7 +1789,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	const uint64 statsStart = _StatsEnabled ? nowNs() : 0;
 
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
-	if (!info || !info->_VertexBuffer)
+	if (!info || !info->currentBuffer())
 		return false;
 
 	uint32 bytes = count * indexStride;
@@ -1671,11 +1846,13 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 			return false;
 	}
 
-	VkDeviceSize offset = 0;
-	vkCmdBindVertexBuffers(cmd, 0, 1, &info->_VertexBuffer, &offset);
+	VkDeviceSize offset = info->currentOffset();
+	VkBuffer vb = info->currentBuffer();
+	vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 	vkCmdBindIndexBuffer(cmd, indexBuffer, _IndexRingDrawOffset,
 		indexStride == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
 	vkCmdDrawIndexed(cmd, count, 1, 0, 0, 0);
+	info->_Drawn = true;
 	++_IndexedDrawCount;
 	if (_StatsEnabled)
 	{
@@ -1823,7 +2000,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 	if (!_FrameOpen && !beginFrame())
 		return false;
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
-	if (!info || !info->_VertexBuffer)
+	if (!info || !info->currentBuffer())
 		return false;
 
 	sint passes = beginMaterialMultiPass();
@@ -1887,9 +2064,11 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 					break;
 				}
 			}
-			VkDeviceSize offset = 0;
-			vkCmdBindVertexBuffers(cmd, 0, 1, &info->_VertexBuffer, &offset);
+			VkDeviceSize offset = info->currentOffset();
+			VkBuffer vb = info->currentBuffer();
+			vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 			vkCmdBindIndexBuffer(cmd, indexBuffer, _IndexRingDrawOffset, VK_INDEX_TYPE_UINT16);
+			info->_Drawn = true;
 
 			// The quad index pattern addresses vertices relative to the batch start.
 			sint32 firstVertex = (sint32)(startVertex + base);

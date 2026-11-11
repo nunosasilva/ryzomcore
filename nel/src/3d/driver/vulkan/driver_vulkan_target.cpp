@@ -292,11 +292,19 @@ bool CDriverVulkan::ensureRenderTarget(ITexture &tex, CTextureVulkan &target)
 		// The texture was set up before it was flagged as a render target, or
 		// it changed size: its image has no colour-attachment usage, so it has
 		// to be recreated. Whatever it held is replaced by rendered pixels.
-		destroyTexture(target);
 		VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
 			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-		if (!createTextureImage(width, height, 1, usage, target))
+		CTextureVulkan created;
+		if (!createTextureImage(width, height, 1, usage, NL_VK_TEXTURE_FORMAT, created))
 			return false;
+		CTextureDrvInfosVulkan *info = findTextureDrvInfos(tex);
+		if (info)
+			setTextureImage(*info, created);
+		else
+		{
+			destroyTexture(target);
+			target = created;
+		}
 		target.HasAlpha = true;
 		target.SourceFormat = tex.getPixelFormat();
 		nldebug("Vulkan: render target %ux%u created", width, height);

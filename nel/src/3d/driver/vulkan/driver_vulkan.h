@@ -41,6 +41,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -111,10 +112,33 @@ public:
 	void	ensureCapacity(uint32 size);
 	uint8	*lock(uint begin, uint end, bool readOnly);
 	void	unlock(uint begin, uint end);
+	/// Buffer and offset the current frame's vertices are in. Dynamic buffers
+	/// point into the driver's per-frame vertex ring, static ones at their own
+	/// VkBuffer.
+	VkBuffer	currentBuffer() const { return _DrawBuffer; }
+	uint32		currentOffset() const { return _DrawOffset; }
 
-	VkBuffer	_VertexBuffer;
-	VkDeviceMemory	_Memory;
-	void		*_Mapped;
+	/// One buffer per frame in flight for buffers the CPU rewrites in full but
+	/// not necessarily every frame (skinning, water geometry). Static buffers
+	/// use a single one.
+	static const uint	MaxSlots = 2;
+	/// True for buffers whose contents are undefined after swapBuffers
+	/// (FullStream / SmallStream): their data goes to the per-frame vertex
+	/// ring, so every lock gets its own storage and neither an earlier draw of
+	/// this frame nor a previous frame can see a later write.
+	bool		_Dynamic;
+	VkBuffer	_VertexBuffer[MaxSlots];
+	VkDeviceMemory	_Memory[MaxSlots];
+	void		*_Mapped[MaxSlots];
+	uint32		_SlotCount;
+	uint32		_Slot;
+	uint64		_SlotFrame[MaxSlots];
+	uint64		_LockFrame;
+	/// True once a draw used the current slot: the next full rewrite must go
+	/// to another copy, or the recorded draw would read the new vertices.
+	bool		_Drawn;
+	VkBuffer	_DrawBuffer;
+	uint32		_DrawOffset;
 	uint32		_Size;
 };
 
@@ -122,12 +146,15 @@ public:
 struct CTextureVulkan
 {
 	CTextureVulkan()
-		: Image(VK_NULL_HANDLE), Memory(VK_NULL_HANDLE), View(VK_NULL_HANDLE), Sampler(VK_NULL_HANDLE)
-		, Framebuffer(VK_NULL_HANDLE), Width(0), Height(0), Layers(1), HasAlpha(false), Uploaded(false)
-		, SourceFormat(CBitmap::DonTKnow), Usage(0), Layout(VK_IMAGE_LAYOUT_UNDEFINED), DepthTarget(-1) {}
+		: Image(VK_NULL_HANDLE), Memory(VK_NULL_HANDLE), MemorySize(0), View(VK_NULL_HANDLE), Sampler(VK_NULL_HANDLE)
+		, Framebuffer(VK_NULL_HANDLE), Width(0), Height(0), MipLevels(1), Layers(1), HasAlpha(false), Uploaded(false)
+		, Compressed(false), SourceFormat(CBitmap::DonTKnow), Format(VK_FORMAT_UNDEFINED), Usage(0)
+		, Layout(VK_IMAGE_LAYOUT_UNDEFINED), DepthTarget(-1) {}
 
 	VkImage			Image;
 	VkDeviceMemory	Memory;
+	/// Bytes allocated for Memory, from VkMemoryRequirements.
+	VkDeviceSize	MemorySize;
 	VkImageView		View;
 	VkSampler		Sampler;
 	/// Created when the texture is used as a render target, so that one image
@@ -136,10 +163,19 @@ struct CTextureVulkan
 	VkFramebuffer	Framebuffer;
 	uint32			Width;
 	uint32			Height;
+	/// Number of mip levels the image was created with.
+	uint32			MipLevels;
 	uint32			Layers;
 	bool			HasAlpha;
 	bool			Uploaded;
+	/// True when the pixels are kept compressed (DXTC uploaded as a BC
+	/// format), which makes the driver keep the texture bitmap compressed and
+	/// upload raw blocks instead of converting every texel to RGBA.
+	bool			Compressed;
 	CBitmap::TType	SourceFormat;
+	/// VkFormat of Image: NL_VK_TEXTURE_FORMAT for uncompressed textures,
+	/// the matching BC format for compressed ones.
+	VkFormat		Format;
 	/// Usage flags the image was created with; render targets need
 	/// COLOR_ATTACHMENT usage and are recreated if they were created without.
 	VkImageUsageFlags	Usage;
@@ -149,6 +185,28 @@ struct CTextureVulkan
 	/// Index in CDriverVulkan::_DepthTargets of the depth/stencil attachment
 	/// shared with the other targets of this size (-1 when not a target).
 	sint32			DepthTarget;
+};
+
+/// Driver-side data of one NeL texture. Owned by the texture's
+/// ITexture::TextureDrvShare, so it lives exactly as long as an ITexture points
+/// at it: when the engine frees a texture, the image is destroyed instead of
+/// staying in the driver for the whole session. Textures that use the engine
+/// sharing system (CTextureFile with sharing on, cube textures) share one
+/// instance through the driver's name map, like the GL and GL3 drivers do.
+class CTextureDrvInfosVulkan : public ITextureDrvInfos
+{
+public:
+	CTextureDrvInfosVulkan(IDriver *drv, ItTexDrvInfoPtrMap it, CDriverVulkan *driver)
+		: ITextureDrvInfos(drv, it), _Driver(driver), TextureMemory(0) {}
+	~CTextureDrvInfosVulkan() NL_OVERRIDE;
+
+	/// For Debug info. Return the memory cost of this texture.
+	uint getTextureMemoryUsed() const NL_OVERRIDE { return TextureMemory; }
+
+	CDriverVulkan			*_Driver;
+	CTextureVulkan			Texture;
+	/// Device memory used by Texture (sum of all mip levels).
+	uint32					TextureMemory;
 };
 
 /// Depth/stencil attachment shared by every offscreen target of a given size,
@@ -674,11 +732,23 @@ private:
 	bool					compileInsertVertexProgram(CVertexProgram *program, IProgram::CSource *insertSrc);
 
 	// --- Textures (driver_vulkan_texture.cpp) ---
+	/// Driver data of `tex`, created (and registered in the share-name map for
+	/// shared textures) on first use.
+	CTextureDrvInfosVulkan	*getTextureDrvInfos(ITexture &tex, bool *created = NULL);
+	/// Same, but only returns an existing entry (NULL when the texture has
+	/// never been set up).
+	CTextureDrvInfosVulkan	*findTextureDrvInfos(const ITexture &tex) const;
 	CTextureVulkan			*getTextureVulkan(ITexture &tex);
 	bool					uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool upload);
 	bool					createTextureImage(uint32 width, uint32 height, uint mipCount,
-								VkImageUsageFlags usage, CTextureVulkan &out);
+								VkImageUsageFlags usage, VkFormat format, CTextureVulkan &out);
+	/// VkFormat for a DXTC bitmap, or VK_FORMAT_UNDEFINED when the texture is
+	/// not compressed (or the device has no BC support).
+	VkFormat				compressedTextureFormat(CBitmap::TType format) const;
 	void					destroyTexture(CTextureVulkan &tex);
+	/// Install a freshly uploaded image in `info`, retiring the previous one
+	/// and keeping the texture-memory counter in sync.
+	void					setTextureImage(CTextureDrvInfosVulkan &info, CTextureVulkan &created);
 	VkImageView				getWhiteTexture();
 
 	// --- Cached Vulkan render objects ---
@@ -693,6 +763,13 @@ private:
 	VkShaderModule				_FragmentShader;
 	VkSampler					_DefaultSampler;
 	CTextureVulkan				_WhiteTexture;
+	/// True when the device supports BC (DXTC) compressed sampled images.
+	bool						_SupportsBC;
+	/// Device memory of every live texture, for texture profiling and the
+	/// driver's used-memory counter.
+	uint64						_AllocatedTextureMemory;
+	std::set<CTextureDrvInfosVulkan *>	_TextureUsed;
+	bool						_UsedTextureMemorySumEnabled;
 
 	// --- Mega shader resources ---
 	bool						_MegaEnabled;
@@ -737,6 +814,8 @@ private:
 	// pass, with stages 0..N-2 holding the pass' lightmaps and stage N-1 the
 	// material texture.
 	bool						_MegaMultiPassActive;
+	/// One-shot diagnostic: the mega path renders a LightMap material.
+	bool						_LightMapLogged;
 	CTextureVulkan				*_BaseStageTextures[IDRV_PROGRAM_MAXSAMPLERS];
 	uint						_NLightMaps;
 	uint						_LightMapLUT[NL_VK_MAX_LIGHTMAP];
@@ -750,7 +829,6 @@ private:
 	bool						_MegaPassZeroLightFactors;
 	bool						_MegaPassFogBlack;
 
-	std::map<ITexture *, CTextureVulkan>	_TexturesVulkan;
 	/// Textures retired during the given swap-buffer frame. They are freed once
 	/// every frame that can reference them is known to be finished, three frame
 	/// slots later, without a device-wide wait (see beginFrame()).
@@ -842,6 +920,12 @@ private:
 	void					*_UniformRingMapped;
 	uint32					_UniformRingSize;
 	uint32					_UniformRingOffset;
+	/// Each frame writes into its own half of the ring: the previous frame can
+	/// still be executing (and reading its descriptor blocks) while the next
+	/// one is recorded. Without this, a draw of frame N would read the uniform
+	/// block frame N+1 just wrote at the same offset.
+	uint32					_UniformRingFrameBase;
+	uint32					_UniformRingHalf;
 
 	// Light state tracked from the IDriver calls.
 	struct SLightState
@@ -864,12 +948,24 @@ private:
 	CRGBA					_ObjectAmbient;
 	CRGBA					_AmbientColor;
 
+	/// Per-frame vertex upload ring for dynamic vertex buffers. Same layout
+	/// and lifetime rules as the index ring below.
+	VkBuffer				_VertexRing;
+	VkDeviceMemory			_VertexRingMemory;
+	void					*_VertexRingMapped;
+	uint32					_VertexRingSize;
+	uint32					_VertexRingOffset;
+	uint32					_VertexRingFrameBase;
+	uint32					_VertexRingHalf;
 	VkBuffer				_IndexRing;
 	VkDeviceMemory			_IndexRingMemory;
 	void					*_IndexRingMapped;
 	uint32					_IndexRingSize;
 	uint32					_IndexRingOffset;
 	uint32					_IndexRingDrawOffset;
+	/// Per-frame halves, same reason as the uniform ring.
+	uint32					_IndexRingFrameBase;
+	uint32					_IndexRingHalf;
 
 	// --- Cached draw state ---
 	CMatrix					_GLProjMat;
@@ -910,8 +1006,15 @@ public:
 	void					releaseUserVPShader(uint32 id);
 	/// Release a user PP shader module and forget its cache entry.
 	void					releaseUserPPShader(uint32 id);
+	/// Destroy the Vulkan objects of a texture whose last ITexture is gone.
+	void					releaseTextureDrvInfo(CTextureDrvInfosVulkan &info);
 
 	uint32					findMemoryType(uint32 typeBits, VkMemoryPropertyFlags props) const;
+	/// Reserve `size` bytes in the current frame's vertex ring (4-byte aligned)
+	/// and return the offset, or 0xFFFFFFFF when the ring could not grow.
+	uint32					allocVertexRing(uint32 size);
+	VkBuffer				vertexRingBuffer() const { return _VertexRing; }
+	void					*vertexRingMapped() const { return _VertexRingMapped; }
 };
 
 } /* namespace NLVULKAN */
