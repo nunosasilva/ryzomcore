@@ -85,15 +85,20 @@ bool CDriverVulkan::canUseMegaPath(bool &cube)
 	}
 
 	// The mega pixel program declares sampler1 as samplerCube for the Specular
-	// material and every other sampler as sampler2D. Cube textures are not
-	// uploaded as cube images yet (uploadTextureCube() is still a stub), so a
-	// cube here would bind a 2D view to a samplerCube and trip validation;
-	// keep those materials on the simple path until cube uploads exist.
+	// reflection stage and every other sampler as sampler2D. A cube texture on
+	// another stage has no pixel-program variant, so it still falls back to the
+	// simple path (which binds it as a 2D fallback, see commitPushConstants).
 	for (uint stage = 0; stage < IDRV_MAT_MAXTEXTURES; ++stage)
 	{
 		ITexture *tex = _CurrentMaterial->getTexture(stage);
 		if (tex && tex->isTextureCube())
-			return false;
+		{
+			// A non-square cube was uploaded from its first face as a plain 2D
+			// texture (see uploadTextureCubeVulkan), so it is not a cube image.
+			if (stage != 1 || !_StageTextures[1] || !_StageTextures[1]->Cube)
+				return false;
+			cube = true;
+		}
 	}
 	return true;
 }
@@ -109,11 +114,15 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 	const bool materialOk = canUseMegaPath(cube);
 	// The mega path is used for every draw when NLVK_MEGA=1 selects it, for
 	// the draws of an active user vertex program, and for a user pixel program
-	// (it needs the mega descriptor layout for its UBO and samplers). The
-	// three cases share the descriptor layout and pipeline.
+	// (it needs the mega descriptor layout for its UBO and samplers). Cube
+	// textures and Specular materials also require it: the simple shader has
+	// neither a samplerCube nor the Specular blend equation, and applying the
+	// material's texenv to a Specular reflection mask would zero the alpha and
+	// make alpha-tested materials (the Karavan tents) disappear.
 	const bool userVP = hasActiveUserVPS();
 	const bool userPP = _ActiveUserPP != NULL;
-	if (materialOk && (_MegaEnabled || userVP || userPP))
+	const bool specular = _CurrentMaterial && _CurrentMaterial->getShader() == CMaterial::Specular;
+	if (materialOk && (_MegaEnabled || userVP || userPP || cube || specular))
 	{
 		key.Mega = 1;
 		key.MegaCube = cube ? 1 : 0;
@@ -817,13 +826,22 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 			_ActiveUserVP->DisplayName.c_str(), vb.getVertexFormat(),
 			(int)_CurrentMaterial->getShader(), (void *)_StageTextures[0]);
 	}
+	// Stage 1 is declared samplerCube by the mega pixel program when the
+	// material's reflection texture is a cube map: a missing image there needs
+	// a cube view, not the white 2D fallback.
+	ITexture *stage1Tex = _CurrentMaterial->getTexture(1);
+	const bool cubeStage1 = stage1Tex && stage1Tex->isTextureCube() &&
+		_StageTextures[1] && _StageTextures[1]->Cube;
 	VkDescriptorImageInfo imageInfos[NL_VK_MEGA_SAMPLER_COUNT];
 	for (uint stage = 0; stage < NL_VK_MEGA_SAMPLER_COUNT; ++stage)
 	{
 		CTextureVulkan *tex = _StageTextures[stage];
 		imageInfos[stage].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		imageInfos[stage].imageView = tex ? tex->View : getWhiteTexture();
-		imageInfos[stage].sampler = tex ? tex->Sampler : _WhiteTexture.Sampler;
+		const bool cubeStage = cubeStage1 && stage == 1;
+		if (!tex && cubeStage && getWhiteCubeTexture() == VK_NULL_HANDLE)
+			return false;
+		imageInfos[stage].imageView = tex ? tex->View : (cubeStage ? _WhiteCubeTexture.View : getWhiteTexture());
+		imageInfos[stage].sampler = tex ? tex->Sampler : (cubeStage ? _WhiteCubeTexture.Sampler : _WhiteTexture.Sampler);
 	}
 
 	VkDescriptorSetAllocateInfo dsai;

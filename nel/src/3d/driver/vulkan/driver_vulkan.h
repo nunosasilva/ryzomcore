@@ -156,7 +156,7 @@ struct CTextureVulkan
 {
 	CTextureVulkan()
 		: Image(VK_NULL_HANDLE), Memory(VK_NULL_HANDLE), MemorySize(0), View(VK_NULL_HANDLE), Sampler(VK_NULL_HANDLE)
-		, Framebuffer(VK_NULL_HANDLE), Width(0), Height(0), MipLevels(1), Layers(1), HasAlpha(false), Uploaded(false)
+		, Framebuffer(VK_NULL_HANDLE), Width(0), Height(0), MipLevels(1), Layers(1), Cube(false), HasAlpha(false), Uploaded(false)
 		, Compressed(false), CompressFromRGBA(false), SourceFormat(CBitmap::DonTKnow), Format(VK_FORMAT_UNDEFINED), Usage(0)
 		, Layout(VK_IMAGE_LAYOUT_UNDEFINED), DepthTarget(-1) {}
 
@@ -175,6 +175,9 @@ struct CTextureVulkan
 	/// Number of mip levels the image was created with.
 	uint32			MipLevels;
 	uint32			Layers;
+	/// True for a cube map uploaded as a VK_IMAGE_VIEW_TYPE_CUBE image with
+	/// six array layers. Cube textures are only sampled by the mega path.
+	bool			Cube;
 	bool			HasAlpha;
 	bool			Uploaded;
 	/// True when the pixels are kept compressed (DXTC uploaded as a BC
@@ -830,8 +833,12 @@ private:
 	CTextureDrvInfosVulkan	*findTextureDrvInfos(const ITexture &tex) const;
 	CTextureVulkan			*getTextureVulkan(ITexture &tex);
 	bool					uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool upload);
+	/// Upload all six faces of a CTextureCube into one cube image. The mega
+	/// pixel program samples stage 1 of a Specular material as a cube map.
+	bool					uploadTextureCubeVulkan(ITexture &tex, CTextureVulkan &out);
 	bool					createTextureImage(uint32 width, uint32 height, uint mipCount,
-								VkImageUsageFlags usage, VkFormat format, CTextureVulkan &out);
+								VkImageUsageFlags usage, VkFormat format, CTextureVulkan &out,
+								uint32 layers = 1, bool cube = false);
 	/// VkFormat for a DXTC bitmap, or VK_FORMAT_UNDEFINED when the texture is
 	/// not compressed (or the device has no BC support).
 	VkFormat				compressedTextureFormat(CBitmap::TType format) const;
@@ -840,6 +847,9 @@ private:
 	/// and keeping the texture-memory counter in sync.
 	void					setTextureImage(CTextureDrvInfosVulkan &info, CTextureVulkan &created);
 	VkImageView				getWhiteTexture();
+	/// 1x1 white cube, bound in place of a cube-map stage that has no image so
+	/// that the samplerCube descriptor stays valid (mega cube variant).
+	VkImageView				getWhiteCubeTexture();
 
 	// --- Cached Vulkan render objects ---
 	std::map<CPipelineKey, CPipelineVulkan>	_PipelineCache;
@@ -853,6 +863,7 @@ private:
 	VkShaderModule				_FragmentShader;
 	VkSampler					_DefaultSampler;
 	CTextureVulkan				_WhiteTexture;
+	CTextureVulkan				_WhiteCubeTexture;
 	/// True when the device supports BC (DXTC) compressed sampled images.
 	bool						_SupportsBC;
 	/// Device memory of every live texture, for texture profiling and the
@@ -956,11 +967,16 @@ private:
 	{
 		STextureCopy()
 			: Image(VK_NULL_HANDLE), OldLayout(VK_IMAGE_LAYOUT_UNDEFINED), BaseLevel(0), LevelCount(1)
-			, Staging(VK_NULL_HANDLE), StagingBytes(0), RegionCount(0) {}
+			, BaseLayer(0), LayerCount(1), Staging(VK_NULL_HANDLE), StagingBytes(0), RegionCount(0) {}
 		VkImage			Image;
 		VkImageLayout	OldLayout;
 		uint32			BaseLevel;
 		uint32			LevelCount;
+		/// Array layers covered by the layout transitions. The copy regions
+		/// carry their own baseArrayLayer; a cube upload sets LayerCount=6 so
+		/// every face is transitioned before the copy.
+		uint32			BaseLayer;
+		uint32			LayerCount;
 		VkBuffer		Staging;
 		/// Bytes copied out of Staging (0 for a layout-only transition).
 		VkDeviceSize	StagingBytes;

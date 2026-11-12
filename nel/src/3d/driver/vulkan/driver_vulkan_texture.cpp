@@ -160,7 +160,7 @@ CTextureDrvInfosVulkan::~CTextureDrvInfosVulkan()
 /// flags (render targets add COLOR_ATTACHMENT) and the format (compressed
 /// textures keep their BC format, everything else is RGBA8).
 bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCount,
-	VkImageUsageFlags usage, VkFormat format, CTextureVulkan &out)
+	VkImageUsageFlags usage, VkFormat format, CTextureVulkan &out, uint32 layers, bool cube)
 {
 	VkImageCreateInfo ici;
 	memset(&ici, 0, sizeof(ici));
@@ -170,7 +170,8 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 	ici.extent.height = height;
 	ici.extent.depth = 1;
 	ici.mipLevels = mipCount;
-	ici.arrayLayers = 1;
+	ici.arrayLayers = layers;
+	ici.flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
 	ici.format = format;
 	ici.tiling = VK_IMAGE_TILING_OPTIMAL;
 	ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -197,11 +198,11 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 	memset(&vci, 0, sizeof(vci));
 	vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	vci.image = out.Image;
-	vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	vci.viewType = cube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D;
 	vci.format = format;
 	vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	vci.subresourceRange.levelCount = mipCount;
-	vci.subresourceRange.layerCount = 1;
+	vci.subresourceRange.layerCount = layers;
 	if (vkCreateImageView(_Device, &vci, NULL, &out.View) != VK_SUCCESS)
 		return false;
 
@@ -213,14 +214,16 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 	sci.mipmapMode = mipCount > 1 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
 	sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	// Cube faces must not wrap into each other.
+	sci.addressModeW = cube ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	sci.maxLod = (float)mipCount;
 	vkCreateSampler(_Device, &sci, NULL, &out.Sampler);
 
 	out.Width = width;
 	out.Height = height;
 	out.MipLevels = mipCount;
-	out.Layers = 1;
+	out.Layers = layers;
+	out.Cube = cube;
 	out.Usage = usage;
 	out.Format = format;
 	out.Layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -344,6 +347,49 @@ VkImageView CDriverVulkan::getWhiteTexture()
 		vkFreeMemory(_Device, stagingMemory, NULL);
 	}
 	return _WhiteTexture.View;
+}
+
+VkImageView CDriverVulkan::getWhiteCubeTexture()
+{
+	if (_WhiteCubeTexture.Image != VK_NULL_HANDLE)
+		return _WhiteCubeTexture.View;
+	const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	if (!createTextureImage(1, 1, 1, usage, NL_VK_TEXTURE_FORMAT, _WhiteCubeTexture, 6, true))
+		return VK_NULL_HANDLE;
+
+	STextureStaging staging;
+	if (!allocTextureStaging(6 * 4, staging))
+		return VK_NULL_HANDLE;
+	for (uint i = 0; i < 6; ++i)
+		memset((uint8 *)staging.Mapped + i * 4, 255, 4);
+
+	STextureCopy copy;
+	copy.Image = _WhiteCubeTexture.Image;
+	copy.OldLayout = _WhiteCubeTexture.Layout;
+	copy.BaseLevel = 0;
+	copy.LevelCount = 1;
+	copy.BaseLayer = 0;
+	copy.LayerCount = 6;
+	copy.Staging = staging.Buffer;
+	copy.StagingBytes = 6 * 4;
+	for (uint i = 0; i < 6; ++i)
+	{
+		VkBufferImageCopy &region = copy.Regions[copy.RegionCount];
+		memset(&region, 0, sizeof(region));
+		region.bufferOffset = staging.Offset + i * 4;
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.baseArrayLayer = i;
+		region.imageSubresource.layerCount = 1;
+		region.imageExtent.width = 1;
+		region.imageExtent.height = 1;
+		region.imageExtent.depth = 1;
+		++copy.RegionCount;
+	}
+	if (!recordTextureCopy(copy))
+		return VK_NULL_HANDLE;
+	_WhiteCubeTexture.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	_WhiteCubeTexture.Uploaded = true;
+	return _WhiteCubeTexture.View;
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +657,11 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	const bool renderTarget = tex.getRenderTarget();
 	if (!renderTarget)
 		tex.generate();
+
+	// Cube maps are six face textures, not a bitmap on the ITexture itself:
+	// they need a cube image and a face-by-face upload.
+	if (!renderTarget && tex.isTextureCube())
+		return uploadTextureCubeVulkan(tex, out);
 
 	uint width = tex.getWidth();
 	uint height = tex.getHeight();
@@ -906,7 +957,8 @@ bool CDriverVulkan::recordTextureCopy(const STextureCopy &copy)
 	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	barrier.subresourceRange.baseMipLevel = copy.BaseLevel;
 	barrier.subresourceRange.levelCount = copy.LevelCount;
-	barrier.subresourceRange.layerCount = 1;
+	barrier.subresourceRange.baseArrayLayer = copy.BaseLayer;
+	barrier.subresourceRange.layerCount = copy.LayerCount;
 	barrier.srcAccessMask = copy.OldLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0
 		: (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
 	barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -940,6 +992,127 @@ bool CDriverVulkan::recordTextureCopy(const STextureCopy &copy)
 	++_StatsTextureCopies;
 	_StatsUploadBytes += (uint64)copy.StagingBytes;
 	++_UploadCopyCount;
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Cube maps
+// ---------------------------------------------------------------------------
+
+/// Copy one face of a CTextureCube to tightly packed RGBA8, applying the same
+/// face orientation fixes as the GL3 driver's cube upload: Vulkan and GL agree
+/// on the cube layout, so the flips that adapt NeL's face bitmaps are the same.
+static bool copyCubeFaceRGBA(ITexture &face, bool flipH, bool flipV, uint8 *dst, uint32 width, uint32 height)
+{
+	if (face.getWidth() < width || face.getHeight() < height)
+		return false;
+	if (!prepareTexturePixels(face))
+		return false;
+	const uint8 *src = (const uint8 *)face.getPixels(0).getPtr();
+	if (!src)
+		return false;
+	const uint32 srcWidth = face.getWidth();
+	for (uint32 y = 0; y < height; ++y)
+	{
+		const uint32 sy = flipV ? (height - 1 - y) : y;
+		const uint8 *row = src + (size_t)sy * srcWidth * 4;
+		uint8 *out = dst + (size_t)y * width * 4;
+		for (uint32 x = 0; x < width; ++x)
+		{
+			const uint32 sx = flipH ? (width - 1 - x) : x;
+			memcpy(out + (size_t)x * 4, row + (size_t)sx * 4, 4);
+		}
+	}
+	return true;
+}
+
+bool CDriverVulkan::uploadTextureCubeVulkan(ITexture &tex, CTextureVulkan &out)
+{
+	CTextureCube *cube = dynamic_cast<CTextureCube *>(&tex);
+	if (!cube)
+		return false;
+
+	ITexture *firstFace = NULL;
+	for (uint i = 0; i < 6; ++i)
+	{
+		firstFace = cube->getTexture((CTextureCube::TFace)i);
+		if (firstFace)
+			break;
+	}
+	if (!firstFace)
+		return false;
+	const uint32 width = firstFace->getWidth();
+	const uint32 height = firstFace->getHeight();
+	if (width == 0 || height == 0)
+		return false;
+
+	// Vulkan requires square cube faces. A few engine cube textures (generated
+	// character specular maps) have non-square faces; they cannot be a cube
+	// image, so upload the first face as a plain 2D texture. The material then
+	// stays on the simple path and samples it as a sphere map, which is what a
+	// 2D fallback can do.
+	if (width != height)
+	{
+		nldebug("Vulkan: cube texture with non-square faces %ux%u, using face 0 as 2D", width, height);
+		return uploadTextureVulkan(*firstFace, out, true);
+	}
+
+	// Reflection cube maps are sampled at the top mip only; keeping one mip
+	// also keeps the upload self-contained per face.
+	const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+		VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	if (!createTextureImage(width, height, 1, usage, NL_VK_TEXTURE_FORMAT, out, 6, true))
+		return false;
+
+	const VkDeviceSize faceBytes = (VkDeviceSize)width * height * 4;
+	STextureStaging staging;
+	if (!allocTextureStaging(faceBytes * 6, staging))
+		return false;
+
+	STextureCopy copy;
+	copy.Image = out.Image;
+	copy.OldLayout = out.Layout;
+	copy.BaseLevel = 0;
+	copy.LevelCount = 1;
+	copy.BaseLayer = 0;
+	copy.LayerCount = 6;
+	copy.Staging = staging.Buffer;
+	copy.StagingBytes = faceBytes * 6;
+
+	uint8 *dst = (uint8 *)staging.Mapped;
+	for (uint i = 0; i < 6; ++i)
+	{
+		const bool flipH = i == CTextureCube::positive_x || i == CTextureCube::negative_x ||
+			i == CTextureCube::positive_y || i == CTextureCube::negative_y;
+		const bool flipV = i == CTextureCube::positive_z || i == CTextureCube::negative_z;
+		ITexture *face = cube->getTexture((CTextureCube::TFace)i);
+		if (face)
+			copyCubeFaceRGBA(*face, flipH, flipV, dst + faceBytes * i, width, height);
+		else
+			memset(dst + faceBytes * i, 0, (size_t)faceBytes);
+
+		VkBufferImageCopy &region = copy.Regions[copy.RegionCount];
+		memset(&region, 0, sizeof(region));
+		region.bufferOffset = staging.Offset + faceBytes * i;
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.mipLevel = 0;
+		region.imageSubresource.baseArrayLayer = i;
+		region.imageSubresource.layerCount = 1;
+		region.imageExtent.width = width;
+		region.imageExtent.height = height;
+		region.imageExtent.depth = 1;
+		++copy.RegionCount;
+	}
+
+	const bool recorded = recordTextureCopy(copy);
+	if (staging.Dedicated != VK_NULL_HANDLE)
+		deferDestroyBuffer(staging.Buffer, staging.Dedicated);
+	if (!recorded)
+		return false;
+
+	out.SourceFormat = firstFace->getPixelFormat();
+	out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	out.Uploaded = true;
 	return true;
 }
 
