@@ -2726,3 +2726,10 @@ the official client uses the same data). Agent `vulkan-karavan` (mats006,
 worktree `f1fb99/vulkan-karavan`, base `caa64f610`) is reproducing, identifying
 the material/shader/texture/vertex-program path used by those buildings and
 fixing it, with GL3/official comparisons.
+
+## Game UI keys that obscure the screen (agent note)
+
+`m` opens the map, `i` the inventory and `u` the configuration window; the same
+key closes them. They cover the world and ruin comparison screenshots, so
+agents must not leave them open (press the key again, and check the client
+shows the world before capturing).
