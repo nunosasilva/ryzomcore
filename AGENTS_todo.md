@@ -2715,3 +2715,14 @@ removed (-12%)**, ~0.9-1.3 ms of wall time.
 3. `CWidgetManager::getWindowUnder` (0.6%) runs hit-testing every frame even
    when the mouse has not moved; cache by pointer position + UI generation.
 4. Descriptor caching stays rejected (measured a wash, see above).
+
+## Bug: Karavan buildings invisible under Vulkan (in progress)
+
+At mats006 slot 1's saved position, the Karavan faction buildings are visible
+with the official client but under Vulkan only the yellow horizontal bars show;
+other building types are fine. The console also prints missing
+`ma_sky_dome_gradient_fair.tga` and `63_*.zonel` warnings (probably unrelated;
+the official client uses the same data). Agent `vulkan-karavan` (mats006,
+worktree `f1fb99/vulkan-karavan`, base `caa64f610`) is reproducing, identifying
+the material/shader/texture/vertex-program path used by those buildings and
+fixing it, with GL3/official comparisons.
