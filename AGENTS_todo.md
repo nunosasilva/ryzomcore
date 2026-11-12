@@ -2733,3 +2733,76 @@ fixing it, with GL3/official comparisons.
 key closes them. They cover the world and ruin comparison screenshots, so
 agents must not leave them open (press the key again, and check the client
 shows the world before capturing).
+
+## Karavan tents invisible (Specular + cube map) — `vulkan-karavan`
+
+_2026-11-12, branch `vulkan-karavan`, Debug build `build-vulkan`, account
+`mats006` slot 1 (the tutorial Karavan camp on Silan)._
+
+**Symptom.** At mats006 slot 1's saved view the three Karavan mission tents
+were invisible: only their yellow horizontal trim bands were drawn, floating in
+mid-air. Every other object in the view (ship wreck, trees, NPCs, terrain,
+UI) was fine.
+
+**Root cause.** The tents are `CMaterial::Specular` with:
+
+- stage 0 `ge_mission_tente_karavan.tga` (DXT5 512x512): its **alpha channel
+  is the reflection mask**, not coverage (60% of the texels have alpha 0; only
+  the golden band is opaque);
+- stage 1 a `CTextureCube` reflection map (`spec_caravan.tga`);
+- `IDRV_MAT_ALPHA_TEST` with threshold 0.5.
+
+The Vulkan *simple* shader applied the material's TexEnv chain to `Specular`
+(tex0 * tex1, alpha = tex0.a * tex1.a * vColor.a), so the fabric's alpha became
+0 and the alpha test discarded it. Only the gold band (opaque alpha) survived.
+GL2's Specular setup forces the stage alpha to the material/primary colour, and
+the GL3 mega pixel shader keeps `fragColor.a`, so both pass the test.
+
+The **mega** path already had the correct Specular branch, but
+`canUseMegaPath()` rejected any material with a cube texture because
+`uploadTextureCube()` was a stub. So even `NLVK_MEGA=1` silently fell back to
+the broken simple path — that is why the mega A/B did not hide/show the tents.
+
+**How it was found.** A temporary `NLVK_TRACE_MAT` trace (removed before the
+commit) of frame 1500 listed three draws (d=80..82) with `shader=Specular,
+mflags=0x2214, at=1 ref=0.5`, stage0 `ge_mission_tente_karavan.tga`, stage1
+`spec_caravan.tga` repeated six times (a cube). Extracting
+`ge_mission_tente_karavan.dds` from `objects.bnp` and reading its alpha showed
+the mask. `NLVK_TEX_FILTER=ge_mission_tente_karavan` (only the tents drawn)
+reproduced the bars on a black background. The official GL2 client and our GL3
+driver show the fabric, confirming a Vulkan-only simple-path bug.
+
+**Fix (commit `vulkan: cube maps + Specular on the mega path`).**
+
+- `driver_vulkan_texture.cpp`: `uploadTextureCubeVulkan()` uploads the six
+  `CTextureCube` faces into one `VK_IMAGE_VIEW_TYPE_CUBE` image (RGBA8,
+  top mip, the same per-face H/V orientation fixes as the GL3 upload), with a
+  1x1 white cube fallback; `createTextureImage()` takes `layers`/`cube`;
+  `STextureCopy` carries `BaseLayer`/`LayerCount` so the layout barriers cover
+  all six faces. Non-square cube faces (engine-generated character spec maps,
+  128x256) cannot be a Vulkan cube: they fall back to face 0 as a 2D texture,
+  which keeps the material on the simple path.
+- `driver_vulkan_mega_render.cpp`: `canUseMegaPath()` accepts a cube on
+  stage 1 and sets `cube=true`; `fillMegaPipelineKey()` uses the mega path for
+  cube-textured **and** `Specular` materials even without `NLVK_MEGA` (the
+  simple shader implements neither), and `bindMegaDescriptors()` binds the
+  white cube where a cube stage has no image.
+- `driver_vulkan_render.cpp`: the simple path binds the white 2D texture for a
+  cube stage it cannot sample (no samplerCube in the simple fragment shader).
+
+**Verification.**
+
+- Debug Vulkan, same spot: the three tents render with the green fabric and
+  gold bands, matching the official client (`vk-cube1/frame.ppm.1500.png`,
+  `vk-final/final.png`, official `official-gl2/last.png`, GL3 `gl3-fix3/last.png`).
+- `NLVK_VALIDATION=1`: only the pre-existing `vkCreateDevice` extension warning
+  and the gamescope `VkSwapchainPresentModeInfoKHR` VUIDs; no cube/sampler
+  errors (the first version had `VUID-VkImageCreateInfo-flags-08865` on the
+  non-square cubes and layer-transition errors, both fixed).
+- The optimized static binary (pre-fix, `ryzom_live_static_test`) reproduces
+  the bars-only symptom (`vk-static-before/before.png`); it needs a rebuild to
+  pick up the fix.
+
+**Left.** Rebuild the static/FINAL binary to ship the fix; cube maps are top
+mip only and always RGBA8 (no BC, no mips); non-square cubes use face 0 as a 2D
+sphere map.
