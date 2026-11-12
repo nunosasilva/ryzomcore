@@ -1755,6 +1755,11 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	for (uint stage = 0; stage < 4; ++stage)
 	{
 		CTextureVulkan *tex = _StageTextures[stage];
+		// The simple fragment shader declares every stage as sampler2D. A cube
+		// texture on a draw that the mega path cannot take (a non-stage-1 cube)
+		// would be an incompatible descriptor; bind the white 2D texture there.
+		if (tex && tex->Cube)
+			tex = NULL;
 		infos[stage].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		infos[stage].imageView = tex ? tex->View : getWhiteTexture();
 		infos[stage].sampler = tex ? tex->Sampler : _WhiteTexture.Sampler;
