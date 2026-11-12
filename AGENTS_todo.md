@@ -2806,3 +2806,17 @@ driver show the fabric, confirming a Vulkan-only simple-path bug.
 **Left.** Rebuild the static/FINAL binary to ship the fix; cube maps are top
 mip only and always RGBA8 (no BC, no mips); non-square cubes use face 0 as a 2D
 sphere map.
+
+## Bugs: Zora black screen (Medium+) and Vulkan cursor shape
+
+Two user reports, two agents:
+- `vulkan-zora-black` (mats006 slot 0, worktree `f1fb99/vulkan-zora-black`, base
+  `24a078312`): in Zora, with Landscape Preset Medium/Normal/High (not Low),
+  turning so the stables are behind the avatar makes the whole screen black,
+  UI included; turning back restores it. Likely a full-screen pass / bad
+  transform at the camera, or a render target not composited. Compare with GL3
+  and the official client, toggle shadows/bloom/FXAA/mega/VP.
+- `vulkan-cursor` (mats005, worktree `f1fb99/vulkan-cursor`): the resize cursor
+  near window corners does not change under Vulkan (it does under OpenGL); the
+  Vulkan driver has the cursor calls stubbed. Port/share the GL3 X11 cursor
+  handling.
