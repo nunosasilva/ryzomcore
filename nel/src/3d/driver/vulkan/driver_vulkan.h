@@ -53,6 +53,13 @@ using namespace NLMISC;
 
 class CDriverVulkan;
 
+/// X11 cursor handle. The Vulkan driver only has an X11 window backend for
+/// now, so this is the same type the GL3 driver uses on that platform.
+#if defined(NL_OS_UNIX) && !defined(NL_OS_MAC)
+typedef Cursor nlCursor;
+static const nlCursor EmptyCursor = None;
+#endif
+
 /// Texture upload staging ring sizes. The initial size is what a spot load
 /// needs; the loading phase can push one frame past it (tens of MiB of
 /// textures in a single frame) and the ring doubles up to the maximum. In game
@@ -573,6 +580,78 @@ private:
 #if defined(NL_OS_UNIX) && !defined(NL_OS_MAC)
 	NLMISC::CVulkanEventEmitter _EventEmitter;
 #endif
+
+	// --- Cursors (driver_vulkan_inputs.cpp) ---
+	// Port of the GL3 driver's X11 cursor handling: the engine registers
+	// hardware cursor bitmaps with addCursor() and selects one every frame in
+	// CViewPointer::drawCursor(), and the driver applies it to the X window so
+	// the pointer shape changes with the interface context.
+	/// Name of the cursor selected by setCursor(), "" before the first
+	/// selection, "none" while showCursor(false) hides the pointer.
+	std::string				_CurrName;
+	NLMISC::CRGBA			_CurrCol;
+	uint8					_CurrRot;
+	uint					_CurrHotSpotX;
+	uint					_CurrHotSpotY;
+	float					_CursorScale;
+	/// A pointer grab is active (freelook). Unlike the WM resize cursor this
+	/// only keeps the pointer in the window and is not a shape.
+	bool					_MouseCaptured;
+	/// Blank 8x8 cursor applied while the hardware pointer is hidden.
+	nlCursor				_BlankCursor;
+	/// Cursor currently defined on the window, to skip redundant requests
+	/// (setCursor() runs every frame) and requests on a destroyed window.
+	nlCursor				_AppliedCursor;
+	bool					_AlphaBlendedCursorSupported;
+	bool					_AlphaBlendedCursorSupportRetrieved;
+	/// XRender version * 100, 0 when the extension is missing.
+	uint32					_XRenderVersion;
+
+	class CCursor
+	{
+	public:
+		NLMISC::CBitmap		Src;
+		uint				OrigHeight;
+		float				HotspotScale;
+		uint				HotspotOffsetX;
+		uint				HotspotOffsetY;
+		sint				HotSpotX;
+		sint				HotSpotY;
+		nlCursor			Cursor;
+		NLMISC::CRGBA		Col;
+		uint8				Rot;
+		Display				*Dpy;
+
+		CCursor();
+		~CCursor();
+		CCursor& operator=(const CCursor &from);
+
+		void reset();
+	};
+
+	struct CStrCaseUnsensitiveCmp
+	{
+		bool operator()(const std::string &lhs, const std::string &rhs) const
+		{
+			return NLMISC::nlstricmp(lhs, rhs) < 0;
+		}
+	};
+
+	typedef std::map<std::string, CCursor, CStrCaseUnsensitiveCmp> TCursorMap;
+	TCursorMap				_Cursors;
+
+	/// RGBA cursor bitmaps are usable through XCursor ARGB or XRender.
+	bool					isAlphaBlendedCursorSupported();
+	/// Create the blank cursor used to hide the hardware pointer.
+	void					createCursors();
+	/// Free every X cursor and undefine the one on the window.
+	void					releaseCursors();
+	/// Reapply _CurrName, rebuilding it if 'forceRebuild' is set.
+	void					updateCursor(bool forceRebuild = false);
+	/// Build the X cursor for a source bitmap at _CursorScale.
+	nlCursor				buildCursor(const NLMISC::CBitmap &src, NLMISC::CRGBA col, uint8 rot, sint hotSpotX, sint hotSpotY);
+	/// Upload one RGBA bitmap as an X cursor.
+	bool					convertBitmapToCursor(const NLMISC::CBitmap &bitmap, nlCursor &cursor, uint iconWidth, uint iconHeight, const NLMISC::CRGBA &col, sint hotSpotX, sint hotSpotY);
 
 	// --- Vulkan core ---
 	VkInstance				_Instance;
