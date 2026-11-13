@@ -144,6 +144,17 @@ struct CMaterialUBOData
 };                                 // 480
 nlctassert(sizeof(CMaterialUBOData) == 480);
 
+// ***************************************************************************
+// Water pixel program parameters (std140, 32 bytes, matches GLSL NlWater).
+// The bump maps are stored as normal maps: the shader expands them with
+// scale * texel + bias, the same normalisation the GL3 water shader uses.
+struct CWaterUBOData
+{
+	float bump0ScaleBias[4];  // 16 (2 * factor, -factor, 0, 0)
+	float bump1ScaleBias[4];  // 16
+};
+nlctassert(sizeof(CWaterUBOData) == 32);
+
 // GLSL headers prepended to the generated mega programs.
 std::string buildVulkanLightTableHeader(sint maxLights);
 extern const char *VulkanCameraHeader;
@@ -165,6 +176,14 @@ void megavkVPGenerate(std::string &result, bool fogOrPpl, const char *insertSour
 /// fogOrPpl adds fog and per-pixel lighting, cube makes sampler1 a samplerCube
 /// (the Specular material), specular adds the vertex specular term.
 void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specular);
+
+/// Generate the Vulkan water pixel program (CMaterial::Water with the water
+/// vertex program active). Mirrors the GL3 water fragment program: two bump
+/// map lookups perturb the environment/reflection lookup, the colour map
+/// modulates the result, and the blend alpha comes from the environment map
+/// (or, for calculated reflectivity, from the per-vertex base boosted by the
+/// reflection's luminance). Uses the camera, object and water blocks.
+void watervkPPGenerate(std::string &result, bool calcReflectivity, bool diffuse);
 
 /// Builtin UBO blocks plus the user blocks described by a vertex program's
 /// UniformBufferFormats (implemented in driver_vulkan_vp.cpp). Returns false

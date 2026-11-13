@@ -29,6 +29,7 @@
 #include "nel/3d/viewport.h"
 #include "nel/3d/scissor.h"
 #include "nel/3d/light.h"
+#include "nel/3d/texture_bump.h"
 
 #include <cmath>
 #include <chrono>
@@ -603,7 +604,18 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 		{
 			vertexShader = getMegaVertexShader();
 		}
-		if (key.UserPP != 0)
+		if (key.WaterPP != 0)
+		{
+			// Water replaces the mega pixel stage as well; it reads the water
+			// vertex program's texture coordinates and the mega descriptor set.
+			fragmentShader = getWaterPixelShader(key.WaterCalcRefl != 0, key.WaterDiffuse != 0);
+			if (fragmentShader == VK_NULL_HANDLE)
+			{
+				nlwarning("Vulkan: no water pixel program for this variant");
+				return VK_NULL_HANDLE;
+			}
+		}
+		else if (key.UserPP != 0)
 		{
 			// Active user pixel program (FXAA): it replaces the mega pixel
 			// stage and reads the mega descriptor set for its UBO and samplers.
@@ -1309,6 +1321,26 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 	for (uint stage = 0; stage < 4; ++stage)
 		_TexEnv[stage] = mat.getTexEnvMode(stage);
 	_CurrentMaterial = &mat;
+
+	// The water pixel program reads the bump maps' normalisation factors and
+	// their texels as unsigned bytes. CTextureBump generates either a signed
+	// DsDt bitmap or an RGBA one depending on the requested upload format, so
+	// ask for RGBA before the first generation, exactly like GL3's
+	// setupWaterPass(). Without this the bitmap stayed DsDt, the RGBA upload
+	// could not read it, and the water lost its bump detail (and with it the
+	// fine ripple pattern that hides the coarse screen-grid interpolation).
+	if (mat.getShader() == CMaterial::Water)
+	{
+		for (uint stage = 0; stage < 2; ++stage)
+		{
+			ITexture *texture = mat.getTexture(stage);
+			if (texture && texture->isBumpMap())
+			{
+				texture->setUploadFormat(ITexture::RGBA8888);
+				NLMISC::safe_cast<CTextureBump *>(texture)->getNormalizationFactor();
+			}
+		}
+	}
 
 	for (uint stage = 0; stage < 4; ++stage)
 		_MappedUV[stage] = 0xFF;

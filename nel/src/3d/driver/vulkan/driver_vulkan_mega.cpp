@@ -1049,6 +1049,71 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	result = emitUsedVaryings(ss.str());
 }
 
+void watervkPPGenerate(std::string &result, bool calcReflectivity, bool diffuse)
+{
+	std::stringstream ss;
+	ss << "#version 450" << std::endl;
+	ss << "// Vulkan water pixel program (calcReflectivity=" << (int)calcReflectivity
+	   << ", diffuse=" << (int)diffuse << ")" << std::endl;
+	ss << std::endl;
+
+	ss << "layout(location = 0) out vec4 fragColor;" << std::endl;
+	ss << std::endl;
+
+	// texCoord0..3 and ecPos, declared only when the body reads them.
+	ss << "//@@NLVKVARYINGS@@" << std::endl;
+	ss << std::endl;
+
+	// Stages, as bound by the engine for CMaterial::Water: two bump maps, the
+	// environment/reflection map, and the optional colour map.
+	for (int i = 0; i < (diffuse ? 4 : 3); ++i)
+		ss << "layout(set = 0, binding = " << (NL_VK_MEGA_BINDING_SAMPLER_BASE + i)
+		   << ") uniform sampler2D sampler" << i << ";" << std::endl;
+	ss << std::endl;
+
+	// Bump-map normalisation, staged per draw by bindMegaDescriptors().
+	ss << "layout(std140, set = 0, binding = " << NL_VK_MEGA_BINDING_USER_PIXEL_PROGRAM << ") uniform NlWater {" << std::endl;
+	ss << "    vec4 bump0ScaleBias;" << std::endl;
+	ss << "    vec4 bump1ScaleBias;" << std::endl;
+	ss << "};" << std::endl;
+	ss << std::endl;
+
+	// Same fog as the mega pixel program (linear / exp / exp2).
+	ss << "vec4 applyFog(vec4 col) {" << std::endl;
+	ss << "  float z = abs(ecPos.y / ecPos.w);" << std::endl;
+	ss << "  float fogFactor;" << std::endl;
+	ss << "  if (nlFogMode == 1) fogFactor = clamp(exp(-fogDensity * z), 0.0, 1.0);" << std::endl;
+	ss << "  else if (nlFogMode == 2) fogFactor = clamp(exp(-fogDensity * fogDensity * z * z), 0.0, 1.0);" << std::endl;
+	ss << "  else fogFactor = clamp((fogParams.t - z) / (fogParams.t - fogParams.s), 0.0, 1.0);" << std::endl;
+	ss << "  vec4 fColor = mix(fogColor, col, fogFactor);" << std::endl;
+	ss << "  fColor.a = col.a;" << std::endl;
+	ss << "  return fColor;" << std::endl;
+	ss << "}" << std::endl;
+	ss << std::endl;
+
+	ss << "void main()" << std::endl;
+	ss << "{" << std::endl;
+	ss << "  vec2 b0 = texture(sampler0, texCoord0.xy).xy;" << std::endl;
+	ss << "  b0 = b0 * bump0ScaleBias.x + bump0ScaleBias.y;" << std::endl;
+	ss << "  vec2 b1 = texture(sampler1, texCoord1.xy + b0).xy;" << std::endl;
+	ss << "  b1 = b1 * bump1ScaleBias.x + bump1ScaleBias.y;" << std::endl;
+	ss << "  vec4 col = texture(sampler2, texCoord2.xy + b1);" << std::endl;
+	if (calcReflectivity)
+	{
+		// Calculated reflectivity: the per-vertex fresnel base (texCoord2.z)
+		// blended towards opaque by the reflection's luminance, the same rule
+		// the GL3 water pixel program applies.
+		ss << "  col.a = mix(texCoord2.z, 1.0, dot(col.rgb, vec3(0.2126, 0.7152, 0.0722)));" << std::endl;
+	}
+	if (diffuse)
+		ss << "  col *= texture(sampler3, texCoord3.xy);" << std::endl;
+	ss << "  if (nlFogEnabled != 0) col = applyFog(col);" << std::endl;
+	ss << "  fragColor = col;" << std::endl;
+	ss << "}" << std::endl;
+
+	result = emitUsedVaryings(ss.str());
+}
+
 } /* namespace NLVULKAN */
 
 /* end of file */
