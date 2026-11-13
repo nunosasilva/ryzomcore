@@ -3126,3 +3126,10 @@ The running client's exe resolves to
 (36.6 MB, static, Release+FINAL_VERSION=OFF) includes the fdset, offload,
 Karavan, cursor and descriptor-pool fixes; smoke-tested at 1280x800 on the
 login scene (Vulkan, validation on) with a clean windowclose exit.
+
+## Pitfall: don't fight the user for mats004 positioning
+
+The user positions the avatar for the microvegetation test himself (mats004
+slot 1) and logs out; agents must not log in during that (wait 5 minutes, then
+use the saved position). General rule: if a test needs a precise viewpoint,
+ask the user to place the character rather than walking there.
