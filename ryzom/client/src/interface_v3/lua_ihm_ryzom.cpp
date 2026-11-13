@@ -624,6 +624,7 @@ void CLuaIHMRyzom::RegisterRyzomFunctions(NLGUI::CLuaState &ls)
 		LUABIND_FUNC(getFirstTribeFameIndex),
 		LUABIND_FUNC(getNbTribeFameIndex),
 		LUABIND_FUNC(getClientCfg),
+		luabind::def("getCurrentDriverName", &::getCurrentDriverName),
 		LUABIND_FUNC(sendMsgToServer),
 		LUABIND_FUNC(sendMsgToServerPvpTag),
 		LUABIND_FUNC(sendMsgToServerAutoPact),
