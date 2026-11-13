@@ -2806,3 +2806,69 @@ driver show the fabric, confirming a Vulkan-only simple-path bug.
 **Left.** Rebuild the static/FINAL binary to ship the fix; cube maps are top
 mip only and always RGBA8 (no BC, no mips); non-square cubes use face 0 as a 2D
 sphere map.
+
+## Zora black screen with Medium+ landscape: descriptor pool exhaustion
+
+User report: in Zora, with the `u` -> Graphics -> Landscape preset at Medium,
+Normal or High (not Low), turning right so the stables are behind the avatar
+made the whole screen black, UI included (minimap, char window, shortcut
+bar); turning back restored it. Account `mats006` slot 0, character Matssix.
+
+**Root cause.** Not the camera or a black quad. The driver allocated one
+descriptor set per draw from a **fixed pool of 4096 sets per frame slot**
+(`driver_vulkan.cpp`). A dense frame exceeded that, `vkAllocateDescriptorSets`
+returned `VK_ERROR_OUT_OF_POOL_MEMORY` (-1000069000), and both
+`commitPushConstants()` and `bindMegaDescriptors()` returned false without a
+warning, silently skipping every remaining draw of the frame. The draws that
+fell off the end are the **interface** and the **final scene blit**
+(`CDriverUser::endDefaultRenderTarget`), so the swapchain kept the black
+`_ClearColor` written at `beginFrame` and the whole window, UI included, was
+black. Landscape presets at Medium+ enable micro-vegetation and a longer view
+distance and push the frame over 4096 draws at that spot; Low stays under.
+The black is *in the rendered image* (the driver's `NLVK_SCREENSHOT` frames are
+all-zero too), not a present/compositor artifact.
+
+**Evidence.**
+
+- Repro: optimized build `build-rel` (`RelWithDebInfo`, same code as the
+  user's `ryzom_client_vulkan_opt` @24a078312), Zora, `Bloom=0, FXAA=1,
+  Shadows=1, Vision=400, LandscapeTileNear=40, LandscapeThreshold=500,
+  MicroVeget=1`, 1920x1080, `gamescope --backend headless`, camera spinning.
+  Driver-side `NLVK_SCREENSHOT_EVERY=60` dumps: about 1-2% of frames were
+  `P6 ... 0 0 0` (all zero). With `FXAA=0` (no effect render target): **0
+  black frames in 3915**. With `FXAA=1`: black frames recur.
+- Driver-side traces (temporary, removed): a black frame's
+  `setRenderTarget()` sequence is identical to a normal frame's
+  (`effect target, main, FXAA target, main`), the final `drawQuad()` is
+  reached (`NLVKRAW ... passes=1`), but `noteMainSampleTexture()` never runs,
+  i.e. `commitPushConstants()` returned false right before the draw.
+  Logging the allocation result gave `NLVKPOOL ... res=-1000069000` for
+  every skipped draw (35413 failures in 40 s at that spot).
+- After the fix: `NLVK_BLACKCHECK` readback detected **0 black frames in
+  2701** at the same spot; a clean `RelWithDebInfo` run with
+  `NLVK_VALIDATION=1` and screenshots every 60 frames produced 31/31
+  non-black frames with the UI, and the pool growth message
+  (`Vulkan: descriptor pool for frame slot 1 grown to 16384 sets`).
+  The 1920x1080 stable view renders the stable boy, the avatar and the full
+  UI; GL3 from the same binary renders the same view (no regression).
+- Validation on the fixed build: only the pre-existing gamescope
+  `VkSwapchainPresentModeInfoKHR` VUIDs, the `vkCreateDevice` extension
+  warning and the known "vertex attribute not consumed" pipeline warnings;
+  no descriptor-pool errors.
+
+**Fix (commit `vulkan: grow the per-frame descriptor pools instead of
+dropping draws`).** `driver_vulkan.h/.cpp`: `_DescriptorPools` is now a
+`std::vector<VkDescriptorPool>[2]`; `allocDescriptorSet()` allocates from the
+last pool, and on `VK_ERROR_OUT_OF_POOL_MEMORY`/`VK_ERROR_FRAGMENTED_POOL`
+adds a larger pool (`4096 << min(poolCount, 5)` sets) and retries. All pools
+are `vkResetDescriptorPool()`-ed (not recreated) when their frame slot is
+reused, and destroyed in shutdown. Pools are sized for the mega layout too
+(8 samplers, 7 UBOs per set); the old 4-sampler-per-set sizing capped the
+mega path at 2048 sets. `driver_vulkan_render.cpp` and
+`driver_vulkan_mega_render.cpp` use the helper.
+
+**Left.** The fix is driver-local and does not touch GL/GL3. Possible
+follow-ups: make the growth message a one-shot info (it currently prints per
+new pool, which is fine); no other fixed-size per-frame limits were found in
+this path (the vertex/index/uniform rings already grow). The user's static
+`ryzom_client_vulkan_opt` must be rebuilt to ship the fix.
