@@ -3193,3 +3193,20 @@ the field (`/tmp/opencode/ryzomtest/gl2static_crop.png`). GL3/Vulkan unchanged.
 `~/Projects/ryzom/ryzom_live/` and `~/.local/share/Ryzom/ryzom_live/`
 (36.6 MB, static, Release+FINAL_VERSION=OFF), with fdset, offload, Karavan,
 cursor, descriptor-pool and this fix.
+
+## Bug: Prime Roots "Under Spring" white horizon under Vulkan (in progress)
+
+mats004 slot 0 is in the underground area "Under Spring" (Prime Roots) and must
+NOT be moved (aggressive creatures). Under Vulkan the horizon is bright white;
+GL2 from the same binary matches the official client (black-ish). The white
+region shrinks when Far Clip is raised to 800 m and grows at lower values, so it
+is the background / far-plane region rather than an object.
+
+Candidate paths: `clearBuffers()` / `ClientCfg.BGColor` (default 100,100,255),
+NoSky underground so nothing covers the frame, a sky dome with the missing
+`ma_sky_dome_gradient_fair.tga` falling back to white instead of the fog/zone
+color, or the landscape far layer ignoring fog. Agent
+`vulkan-prime-roots-horizon` (mats004 slot 0, worktree
+`f1fb99/vulkan-prime-roots-horizon`, base `10f50f310`) is reproducing,
+comparing GL2/Vulkan/official, toggling fog/far clip/mega and is told never to
+walk the character.
