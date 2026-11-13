@@ -342,7 +342,12 @@ bool CDriverVulkan::supportTextureShaders() const
 
 bool CDriverVulkan::supportWaterShader() const
 {
-	return false;
+	// The water surface is drawn with the engine's water vertex program (nelvp
+	// converted by the driver) and the driver's water pixel program, the same
+	// two-stage setup GL2 and GL3 use. The fallback screen-space grid
+	// (fillVBSoft) draws 20x20 screen cells whose per-vertex environment
+	// coordinates show up as triangles on the water, so it is not used.
+	return true;
 }
 
 bool CDriverVulkan::cubemapZPositiveForward() const
