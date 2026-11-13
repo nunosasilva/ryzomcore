@@ -3227,3 +3227,25 @@ unclipped water triangle would look exactly like this. Agent
 `f1fb99/vulkan-water-artifacts`, base `10f50f310`) is reproducing, comparing
 GL2/GL3/official, tracing the water draw and evaluating either enabling the
 water-shader path for Vulkan or fixing the soft path.
+
+## Feature: driver info panel in the in-game config window (in progress)
+
+Add a section just below SPECIAL EFFECTS in `u` -> GRAPHICS showing the 3D
+driver in use: OpenGL (2), OpenGL3, Vulkan, DirectX (keep DirectX for Windows).
+
+Key facts found:
+- Tree nodes + groups: `ryzom/client/data/gamedev/interfaces_v3/game_config.xml`
+  (`uigcGraph`, then `gen/lan/cha/fxs/vr`; groups inside `content`), and
+  `game_config.lua` `configShowOne()`.
+- New i18n ids do NOT work (`.uxt` comes from the shipped `gamedev.bnp`, missing
+  ids render `<NotExist:...>`). Reuse `uiConfigDriver` ("Driver") and
+  `uiConfigDriverDesc` ("Driver: "), which exist in all languages.
+- Driver name: `init.cpp` resolves Auto into `autoDrivers[...]` and logs
+  "3D: display created with the %s driver" (`getDriverName()` near line 1283).
+  Expose the resolved driver through a Lua binding in
+  `ryzom/client/src/interface_v3/lua_ihm_ryzom.cpp` (near `getClientCfg`).
+
+Agent `config-driver-panel` (mats005 slot 1, worktree `f1fb99/config-driver-panel`,
+base `6d683f8bd`) implements, verifies the 4 modes and works out whether the
+install needs a loose interface XML or a repacked `gamedev.bnp`. FSR/render
+resolution are explicitly future work.
