@@ -284,6 +284,9 @@ struct CPipelineKey
 	uint32	MegaSpecular;     // mega PP adds the specularColor varying (from the VP)
 	uint32	Target;           // render pass the pipeline is used with (0 = swapchain, 1 = offscreen)
 	uint32	UserPP;           // active user pixel program id (0 = builtin mega PP)
+	uint32	WaterPP;          // water pixel stage (CMaterial::Water with the water VP)
+	uint32	WaterCalcRefl;    // water PP derives alpha from the per-vertex reflectivity
+	uint32	WaterDiffuse;     // water PP multiplies the colour map (stage 3)
 
 	bool operator==(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
 	bool operator<(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) < 0; }
@@ -837,6 +840,8 @@ private:
 	void					shutdownMega();
 	VkShaderModule			getMegaVertexShader();
 	VkShaderModule			getMegaPixelShader(bool cube, bool specular);
+	/// Water pixel stage, one variant per (calculated reflectivity, colour map).
+	VkShaderModule			getWaterPixelShader(bool calcReflectivity, bool diffuse);
 	bool					canUseMegaPath(bool &cube);
 	void					fillMegaPipelineKey(CPipelineKey &key);
 	bool					bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb);
@@ -981,6 +986,12 @@ private:
 	VkPipelineLayout			_MegaPipelineLayout;
 	VkShaderModule				_MegaVertexShader;
 	std::map<uint32, VkShaderModule>	_MegaPixelShaderVariants;
+	std::map<uint32, VkShaderModule>	_WaterPixelShaderVariants;
+	/// Water pipeline variant selected by the draw being recorded (0 = not a
+	/// water draw). Keeps the descriptor binding of the water bump parameters
+	/// in sync with the pipeline key without threading the key through the
+	/// descriptor path.
+	uint32						_WaterPPVariant;
 	/// Staged light table, uploaded through the per-frame uniform ring at draw
 	/// time (same path as the camera/object/material blocks).
 	CLightTableUBOEntry			_MegaLightTableEntries[NL_VK_MEGA_MAX_LIGHT_TABLE];

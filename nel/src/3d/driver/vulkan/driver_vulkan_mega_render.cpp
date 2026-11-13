@@ -32,6 +32,7 @@
 #include "driver_vulkan.h"
 
 #include "nel/3d/light.h"
+#include "nel/3d/texture_bump.h"
 
 #include <algorithm>
 
@@ -80,6 +81,10 @@ bool CDriverVulkan::canUseMegaPath(bool &cube)
 	// beginMaterialMultiPass()/setupMaterialPass().
 	case CMaterial::LightMap:
 		break;
+	// Water uses the engine's water vertex program and the driver's water
+	// pixel program (see getWaterPixelShader()).
+	case CMaterial::Water:
+		break;
 	default:
 		return false;
 	}
@@ -122,6 +127,10 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 	const bool userVP = hasActiveUserVPS();
 	const bool userPP = _ActiveUserPP != NULL;
 	const bool specular = _CurrentMaterial && _CurrentMaterial->getShader() == CMaterial::Specular;
+	// Water draws replace the mega pixel stage with the water pixel program. It
+	// needs the water vertex program (the engine activates it together with the
+	// material), otherwise the texture coordinates it reads do not exist.
+	const bool water = userVP && _CurrentMaterial && _CurrentMaterial->getShader() == CMaterial::Water;
 	if (materialOk && (_MegaEnabled || userVP || userPP || cube || specular))
 	{
 		key.Mega = 1;
@@ -130,6 +139,12 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 		key.UserVPInsert = userVP && _ActiveUserVP->IsInsertProgram ? 1 : 0;
 		key.MegaSpecular = _VPSpecularOutput ? 1 : 0;
 		key.UserPP = userPP ? _ActiveUserPP->Id : 0;
+		key.WaterPP = water ? 1 : 0;
+		key.WaterCalcRefl = water && _CurrentMaterial->isWaterCalcReflectivity() ? 1 : 0;
+		key.WaterDiffuse = water && _CurrentMaterial->getTexture(3) != NULL ? 1 : 0;
+		_WaterPPVariant = key.WaterPP
+			? (1u | (key.WaterCalcRefl << 1) | (key.WaterDiffuse << 2))
+			: 0u;
 	}
 	else
 	{
@@ -139,6 +154,10 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 		key.UserVPInsert = 0;
 		key.MegaSpecular = 0;
 		key.UserPP = 0;
+		key.WaterPP = 0;
+		key.WaterCalcRefl = 0;
+		key.WaterDiffuse = 0;
+		_WaterPPVariant = 0;
 	}
 }
 
@@ -263,6 +282,10 @@ void CDriverVulkan::shutdownMega()
 		if (it->second)
 			vkDestroyShaderModule(_Device, it->second, NULL);
 	_MegaPixelShaderVariants.clear();
+	for (map<uint32, VkShaderModule>::iterator it = _WaterPixelShaderVariants.begin(); it != _WaterPixelShaderVariants.end(); ++it)
+		if (it->second)
+			vkDestroyShaderModule(_Device, it->second, NULL);
+	_WaterPixelShaderVariants.clear();
 	if (_MegaVertexShader)
 	{
 		vkDestroyShaderModule(_Device, _MegaVertexShader, NULL);
@@ -379,9 +402,46 @@ VkShaderModule CDriverVulkan::getMegaPixelShader(bool cube, bool specular)
 	return module;
 }
 
+VkShaderModule CDriverVulkan::getWaterPixelShader(bool calcReflectivity, bool diffuse)
+{
+	const uint32 key = (calcReflectivity ? 1u : 0u) | (diffuse ? 2u : 0u);
+	map<uint32, VkShaderModule>::iterator it = _WaterPixelShaderVariants.find(key);
+	if (it != _WaterPixelShaderVariants.end())
+		return it->second;
+
+	std::string body;
+	watervkPPGenerate(body, calcReflectivity, diffuse);
+	std::string source;
+	if (!assembleMegaSource(body, NULL, source))
+	{
+		nlwarning("Vulkan: water pixel program could not be assembled");
+		return VK_NULL_HANDLE;
+	}
+	VkShaderModule module = VK_NULL_HANDLE;
+	if (!compileShader(source.c_str(), &module, false))
+	{
+		nlwarning("Vulkan: water pixel program failed to compile");
+		return VK_NULL_HANDLE;
+	}
+	nlinfo("Vulkan: compiled water pixel program (calcReflectivity=%d, diffuse=%d)",
+		calcReflectivity ? 1 : 0, diffuse ? 1 : 0);
+	_WaterPixelShaderVariants[key] = module;
+	return module;
+}
+
 // ---------------------------------------------------------------------------
 // UBO staging
 // ---------------------------------------------------------------------------
+
+/// Bump-map normalisation factor, with the 0.25 scale the GL3 water pass
+/// applies (the bump textures store a scaled normal). Non-bump stages
+/// contribute a neutral factor of 1.
+static float bumpNormalizationFactor(ITexture *tex)
+{
+	if (!tex || !tex->isBumpMap())
+		return 1.f;
+	return 0.25f * NLMISC::safe_cast<CTextureBump *>(tex)->getNormalizationFactor();
+}
 
 const CCameraUBOData &CDriverVulkan::stageMegaCameraUBO()
 {
@@ -807,6 +867,25 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		bufferInfos[i].buffer = _MegaUserBuffer;
 		bufferInfos[i].offset = 0;
 		bufferInfos[i].range = 256;
+	}
+	// A water draw stages the bump-map normalisation its pixel program reads
+	// at the user pixel program binding (GL3 binds the same data as NlWater).
+	if (_WaterPPVariant != 0)
+	{
+		CWaterUBOData waterData;
+		memset(&waterData, 0, sizeof(waterData));
+		const float factor0 = bumpNormalizationFactor(_CurrentMaterial->getTexture(0));
+		const float factor1 = bumpNormalizationFactor(_CurrentMaterial->getTexture(1));
+		waterData.bump0ScaleBias[0] = 2.f * factor0;
+		waterData.bump0ScaleBias[1] = -factor0;
+		waterData.bump1ScaleBias[0] = 2.f * factor1;
+		waterData.bump1ScaleBias[1] = -factor1;
+		const uint32 waterOffset = allocUniformBlock(&waterData, sizeof(waterData));
+		if (waterOffset == 0xFFFFFFFF)
+			return false;
+		bufferInfos[5].buffer = _UniformRing;
+		bufferInfos[5].offset = waterOffset;
+		bufferInfos[5].range = sizeof(waterData);
 	}
 	// The user vertex program reads its own block at binding 4: the
 	// NlNelvpConstants registers for a converted nelvp program, or the UBO the

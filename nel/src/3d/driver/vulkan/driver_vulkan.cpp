@@ -266,6 +266,7 @@ CDriverVulkan::CDriverVulkan()
 	_AmbientColor = CRGBA(51, 51, 51);
 
 	_MegaEnabled = getenv("NLVK_MEGA") != NULL;
+	_WaterPPVariant = 0;
 	_LightMapLogged = false;
 	_MegaResourcesReady = false;
 	_ActiveUserVP = NULL;
