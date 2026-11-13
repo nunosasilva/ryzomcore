@@ -702,6 +702,12 @@
                   params="game:configShowOne('fx')"
                   fontsize="10"
                   y_decal="-1" />
+            <node id="drv"
+                  name="uiConfigDriver"
+                  handler="lua"
+                  params="game:configShowOne('drv')"
+                  fontsize="10"
+                  y_decal="-1" />
             <node id="vr"
                   name="uigcVR"
                   handler="lua"
@@ -1366,6 +1372,29 @@
             posref="TL TR"
             x="-8"
             y="0" />
+      <!-- *** -->
+      <!-- Technical information. The driver is selected at startup and cannot
+           change at runtime; the label is filled by game:configInit(). -->
+      <group id="drv"
+             active="false"
+             posparent="crop"
+             posref="TM TM"
+             x="0"
+             y="-8"
+             sizeref="w"
+             child_resize_h="true"
+             child_resize_hmargin="4"
+             w="-4"
+             max_sizeparent="crop"
+             max_sizeref="h"
+             max_h="-4">
+        <view style="sgc_title"
+              type="text"
+              id="driver_name"
+              posref="TL TL"
+              x="0"
+              y="0" />
+      </group>
       <!-- *** -->
       <group id="hud"
              active="false"
