@@ -930,6 +930,12 @@ private:
 	/// and keeping the texture-memory counter in sync.
 	void					setTextureImage(CTextureDrvInfosVulkan &info, CTextureVulkan &created);
 	VkImageView				getWhiteTexture();
+	/// 1x1 opaque black, sampled by a stage whose texture exists in the
+	/// material but has no image (a missing texture file). GL samples an
+	/// incomplete texture as black; dropping the stage instead would fall back
+	/// to the vertex/material colour (white on untextured materials).
+	VkImageView				getBlackTexture();
+	VkImageView				getSolidTexture(CTextureVulkan &target, uint8 r, uint8 g, uint8 b, uint8 a);
 	/// 1x1 white cube, bound in place of a cube-map stage that has no image so
 	/// that the samplerCube descriptor stays valid (mega cube variant).
 	VkImageView				getWhiteCubeTexture();
@@ -952,6 +958,7 @@ private:
 	VkShaderModule				_FragmentShader;
 	VkSampler					_DefaultSampler;
 	CTextureVulkan				_WhiteTexture;
+	CTextureVulkan				_BlackTexture;
 	CTextureVulkan				_WhiteCubeTexture;
 	/// True when the device supports BC (DXTC) compressed sampled images.
 	bool						_SupportsBC;
