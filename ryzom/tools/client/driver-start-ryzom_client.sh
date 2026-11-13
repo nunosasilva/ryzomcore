@@ -4,7 +4,7 @@
 #
 # Run it from the root of a client installation:
 #
-#     DRIVER=Vulkan ACCOUNT=mats004 PASSWORD=REDACTED SLOT=0 \
+#     DRIVER=Vulkan ACCOUNT=username321 PASSWORD=password123 SLOT=0 \
 #         ./driver-start-ryzom_client.sh
 #
 # It optionally rewrites client.cfg, starts the client in a virtual screen
@@ -56,7 +56,7 @@
 #   DRIVER=OpenGL SCREEN=gamescope ./driver-start-ryzom_client.sh
 #
 #   # In game with a specific account, Vulkan, then use $DISPLAY with xdotool
-#   eval "$(DRIVER=Vulkan ACCOUNT=mats004 PASSWORD=REDACTED SLOT=0 \
+#   eval "$(DRIVER=Vulkan ACCOUNT=username321 PASSWORD=password123 SLOT=0 \
 #            ./driver-start-ryzom_client.sh)"
 #
 set -uo pipefail
