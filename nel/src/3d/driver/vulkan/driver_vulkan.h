@@ -891,6 +891,14 @@ private:
 	/// Texture copies recorded and bytes staged, per NLVK_STATS window.
 	uint64					_StatsTextureCopies;
 	uint64					_StatsUploadBytes;
+	/// Time spent in vkCreateGraphicsPipelines and in texture image creation,
+	/// per NLVK_STATS window: the two synchronous costs of a zone load.
+	uint64					_StatsPipelineCreateNs;
+	uint64					_StatsPipelineCreates;
+	uint64					_StatsTextureCreateNs;
+	uint64					_StatsTextureCreates;
+	/// Time of the previous swapBuffers, for the >100 ms frame stall log.
+	uint64					_StatsLastSwapNs;
 	/// State changes the GPU sees, per NLVK_STATS window: pipeline binds,
 	/// descriptor sets written, and texture stages bound to a real image.
 	uint64					_StatsPipelineBinds;
@@ -947,6 +955,13 @@ private:
 
 	// --- Cached Vulkan render objects ---
 	std::map<CPipelineKey, CPipelineVulkan>	_PipelineCache;
+	/// Driver-side pipeline cache, kept in memory for the process and saved to
+	/// disk so a later run does not have to compile the same pipelines again.
+	/// NLVK_PIPELINE_CACHE=0 disables the disk file (memory cache stays).
+	VkPipelineCache			_VkPipelineCache;
+	std::string				_PipelineCachePath;
+	bool					createPipelineCache();
+	void					savePipelineCache();
 	VkPipelineLayout			_PipelineLayout;
 	VkPipeline				_TestPipeline;
 	VkDescriptorSetLayout		_DescriptorSetLayout;

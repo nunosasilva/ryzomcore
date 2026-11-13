@@ -31,10 +31,12 @@
 
 #include "nel/misc/command.h"
 #include "nel/misc/hierarchical_timer.h"
+#include "nel/misc/path.h"
 #include "nel/3d/viewport.h"
 #include "nel/3d/scissor.h"
 
 #include <cstring>
+#include <cstdlib>
 #include <algorithm>
 #include <chrono>
 
@@ -196,6 +198,7 @@ CDriverVulkan::CDriverVulkan()
 	memset(&_DeviceProps, 0, sizeof(_DeviceProps));
 
 	// Zero every Vulkan handle/state that is not in the member init list.
+	_VkPipelineCache = VK_NULL_HANDLE;
 	_PipelineLayout = VK_NULL_HANDLE;
 	_DescriptorSetLayout = VK_NULL_HANDLE;
 	_VertexShader = VK_NULL_HANDLE;
@@ -292,6 +295,11 @@ CDriverVulkan::CDriverVulkan()
 	_FrameCpuStartNs = 0;
 	_StatsTextureCopies = 0;
 	_StatsUploadBytes = 0;
+	_StatsPipelineCreateNs = 0;
+	_StatsPipelineCreates = 0;
+	_StatsTextureCreateNs = 0;
+	_StatsTextureCreates = 0;
+	_StatsLastSwapNs = 0;
 	_StatsPipelineBinds = 0;
 	_StatsDescriptorSets = 0;
 	_StatsTextureBinds = 0;
@@ -601,6 +609,108 @@ bool CDriverVulkan::createLogicalDevice()
 		return false;
 	vkGetDeviceQueue(_Device, _GraphicsFamily, 0, &_GraphicsQueue);
 	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline cache
+// ---------------------------------------------------------------------------
+
+/// NLVK_PIPELINE_CACHE=0 keeps the in-memory cache but stops reading/writing
+/// the on-disk file (useful when comparing first-run compile costs).
+static bool pipelineCacheOnDisk()
+{
+	const char *env = getenv("NLVK_PIPELINE_CACHE");
+	return env == NULL || atoi(env) != 0;
+}
+
+bool CDriverVulkan::createPipelineCache()
+{
+	_PipelineCachePath = CPath::getApplicationDirectory("ryzom") + "vulkan_pipeline_cache.bin";
+
+	vector<uint8> initialData;
+	if (pipelineCacheOnDisk())
+	{
+		FILE *file = nlfopen(_PipelineCachePath, "rb");
+		if (file != NULL)
+		{
+			if (fseek(file, 0, SEEK_END) == 0)
+			{
+				const long size = ftell(file);
+				// A cache larger than this is not worth reading; start fresh.
+				if (size > 0 && size <= 64 * 1024 * 1024)
+				{
+					initialData.resize((size_t)size);
+					if (fseek(file, 0, SEEK_SET) == 0 &&
+						fread(&initialData[0], 1, initialData.size(), file) != initialData.size())
+						initialData.clear();
+				}
+			}
+			fclose(file);
+		}
+	}
+
+	VkPipelineCacheCreateInfo pcci;
+	memset(&pcci, 0, sizeof(pcci));
+	pcci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+	pcci.initialDataSize = initialData.size();
+	pcci.pInitialData = initialData.empty() ? NULL : &initialData[0];
+
+	const VkResult result = vkCreatePipelineCache(_Device, &pcci, NULL, &_VkPipelineCache);
+	if (result != VK_SUCCESS)
+	{
+		nlwarning("Vulkan: vkCreatePipelineCache failed (%d %s); pipelines will be compiled without a cache",
+			(int)result, vkResultName(result));
+		_VkPipelineCache = VK_NULL_HANDLE;
+		return false;
+	}
+
+	if (initialData.empty())
+		nlinfo("Vulkan: pipeline cache: starting empty (%s)",
+			pipelineCacheOnDisk() ? _PipelineCachePath.c_str() : "disk persistence disabled");
+	else
+		nlinfo("Vulkan: pipeline cache: loaded %u KiB from %s",
+			(uint)(initialData.size() / 1024), _PipelineCachePath.c_str());
+	return true;
+}
+
+void CDriverVulkan::savePipelineCache()
+{
+	if (_VkPipelineCache == VK_NULL_HANDLE || _Device == VK_NULL_HANDLE)
+		return;
+
+	size_t size = 0;
+	if (vkGetPipelineCacheData(_Device, _VkPipelineCache, &size, NULL) == VK_SUCCESS && size > 0)
+	{
+		vector<uint8> data(size);
+		if (vkGetPipelineCacheData(_Device, _VkPipelineCache, &size, &data[0]) == VK_SUCCESS)
+		{
+			if (pipelineCacheOnDisk())
+			{
+				CFile::createDirectoryTree(CFile::getPath(_PipelineCachePath));
+				// Write next to the final name and move it into place, so a
+				// crash or a second client cannot leave a truncated cache.
+				const std::string tmpPath = _PipelineCachePath + ".tmp";
+				FILE *file = nlfopen(tmpPath, "wb");
+				if (file != NULL)
+				{
+					const bool ok = fwrite(&data[0], 1, size, file) == size;
+					fclose(file);
+					// Windows' MoveFile does not replace an existing file.
+					CFile::deleteFile(_PipelineCachePath);
+					if (ok && CFile::moveFile(_PipelineCachePath, tmpPath))
+						nlinfo("Vulkan: pipeline cache: saved %u KiB (%u pipelines) to %s",
+							(uint)(size / 1024), (uint)_PipelineCache.size(), _PipelineCachePath.c_str());
+					else
+						nlwarning("Vulkan: could not write the pipeline cache '%s'", _PipelineCachePath.c_str());
+				}
+				else
+					nlwarning("Vulkan: could not open the pipeline cache '%s' for writing", _PipelineCachePath.c_str());
+			}
+		}
+	}
+
+	vkDestroyPipelineCache(_Device, _VkPipelineCache, NULL);
+	_VkPipelineCache = VK_NULL_HANDLE;
 }
 
 bool CDriverVulkan::createSwapchain()
@@ -1065,6 +1175,9 @@ bool CDriverVulkan::initVulkan()
 		return false;
 	if (!createLogicalDevice())
 		return false;
+	// Not fatal: without it vkCreateGraphicsPipelines compiles every state
+	// combination again, which is the main cost of a zone load.
+	createPipelineCache();
 	_DepthFormat = findDepthFormat();
 	if (_DepthFormat == VK_FORMAT_UNDEFINED)
 	{
@@ -1300,6 +1413,8 @@ void CDriverVulkan::shutdownVulkan()
 			if (it->second.Pipeline) vkDestroyPipeline(_Device, it->second.Pipeline, NULL);
 		_PipelineCache.clear();
 		if (_TestPipeline) { vkDestroyPipeline(_Device, _TestPipeline, NULL); _TestPipeline = VK_NULL_HANDLE; }
+		// All pipelines are gone: the cache can be written and destroyed.
+		savePipelineCache();
 		if (_PipelineLayout) { vkDestroyPipelineLayout(_Device, _PipelineLayout, NULL); _PipelineLayout = VK_NULL_HANDLE; }
 		if (_DescriptorSetLayout) { vkDestroyDescriptorSetLayout(_Device, _DescriptorSetLayout, NULL); _DescriptorSetLayout = VK_NULL_HANDLE; }
 		for (uint i = 0; i < 2; ++i)
@@ -1931,6 +2046,20 @@ bool CDriverVulkan::swapBuffers()
 	if (_SwapchainLost || _Swapchain == VK_NULL_HANDLE)
 		return false;
 
+	// NLVK_STATS: a frame longer than 100 ms is the freeze the players report
+	// as "PLEASE WAIT". Log every one so a run can be checked for them.
+	if (_StatsEnabled)
+	{
+		const uint64 now = nowNs();
+		if (_StatsLastSwapNs != 0)
+		{
+			const double frameMs = (double)(now - _StatsLastSwapNs) / 1e6;
+			if (frameMs > 100.0)
+				nlinfo("Vulkan: frame stall %.1f ms", frameMs);
+		}
+		_StatsLastSwapNs = now;
+	}
+
 	// A window resize does not replace the swapchain here: the frame below was
 	// recorded for the current one. beginFrame() replaces it before acquiring
 	// the next image (see the comment there).
@@ -2168,8 +2297,15 @@ bool CDriverVulkan::swapBuffers()
 			nlinfo("Vulkan stats: texture infos: %llu resolved without a share-name lookup, %llu lookups per frame",
 				(unsigned long long)(_StatsTexInfoHits / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				(unsigned long long)(_StatsTexInfoMisses / (_StatsWindowFrames ? _StatsWindowFrames : 1)));
+			nlinfo("Vulkan stats: synchronous load: pipeline create %.1f ms (%llu), texture create %.1f ms (%llu)",
+				(double)_StatsPipelineCreateNs / 1e6, (unsigned long long)_StatsPipelineCreates,
+				(double)_StatsTextureCreateNs / 1e6, (unsigned long long)_StatsTextureCreates);
 			_StatsTexInfoHits = 0;
 			_StatsTexInfoMisses = 0;
+			_StatsPipelineCreateNs = 0;
+			_StatsPipelineCreates = 0;
+			_StatsTextureCreateNs = 0;
+			_StatsTextureCreates = 0;
 			_StatsWindowStartNs = now;
 			_StatsWindowFrames = 0;
 			_StatsDraws = 0;

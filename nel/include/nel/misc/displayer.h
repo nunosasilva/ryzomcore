@@ -124,6 +124,13 @@ public:
 	/// Set Parameter of the displayer if not set at the ctor time
 	void setParam (const std::string &filename, bool eraseLastLog = false);
 
+	/** Write the buffered lines to the file.
+	 * Lines are normally written in bursts and flushed once per second (errors
+	 * and asserts are flushed immediately), so this is only needed when a file
+	 * has to be complete before the process exits, e.g. from an abort handler.
+	 */
+	void flush ();
+
 protected:
 	/// Put the string into the file.
     virtual void doDisplay ( const CLog::TDisplayInfo& args, const char *message );
@@ -138,6 +145,9 @@ private:
 	uint		_LastLogSizeChecked;
 
 	bool		_Raw;
+
+	/// Performance time (seconds) of the last fflush().
+	double		_LastFlushTime;
 };
 
 /**

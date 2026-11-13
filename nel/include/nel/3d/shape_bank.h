@@ -235,6 +235,12 @@ private:
 
 	// Special for buildSystemGeometryForshape
 	std::set<std::string>	_ShapeNeedingSystemGeometryCopy;
+
+	/// Shapes that load() could not open, so the same missing file does not
+	/// print its warning for every instance of the entity. The lookup itself
+	/// still goes through CPath (which has its own negative cache and clears
+	/// it when a download adds a path), so a shape that appears later loads.
+	std::set<std::string>	_MissingShapes;
 	//@}
 };
 

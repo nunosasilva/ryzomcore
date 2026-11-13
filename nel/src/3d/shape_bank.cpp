@@ -480,10 +480,14 @@ void CShapeBank::load (const string &shapeNameNotLwr)
 		{
 			meshfile.serial( mesh );
 			meshfile.close();
+			_MissingShapes.erase (shapeName);
 		}
 		else
 		{
-			nlwarning ("CShapeBank::load() : Can't open file %s", shapeName.c_str());
+			// CPath already remembers the miss; only print the warning once
+			// instead of once per instance of the entity.
+			if (_MissingShapes.insert (shapeName).second)
+				nlwarning ("CShapeBank::load() : Can't open file %s", shapeName.c_str());
 		}
 
 		if (mesh.getShapePointer() != nullptr)
@@ -613,6 +617,9 @@ void CShapeBank::add (const string &shapeNameNotLwr, IShape* pShp)
 	TShapeMap::iterator smIt = ShapeMap.find( shapeName );
 	if( smIt == ShapeMap.end() )
 	{
+		// The shape is available now: a previous failed load must not hide it.
+		_MissingShapes.erase( shapeName );
+
 		// No ok so lets add the smart pointer
 		CSmartPtr<IShape> spShape = pShp;
 		ShapeMap[shapeName] = spShape;
