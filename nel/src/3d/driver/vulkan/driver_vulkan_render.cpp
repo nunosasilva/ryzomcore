@@ -1739,14 +1739,8 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	bufferInfo.range = sizeof(u);
 	_UniformRingOffset += slot;
 
-	VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-	VkDescriptorSetAllocateInfo dsai;
-	memset(&dsai, 0, sizeof(dsai));
-	dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	dsai.descriptorPool = _DescriptorPools[_FrameIndex];
-	dsai.descriptorSetCount = 1;
-	dsai.pSetLayouts = &_DescriptorSetLayout;
-	if (vkAllocateDescriptorSets(_Device, &dsai, &descriptorSet) != VK_SUCCESS)
+	VkDescriptorSet descriptorSet = allocDescriptorSet(_DescriptorSetLayout);
+	if (descriptorSet == VK_NULL_HANDLE)
 		return false;
 	if (_StatsEnabled)
 		++_StatsDescriptorSets;
