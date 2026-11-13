@@ -3210,3 +3210,20 @@ color, or the landscape far layer ignoring fog. Agent
 `f1fb99/vulkan-prime-roots-horizon`, base `10f50f310`) is reproducing,
 comparing GL2/Vulkan/official, toggling fog/far clip/mega and is told never to
 walk the character.
+
+## Bug: Vulkan water artifacts (two triangles / bar over the avatar) (in progress)
+
+mats005 slot 2 ("Krina") is at a spot with the artifacts. Usually two triangular
+transparent shapes near the water, sometimes extending past the water area; a
+horizontal bar between the camera and the avatar covers part of it.
+
+Strong lead: `CDriverVulkan::supportWaterShader()` returns **false**
+(driver_vulkan_stubs.cpp) while GL2 returns true with ARBfp/VP and GL3 returns
+true. That selects `CWaterModel::doSimpleRender()`/`fillVBSoft()` (screen-space
+unprojected grid, plain TexCoord0) instead of the water-shader path
+(`fillVBHard`, position-only VB + refracted/reflected UVs). A misplaced or
+unclipped water triangle would look exactly like this. Agent
+`vulkan-water-artifacts` (mats005 slot 2, worktree
+`f1fb99/vulkan-water-artifacts`, base `10f50f310`) is reproducing, comparing
+GL2/GL3/official, tracing the water draw and evaluating either enabling the
+water-shader path for Vulkan or fixing the soft path.
