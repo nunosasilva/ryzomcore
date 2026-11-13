@@ -3193,3 +3193,145 @@ the field (`/tmp/opencode/ryzomtest/gl2static_crop.png`). GL3/Vulkan unchanged.
 `~/Projects/ryzom/ryzom_live/` and `~/.local/share/Ryzom/ryzom_live/`
 (36.6 MB, static, Release+FINAL_VERSION=OFF), with fdset, offload, Karavan,
 cursor, descriptor-pool and this fix.
+
+## Prime Roots / "Under Spring" white horizon (branch `vulkan-prime-roots-horizon`)
+
+Task: mats004 slot 0 (character **Matsfour**, continent `sources.continent` /
+"les sources interdites", the user's spot "Under Spring"). Under Vulkan the
+horizon is pure white; under GL2 the same build at the same spot is black, like
+the official client. The white area changes size with the Far Clip setting.
+
+### Reproduced (and the character died)
+
+- Vulkan run with the default config (FXAA/Bloom on): white from the horizon to
+  the top of the screen, dark terrain and plants in front.
+  `/tmp/opencode/prhorizon/cap/vk2_2400.png`, `vk2_600.png`.
+- GL2, same binary and spot: the same area is pure black (81.8% pure black in
+  the upper third). `/tmp/opencode/prhorizon/cap/gl2-0.jpg`.
+- The white is in the 3D image, not a screenshot/compositor artefact: GL2's
+  image is black at the same pixels.
+- **Matsfour died to a Fierce Yelk during the runs** (the area is dangerous,
+  the avatar was not moved). He was respawned at the Sources respawn cave,
+  position `(3292.23, -11335.28, 1.0)`; the original test position
+  `(3437.33, -11119.32, 11.0)` is **lost** (the server saved the respawn
+  position). The character is now alive there at 200/200 and was not moved
+  further. The user must reposition him before the fix can be verified at the
+  original view. This is the main open item.
+
+### What was ruled out (evidence)
+
+- **Not the frame clear.** `NLVK_CLEARLOG=1` logs every `clear2D` and the
+  `beginMainPass(first)` colour: the main clear is `(0,0,0,0)` for every
+  in-game frame; the only `clear2D` calls are `(0,0,0,0)` during loading. The
+  white survives the black clear, so it is a draw.
+- **Not the offscreen (FXAA/Bloom) render target's initial content.** A
+  temporary readback (`NLVK_RTREADBACK`, removed) of the 1280x800 effect target
+  right after `ensureRenderTarget()` creation is **all black** (8x8 grid of 32x32
+  samples, every cell `0,0,0`). Note the effect target exists in our runs
+  (FXAA/Bloom defaults are on; the client config did not override them).
+- **Not the sky dome draw.** The Sources uses the old sky (`SkyDay =
+  sky_primes_racines_sources.shape`; no `SkySheet` in the continent sheet).
+  Shape dump: one material, `flags=0x14` (ZWRITE|LIGHTING), colour white,
+  **diffuse/ambient/emissive black**, no texture, VB position+normal, 1452
+  indices. The driver trace at that draw shows the same values and the shader
+  produces black. It is the only sky-range (0.99-1.0) draw in a traced frame.
+- **Not a canopy texture upload failure.** `bk_primeracine.tga` (512x512) and
+  `bk_primeracine_ray.tga` (64x128) upload as BC in the Vulkan driver and the
+  cave's root ceiling renders textured. The canopy vertex colours average
+  ~114-127, not 255.
+- The `DummyTex` / missing-texture warns seen in logs come from texture groups /
+  UI, not from a texture that is drawn in the cave scene (no `TEXFAIL` at the
+  cave with the new fallback, see below).
+
+### Candidate fix committed here
+
+GL2 binds a material texture even when its file is missing; an incomplete GL
+texture samples as opaque black. The Vulkan driver instead **dropped the
+stage**, and the simple/mega shaders then fall back to the vertex/material
+colour (white for untextured landscape/sky materials). This is a real
+GL-parity difference and the most likely cause of a bright patch where the
+official client is black.
+
+Change (`nel/src/3d/driver/vulkan/` only, GL/GL3 untouched): a 1x1 opaque
+black texture (`getBlackTexture()`/`getSolidTexture()`; the white texture now
+uses the same helper) is bound when `setupTextureEx()` fails because the
+ITexture has no image (`getWidth()/getHeight() == 0`, i.e. a missing file).
+Other upload failures still drop the stage. The fallback is routed through the
+existing stage cache, so the mega path sees it too, and it is destroyed with
+the white texture at shutdown.
+
+**Not verified at the Under Spring view** (see the death above). It was
+verified that it does not change the cave/login rendering and that validation
+is otherwise clean (only the known gamescope WSI VUIDs).
+
+**Synthetic proof of the fallback (white -> black).** A hardlink copy of the
+user's `data` was made and `bagne_maps.bnp` rebuilt without
+`bk_primeracine.dds` / `bk_primeracine_ray.dds` (the user's install was not
+modified; the copy's directory entry was replaced, the originals were intact
+and the copy was deleted afterwards). Those textures are used by the Zorai
+plant hair on Matsfour's head, so a visible object had a missing texture:
+
+- fallback disabled (`#if 0` around the new branch, driver screenshots
+  `/tmp/opencode/prhorizon/cap/miss3_1200.png`): the hair renders **white**;
+- committed fallback (`/tmp/opencode/prhorizon/cap/miss4_1200.png`): the same
+  hair renders **black**, like GL. The rest of the cave scene (portal, canopy
+  ceiling, terrain, HUD) is identical.
+
+That is the exact class of difference between GL and Vulkan that the fix
+removes; whether the Sources horizon white is one of these missing textures is
+the remaining question for the re-test at the spot.
+
+### Build / run reproduction
+
+- Worktree: `/home/nuno/.local/share/opencode/worktree/f1fb99/vulkan-prime-roots-horizon`
+  (branch off `10f50f310`).
+- Run dir: `/tmp/opencode/prhorizon` (symlinks to the user's `data`, a copy of
+  `user`, a small `save`; `client.cfg` written by the runner).
+- Runner: `/tmp/opencode/prhorizon/run.sh` (gamescope headless, login, retry
+  CONNECT on "already in online state", Vulkan driver screenshots, F10 for GL2,
+  graceful quit). Environment: `TAG=... DRIVER=Vulkan|OpenGL WAIT=50`. The
+  "already online" retry loop is needed after a killed client; **do not** use
+  the no-slot guard when the account is free (it takes the session itself).
+- Account: **mats004 / passDOSma / slot 0**; one client at a time. Never move
+  the avatar here.
+- Shape dump helper (not in the repo): `/tmp/opencode/prhorizon/shapedump.cpp`
+  (links `-lnel3d -lnelmisc`), used to dump materials/vertex colours of
+  `.shape` files.
+
+### Next steps (in order)
+
+1. Ask the user to log in and position Matsfour back at the "Under Spring"
+   spot (the old position is gone); log out and wait 5 minutes.
+2. Re-run the Vulkan client with `NLVK_VALIDATION=1` and take driver
+   screenshots. If the white is gone, the missing-texture fallback was the
+   cause; sample the same pixels as GL2/official and close the task.
+3. If it is still white, the draw must be identified at the spot. The temporary
+   instrumentation used here (re-add, not committed):
+   - `NLVK_CLEARLOG=1`: log every `clear2D` (colour, offscreen/main, frame) and
+     the main-pass clear colour (`beginMainPass`).
+   - `NLVK_DRAWLOG_FRAME=<n>`: log every draw of that swap-buffer frame with
+     count/topology/depth range/material shader/colour/diffuse/blend/zwrite/
+     lighting/VB flags and all four texture stages (pointer, size, share name,
+     TexEnv, constant colour). The white was **not** visible from the death
+     camera, so this must be done at the user's view.
+   - `NLVK_TEXLOG=1` in `uploadTextureVulkan()` / on a `setupTextureEx` failure
+     logs texture names and sizes (used to rule out the canopy/DummyTex).
+   - `NLVK_RTREADBACK`: 8x8-grid readback of a new >=1024-wide render target
+     (used to rule out the FXAA/Bloom target's initial contents).
+   - `NLVK_FORCECLEAR=1` (already in the driver) turns the main-pass clear
+     magenta: if the white becomes magenta it is the clear; it is not.
+4. Toggles to isolate at the spot: `FXAA = 0; Bloom = 0;` (bypasses the
+   effect render target), `Fog = 0;` (dev key), `NLVK_MEGA=1`, `NLVK_NOVP=1`,
+   `NLVK_NOUBO=1`, Far Clip 200 vs 800.
+5. If a stage texture is the cause, the black fallback above should remove the
+   white; if the white draw has **no texture at all** (a white material), the
+   draw trace will name it and the fix belongs in that material/shader, not in
+   the fallback.
+
+### Environment notes
+
+- Another agent owns `mats005` and a `ryzom_client_dev` from worktree
+  `vulkan-water-artifacts`; the runner only refuses on its **own** binary path
+  now (the shared `ryzom_client_dev` basename check was removed).
+- The user's client is on `mats007`; our nested gamescope display is separate
+  (the runner prints it).
