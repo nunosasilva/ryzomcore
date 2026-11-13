@@ -1075,6 +1075,7 @@ void watervkPPGenerate(std::string &result, bool calcReflectivity, bool diffuse)
 	ss << "layout(std140, set = 0, binding = " << NL_VK_MEGA_BINDING_USER_PIXEL_PROGRAM << ") uniform NlWater {" << std::endl;
 	ss << "    vec4 bump0ScaleBias;" << std::endl;
 	ss << "    vec4 bump1ScaleBias;" << std::endl;
+	ss << "    vec4 reflectParams;" << std::endl;
 	ss << "};" << std::endl;
 	ss << std::endl;
 
@@ -1097,7 +1098,21 @@ void watervkPPGenerate(std::string &result, bool calcReflectivity, bool diffuse)
 	ss << "  b0 = b0 * bump0ScaleBias.x + bump0ScaleBias.y;" << std::endl;
 	ss << "  vec2 b1 = texture(sampler1, texCoord1.xy + b0).xy;" << std::endl;
 	ss << "  b1 = b1 * bump1ScaleBias.x + bump1ScaleBias.y;" << std::endl;
-	ss << "  vec4 col = texture(sampler2, texCoord2.xy + b1);" << std::endl;
+	// The water VP computes o[TEX2] once per screen-grid vertex. Interpolating
+	// it across the 20x20 grid makes each 64x40 cell flat-shaded (visible as
+	// dark/bright triangles). Recompute the world-space vertex-to-camera vector
+	// per fragment from the interpolated eye-space position: the VP's
+	// c[9] - v[0] is in world axes (the water model matrix is a translation
+	// only), so undo the view rotation here. Do not use the synthesized
+	// worldPos varying: the water VP's epilogue divides it by ecPos.w, which
+	// is not reliable for this program; ecPos is what the fog path already
+	// uses. Keep the per-vertex texCoord2.z for calculated reflectivity; only
+	// the envmap lookup becomes per-pixel.
+	ss << "  vec3 eyePos = ecPos.xyz / ecPos.w;" << std::endl;
+	ss << "  vec3 worldPosFrag = transpose(mat3(viewMatrix)) * (eyePos - viewMatrix[3].xyz);" << std::endl;
+	ss << "  vec3 toObs = normalize(cameraWorldPos - worldPosFrag);" << std::endl;
+	ss << "  vec2 envUv = -toObs.xy * reflectParams.x + reflectParams.y;" << std::endl;
+	ss << "  vec4 col = texture(sampler2, envUv + b1);" << std::endl;
 	if (calcReflectivity)
 	{
 		// Calculated reflectivity: the per-vertex fresnel base (texCoord2.z)

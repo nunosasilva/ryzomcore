@@ -440,7 +440,7 @@ static float bumpNormalizationFactor(ITexture *tex)
 {
 	if (!tex || !tex->isBumpMap())
 		return 1.f;
-	return 0.25f * NLMISC::safe_cast<CTextureBump *>(tex)->getNormalizationFactor();
+	return NLMISC::safe_cast<CTextureBump *>(tex)->getNormalizationFactor();
 }
 
 const CCameraUBOData &CDriverVulkan::stageMegaCameraUBO()
@@ -874,12 +874,28 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	{
 		CWaterUBOData waterData;
 		memset(&waterData, 0, sizeof(waterData));
-		const float factor0 = bumpNormalizationFactor(_CurrentMaterial->getTexture(0));
-		const float factor1 = bumpNormalizationFactor(_CurrentMaterial->getTexture(1));
+		// GL3 scales bump 0 by 0.25 and bump 1 not at all (the first map is
+		// the height field, the second the detail normal). Applying 0.25 to
+		// both made the detail perturbation 4x weaker than GL3, which left
+		// the coarse per-vertex envmap steps of the water screen grid visible.
+		// Keep GL3's non-bump default (1) too, not 0.25 * 1.
+		ITexture *bump0 = _CurrentMaterial->getTexture(0);
+		ITexture *bump1 = _CurrentMaterial->getTexture(1);
+		const float factor0 = (bump0 && bump0->isBumpMap())
+			? 0.25f * bumpNormalizationFactor(bump0) : 1.f;
+		const float factor1 = (bump1 && bump1->isBumpMap())
+			? bumpNormalizationFactor(bump1) : 1.f;
 		waterData.bump0ScaleBias[0] = 2.f * factor0;
 		waterData.bump0ScaleBias[1] = -factor0;
 		waterData.bump1ScaleBias[0] = 2.f * factor1;
 		waterData.bump1ScaleBias[1] = -factor1;
+		// Same mapping the water vertex program uses for o[TEX2]:
+		// -normalize(toObs) * 0.5 + 0.5. Constant in the engine
+		// (setupMaterialNVertexShader sets c[10] to (0.5, 0.5, 0, 1)).
+		waterData.reflectParams[0] = 0.5f;
+		waterData.reflectParams[1] = 0.5f;
+		waterData.reflectParams[2] = 0.0f;
+		waterData.reflectParams[3] = 1.0f;
 		const uint32 waterOffset = allocUniformBlock(&waterData, sizeof(waterData));
 		if (waterOffset == 0xFFFFFFFF)
 			return false;

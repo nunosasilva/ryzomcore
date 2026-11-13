@@ -2086,7 +2086,7 @@ bool CDriverVulkan::renderSimpleTriangles(uint32 firstIndex, uint32 ntris)
 	return drawIndexed(*_CurrentMaterial, firstIndex, ntris * 3, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, _IndexFormat / 8);
 }
 
-bool CDriverVulkan::renderRawTriangles(CMaterial &mat, uint32 startVertex, uint32 numTri)
+bool CDriverVulkan::renderRawTriangles(CMaterial &mat, uint32 startIndex, uint32 numTris)
 {
 	if (!setupMaterial(mat))
 		return false;
@@ -2095,7 +2095,9 @@ bool CDriverVulkan::renderRawTriangles(CMaterial &mat, uint32 startVertex, uint3
 	for (sint pass = 0; pass < passes; ++pass)
 	{
 		setupMaterialPass((uint)pass);
-		if (!drawArrays(mat, startVertex, numTri * 3, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST))
+		// The engine's index is a triangle index (GL3 passes startIndex*3 to
+		// glDrawArrays); CWaterModel::fillVBHard starts at startTri*vtx*3.
+		if (!drawArrays(mat, startIndex * 3, numTris * 3, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST))
 		{
 			ok = false;
 			break;
@@ -2105,7 +2107,7 @@ bool CDriverVulkan::renderRawTriangles(CMaterial &mat, uint32 startVertex, uint3
 	return ok;
 }
 
-bool CDriverVulkan::renderRawLines(CMaterial &mat, uint32 startVertex, uint32 numTri)
+bool CDriverVulkan::renderRawLines(CMaterial &mat, uint32 startIndex, uint32 numLines)
 {
 	if (!setupMaterial(mat))
 		return false;
@@ -2114,7 +2116,8 @@ bool CDriverVulkan::renderRawLines(CMaterial &mat, uint32 startVertex, uint32 nu
 	for (sint pass = 0; pass < passes; ++pass)
 	{
 		setupMaterialPass((uint)pass);
-		if (!drawArrays(mat, startVertex, numTri * 2, VK_PRIMITIVE_TOPOLOGY_LINE_LIST))
+		// Line index, like GL3's startIndex << 1.
+		if (!drawArrays(mat, startIndex * 2, numLines * 2, VK_PRIMITIVE_TOPOLOGY_LINE_LIST))
 		{
 			ok = false;
 			break;
@@ -2124,7 +2127,7 @@ bool CDriverVulkan::renderRawLines(CMaterial &mat, uint32 startVertex, uint32 nu
 	return ok;
 }
 
-bool CDriverVulkan::renderRawPoints(CMaterial &mat, uint32 startVertex, uint32 numPoints)
+bool CDriverVulkan::renderRawPoints(CMaterial &mat, uint32 startIndex, uint32 numPoints)
 {
 	if (!setupMaterial(mat))
 		return false;
@@ -2133,7 +2136,7 @@ bool CDriverVulkan::renderRawPoints(CMaterial &mat, uint32 startVertex, uint32 n
 	for (sint pass = 0; pass < passes; ++pass)
 	{
 		setupMaterialPass((uint)pass);
-		if (!drawArrays(mat, startVertex, numPoints, VK_PRIMITIVE_TOPOLOGY_POINT_LIST))
+		if (!drawArrays(mat, startIndex, numPoints, VK_PRIMITIVE_TOPOLOGY_POINT_LIST))
 		{
 			ok = false;
 			break;
