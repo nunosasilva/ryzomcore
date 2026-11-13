@@ -400,9 +400,9 @@ public:
 	virtual bool renderLines(CMaterial &mat, uint32 firstIndex, uint32 nlines) override;
 	virtual bool renderTriangles(CMaterial &mat, uint32 firstIndex, uint32 ntris) override;
 	virtual bool renderSimpleTriangles(uint32 firstIndex, uint32 ntris) override;
-	virtual bool renderRawPoints(CMaterial &mat, uint32 startVertex, uint32 numPoints) override;
-	virtual bool renderRawLines(CMaterial &mat, uint32 startVertex, uint32 numTri) override;
-	virtual bool renderRawTriangles(CMaterial &mat, uint32 startVertex, uint32 numTri) override;
+	virtual bool renderRawPoints(CMaterial &mat, uint32 startIndex, uint32 numPoints) override;
+	virtual bool renderRawLines(CMaterial &mat, uint32 startIndex, uint32 numLines) override;
+	virtual bool renderRawTriangles(CMaterial &mat, uint32 startIndex, uint32 numTris) override;
 	virtual bool renderLinesWithIndexOffset(CMaterial &mat, uint32 firstIndex, uint32 nlines, uint indexOffset) override;
 	virtual bool renderTrianglesWithIndexOffset(CMaterial &mat, uint32 firstIndex, uint32 ntris, uint indexOffset) override;
 	virtual bool renderSimpleTrianglesWithIndexOffset(uint32 firstIndex, uint32 ntris, uint indexOffset) override;
