@@ -534,6 +534,30 @@ bool CDriverVulkan::setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 wi
 	extent.height = targetHeight;
 	beginOffscreenPass(cmd, *target, extent);
 
+	// A colour target starts as undefined memory in Vulkan. GL's FBO textures
+	// are effectively zero-filled, and the engine relies on that: it never
+	// clears the FXAA scene target's colour while the sky is enabled, so
+	// pixels no geometry covers (a hole in a cave ceiling, for example) would
+	// otherwise show the previous frame or the allocation's old pixels. Clear
+	// each target once per frame, before its first use, to opaque black.
+	if (_FrameClearedTargets.find(target->Image) == _FrameClearedTargets.end())
+	{
+		VkClearAttachment attachment;
+		memset(&attachment, 0, sizeof(attachment));
+		attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		attachment.colorAttachment = 0;
+		attachment.clearValue.color.float32[0] = 0.f;
+		attachment.clearValue.color.float32[1] = 0.f;
+		attachment.clearValue.color.float32[2] = 0.f;
+		attachment.clearValue.color.float32[3] = 0.f;
+		VkClearRect rect;
+		memset(&rect, 0, sizeof(rect));
+		rect.rect.extent = extent;
+		rect.layerCount = 1;
+		vkCmdClearAttachments(cmd, 1, &attachment, 1, &rect);
+		_FrameClearedTargets.insert(target->Image);
+	}
+
 	// The engine usually calls setupViewport() with the region it wants, but a
 	// target bound without one still has to render into the requested rect.
 	CViewport vp;
