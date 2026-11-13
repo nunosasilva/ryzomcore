@@ -2005,23 +2005,23 @@ bool CDriverGL::activeVertexProgram(CVertexProgram *program)
 	// Compile if necessary
 	if (program && !CDriverGL::compileVertexProgram(program)) return false;
 
+	bool res = false;
 	if (program)
 	{
 		// If the program was compiled with arbvp1, activate through the ARB path
 		// (needed for correct SpecularWritten / GL_COLOR_SUM_ARB handling)
 		if (program->profile() == CVertexProgram::arbvp1)
-			return activeARBVertexProgram(program);
-
+			res = activeARBVertexProgram(program);
 		// Extension-priority dispatch. NV-first is deliberate; see
 		// preferARBVertexProgram for when ARB takes precedence.
-		if (preferARBVertexProgram())
-			return activeARBVertexProgram(program);
+		else if (preferARBVertexProgram())
+			res = activeARBVertexProgram(program);
 		else if (_Extensions.NVVertexProgram)
-			return activeNVVertexProgram(program);
+			res = activeNVVertexProgram(program);
 		else if (_Extensions.ARBVertexProgram)
-			return activeARBVertexProgram(program);
+			res = activeARBVertexProgram(program);
 		else if (_Extensions.EXTVertexShader)
-			return activeEXTVertexShader(program);
+			res = activeEXTVertexShader(program);
 	}
 	else
 	{
@@ -2030,15 +2030,23 @@ bool CDriverGL::activeVertexProgram(CVertexProgram *program)
 		// On NVIDIA, GL_VERTEX_PROGRAM_ARB == GL_VERTEX_PROGRAM_NV, so this
 		// correctly disables the NV path too.
 		if (_Extensions.ARBVertexProgram)
-			return activeARBVertexProgram(nullptr);
+			res = activeARBVertexProgram(nullptr);
 		else if (_Extensions.NVVertexProgram)
-			return activeNVVertexProgram(nullptr);
+			res = activeNVVertexProgram(nullptr);
 		else if (_Extensions.EXTVertexShader)
-			return activeEXTVertexShader(nullptr);
+			res = activeEXTVertexShader(nullptr);
 	}
 
-	// Can't do anything
-	return false;
+	// A vertex buffer may be activated while no vertex program is active: the
+	// vegetable blend layer models do that (they bind their VB before switching to
+	// the z-sort program, because the GL3 driver selects its program from the
+	// vertex format at setupMaterial time). The arrays of that VB were then set up
+	// for the fixed-function pipeline. Set them up again for the vertex program,
+	// otherwise the program reads zeroed attributes and the geometry collapses.
+	if (res && program && !_LastSetupGLArrayVertexProgram && _LastVB.VBMode != CVertexBufferInfo::TVBModeNone)
+		setupGlArrays(_LastVB);
+
+	return res;
 }
 
 // ***************************************************************************
