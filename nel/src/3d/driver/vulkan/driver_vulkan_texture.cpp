@@ -232,16 +232,30 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 
 VkImageView CDriverVulkan::getWhiteTexture()
 {
-	if (_WhiteTexture.Image == VK_NULL_HANDLE)
+	return getSolidTexture(_WhiteTexture, 255, 255, 255, 255);
+}
+
+VkImageView CDriverVulkan::getBlackTexture()
+{
+	return getSolidTexture(_BlackTexture, 0, 0, 0, 255);
+}
+
+/// Create (once) a 1x1 texture with the given colour and return its view.
+/// Bound in place of a material texture stage that has no usable image, so
+/// that the descriptor stays valid and the shader samples what GL samples
+/// from an incomplete texture (opaque black for a missing file).
+VkImageView CDriverVulkan::getSolidTexture(CTextureVulkan &target, uint8 r, uint8 g, uint8 b, uint8 a)
+{
+	if (target.Image == VK_NULL_HANDLE)
 	{
-		uint8 white[4] = { 255, 255, 255, 255 };
+		uint8 pixel[4] = { r, g, b, a };
 		VkBuffer staging = VK_NULL_HANDLE;
 		VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
 		void *mapped = NULL;
 		staging = createStagingBuffer(4, &stagingMemory, &mapped);
 		if (staging == VK_NULL_HANDLE)
 			return VK_NULL_HANDLE;
-		memcpy(mapped, white, 4);
+		memcpy(mapped, pixel, 4);
 
 		VkImageCreateInfo ici;
 		memset(&ici, 0, sizeof(ici));
@@ -258,29 +272,29 @@ VkImageView CDriverVulkan::getWhiteTexture()
 		ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 		ici.samples = VK_SAMPLE_COUNT_1_BIT;
 		ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		if (vkCreateImage(_Device, &ici, NULL, &_WhiteTexture.Image) != VK_SUCCESS)
+		if (vkCreateImage(_Device, &ici, NULL, &target.Image) != VK_SUCCESS)
 			return VK_NULL_HANDLE;
 
 		VkMemoryRequirements req;
-		vkGetImageMemoryRequirements(_Device, _WhiteTexture.Image, &req);
+		vkGetImageMemoryRequirements(_Device, target.Image, &req);
 		VkMemoryAllocateInfo mai;
 		memset(&mai, 0, sizeof(mai));
 		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		mai.allocationSize = req.size;
 		mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		vkAllocateMemory(_Device, &mai, NULL, &_WhiteTexture.Memory);
-		vkBindImageMemory(_Device, _WhiteTexture.Image, _WhiteTexture.Memory, 0);
+		vkAllocateMemory(_Device, &mai, NULL, &target.Memory);
+		vkBindImageMemory(_Device, target.Image, target.Memory, 0);
 
 		VkImageViewCreateInfo vci;
 		memset(&vci, 0, sizeof(vci));
 		vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		vci.image = _WhiteTexture.Image;
+		vci.image = target.Image;
 		vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
 		vci.format = NL_VK_TEXTURE_FORMAT;
 		vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		vci.subresourceRange.levelCount = 1;
 		vci.subresourceRange.layerCount = 1;
-		vkCreateImageView(_Device, &vci, NULL, &_WhiteTexture.View);
+		vkCreateImageView(_Device, &vci, NULL, &target.View);
 
 		VkSamplerCreateInfo sci;
 		memset(&sci, 0, sizeof(sci));
@@ -291,7 +305,7 @@ VkImageView CDriverVulkan::getWhiteTexture()
 		sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 		sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 		sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		vkCreateSampler(_Device, &sci, NULL, &_WhiteTexture.Sampler);
+		vkCreateSampler(_Device, &sci, NULL, &target.Sampler);
 
 		// Upload + transition in one submit.
 		vkDeviceWaitIdle(_Device);
@@ -315,7 +329,7 @@ VkImageView CDriverVulkan::getWhiteTexture()
 		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = _WhiteTexture.Image;
+		barrier.image = target.Image;
 		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		barrier.subresourceRange.levelCount = 1;
 		barrier.subresourceRange.layerCount = 1;
@@ -328,7 +342,7 @@ VkImageView CDriverVulkan::getWhiteTexture()
 		region.imageExtent.width = 1;
 		region.imageExtent.height = 1;
 		region.imageExtent.depth = 1;
-		vkCmdCopyBufferToImage(cmd, staging, _WhiteTexture.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+		vkCmdCopyBufferToImage(cmd, staging, target.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -346,7 +360,7 @@ VkImageView CDriverVulkan::getWhiteTexture()
 		vkDestroyBuffer(_Device, staging, NULL);
 		vkFreeMemory(_Device, stagingMemory, NULL);
 	}
-	return _WhiteTexture.View;
+	return target.View;
 }
 
 VkImageView CDriverVulkan::getWhiteCubeTexture()

@@ -1345,6 +1345,22 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 					_TextureUsed.insert(info);
 			}
 		}
+		else if (texture->getWidth() == 0 || texture->getHeight() == 0)
+		{
+			// The material references a texture that has no image: the file is
+			// missing (or could not be decoded). GL binds it anyway and an
+			// incomplete texture samples as opaque black there. Dropping the
+			// stage instead would make the shader use the vertex/material
+			// colour, which is white on the untextured landscape and sky
+			// materials and turns a missing texture into a bright patch.
+			if (getBlackTexture() != VK_NULL_HANDLE)
+			{
+				_StageTextures[stage] = &_BlackTexture;
+				_StageTextureSrc[stage] = texture;
+				_StageTextureVk[stage] = &_BlackTexture;
+				_StageTextureGen[stage] = _TextureGeneration;
+			}
+		}
 	}
 	_TexturesDirty = true;
 }

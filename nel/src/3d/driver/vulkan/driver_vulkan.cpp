@@ -1288,6 +1288,11 @@ void CDriverVulkan::shutdownVulkan()
 		if (white.View) vkDestroyImageView(_Device, white.View, NULL);
 		if (white.Image) vkDestroyImage(_Device, white.Image, NULL);
 		if (white.Memory) vkFreeMemory(_Device, white.Memory, NULL);
+		CTextureVulkan &black = _BlackTexture;
+		if (black.Sampler) vkDestroySampler(_Device, black.Sampler, NULL);
+		if (black.View) vkDestroyImageView(_Device, black.View, NULL);
+		if (black.Image) vkDestroyImage(_Device, black.Image, NULL);
+		if (black.Memory) vkFreeMemory(_Device, black.Memory, NULL);
 
 		// Pipelines and layouts.
 		for (map<CPipelineKey, CPipelineVulkan>::iterator it = _PipelineCache.begin(); it != _PipelineCache.end(); ++it)
