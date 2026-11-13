@@ -308,3 +308,6 @@ AGENTS_nuno.md
 
 # Scratch space for agents/tests (never commit)
 /tmp/
+
+# Local test accounts (never commit)
+/AGENTS_accounts.md
