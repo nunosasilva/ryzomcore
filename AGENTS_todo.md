@@ -2828,3 +2828,68 @@ Agent `vulkan-microveget` (mats005, worktree `f1fb99/vulkan-microveget`, base
 driver in our build (official client and GL3/Vulkan to compare), bisecting the
 recent shared-engine commits (prime suspect: the vegetable LOD fast path from
 `ce1fe9887`), and fixing it without losing the Vulkan/GL3 optimization.
+
+## Fixed: Vulkan hardware cursors (resize / interface shapes)
+
+**Symptom.** Under `Driver3D="Vulkan"` the pointer never changed shape: the
+Ryzom cursors (`curs_default`, `curs_resize_LR` on in-game window edges) stayed
+the root arrow, while `Driver3D="OpenGL3"` changed them. Window resizing itself
+worked, and the WM's own border resize cursor still appeared under Vulkan.
+
+**Cause.** `CDriverVulkan::addCursor/setCursor/showCursor/setMousePos/
+setCapture/isSystemCursorCaptured/setCursorScale` were no-ops in
+`driver_vulkan_stubs.cpp`. The GL/GL3 drivers implement them in
+`driver_opengl*/driver_opengl*_inputs.cpp`: the GUI registers every texture
+listed in `client.cfg`'s `HardwareCursors` with `addCursor()`, and
+`CViewPointer::drawCursor()` calls `setCursor()` every frame. The GL3 X11 path
+crops the bitmap to its non-transparent bounds, scales it by
+`CViewRenderer::hwCursorScale / interface scale`, rotates it
+(`CViewPointer` rot 0..3), builds an ARGB X cursor (`XcursorImageLoadCursor`,
+fallback `XRenderCreateCursor`), and applies it with `XDefineCursor`;
+`showCursor(false)` defines a blank 8x8 pixmap cursor for freelook/software
+cursor mode, and `showCursor(true)` clears the name so the next frame restores
+the shape.
+
+**Fix (branch `vulkan-cursor`).**
+
+- New `nel/src/3d/driver/vulkan/driver_vulkan_inputs.cpp`: the X11 part of the
+  GL3 cursor code, adapted to the Vulkan driver's `_Display` / `_XWindow`.
+  XCursor is preferred; XRender is the fallback. Includes the GL3 alpha-crop,
+  rotation, scale, hotspot offset/height flip and "none"/empty-name semantics.
+- `driver_vulkan.{h,cpp}`: cursor state and `CCursor` map, `createCursors()`
+  after the X window is created, `releaseCursors()` before the window is
+  destroyed, and a non-fatal X error handler (GL3's `nelXErrorsHandler`
+  equivalent). Without the handler, a cursor update after the WM/xdotool
+  destroys the window made Xlib exit the process on `BadWindow`.
+- `setCursor` caches the last handle applied to the window (`_AppliedCursor`):
+  the GUI calls it every frame, and this avoids per-frame `XDefineCursor`
+  traffic. `setMousePos()` uses the live `_WindowWidth/_WindowHeight`.
+- `CMakeLists.txt`: add `HAVE_XCURSOR` / `HAVE_XRENDER` and link libXcursor /
+  libXrender, as the GL3 driver does.
+- GL/GL3 sources untouched.
+
+**Verified (Xvfb + KWin, 1280x800, mats005 slot 1 where stated).**
+
+- Login screen, `HardwareCursor=1`: pre-fix Vulkan shows the root cursor
+  (16x16); fixed Vulkan and GL3 both show `curs_default.tga` (44x39,
+  `xhot=2 yhot=2`, identical XFixes hash `11165096310863501270`).
+- In game, hovering the Missions window's left/right header edge:
+  Vulkan and GL3 both switch to the resize cursor (44x39, `xhot=14 yhot=7`,
+  identical hash `12035872363999630979`); moving away restores the default.
+  This is the reported "resize cursor near a window corner".
+- With KWin: WM border cursors are unchanged under Vulkan (right edge 24x24
+  `xhot=19`, bottom edge `xhot=13 yhot=18`, bottom-right corner `xhot=15
+  yhot=15`); inside the client is Ryzom's cursor; outside is the root cursor.
+  Pre-fix Vulkan showed the same WM border cursors (the WM owns them); only the
+  client-area shape was wrong.
+- `HardwareCursor=0`: XFixes reports the blank 8x8 cursor and the GUI draws its
+  software pointer (screenshot).
+- Freelook (right-drag in game): blank 8x8 during the drag, Ryzom cursor back
+  on release. Resize to 1024x640 and back: cursor still updates, no stuck
+  shape. `xdotool windowclose` (external XDestroyWindow) exits 0 with one
+  `BadWindow` warning from the log handler, no crash.
+
+**Left / notes.** The X11 cursor code is duplicated from GL3 rather than
+shared: extracting it would mean a driver-common library and restructuring the
+GL3 Windows/Mac branches, which is riskier than the port and would disturb the
+working GL drivers. The static/FINAL binaries need a rebuild to pick this up.
