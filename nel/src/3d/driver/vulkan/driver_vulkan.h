@@ -966,6 +966,12 @@ private:
 	/// driver's used-memory counter.
 	uint64						_AllocatedTextureMemory;
 	std::set<CTextureDrvInfosVulkan *>	_TextureUsed;
+	/// Offscreen colour targets already cleared in this frame. Vulkan does not
+	/// zero-initialise colour images, so a target the engine never clears (the
+	/// FXAA scene target relies on the sky/geometry to cover it) would show the
+	/// previous frame's content (or the allocation's old pixels) wherever
+	/// nothing is drawn. GL's FBO textures are effectively black there.
+	std::set<VkImage>			_FrameClearedTargets;
 	bool						_UsedTextureMemorySumEnabled;
 
 	// --- Mega shader resources ---

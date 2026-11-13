@@ -1309,6 +1309,13 @@ bool CDriverVulkan::supportVertexProgram(CVertexProgram::TProfile profile) const
 	switch (profile)
 	{
 	case IProgram::nelvp:
+		// The old NeL assembly vertex programs (the landscape/decoration
+		// programs converted by convertNelvpToGLSL) do not feed the Vulkan
+		// pixel path correctly: the Prime Roots distant landscape renders
+		// white (Under Spring). The engine's non-VP fallback, the same one
+		// NLVK_NOVP exercises, draws it correctly and is what the other
+		// drivers use in this case. NLVK_VPNELVP=1 re-enables them.
+		return getenv("NLVK_VPNELVP") != NULL;
 	case IProgram::glsl330v:
 		return true;
 	case IProgram::glsl3vi:
