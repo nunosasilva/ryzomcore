@@ -58,6 +58,7 @@
 
 // Client
 #include "init.h"
+#include "global.h"
 #include "input.h"
 #include "client_cfg.h"			// Configuration of the client.
 #include "login_patch.h"
@@ -910,18 +911,30 @@ void initLog()
 // Driver selection
 //---------------------------------------------------
 
+// Names shown in the client interface (Configuration window) and in the
+// display creation log. "OpenGL (2)" distinguishes the legacy OpenGL driver
+// from OpenGL3.
 static const char *getDriverName(UDriver::TDriver driver)
 {
 	switch (driver)
 	{
-		case UDriver::Direct3d: return "Direct3D";
-		case UDriver::OpenGl: return "OpenGL";
+		case UDriver::Direct3d: return "DirectX";
+		case UDriver::OpenGl: return "OpenGL (2)";
 		case UDriver::OpenGlEs: return "OpenGLES";
 		case UDriver::OpenGl3: return "OpenGL3";
 		case UDriver::OpenGlEs3: return "OpenGLES3";
 		case UDriver::Vulkan: return "Vulkan";
 		default: return "unknown";
 	}
+}
+
+// The driver selected in prelogInit(): for Driver3D = "Auto" this is the
+// candidate that was actually able to create the display.
+static UDriver::TDriver	currentDriver = UDriver::OpenGl;
+
+const char *getCurrentDriverName()
+{
+	return getDriverName(currentDriver);
 }
 
 // Candidate drivers for Driver3D = "Auto", best first. Vulkan is the
@@ -1280,8 +1293,9 @@ void prelogInit()
 			return;
 		}
 
-		nlinfo("3D: display created with the %s driver",
-			getDriverName(ClientCfg.Driver3D == CClientConfig::DrvAuto ? autoDrivers[autoDriverIndex] : driver));
+		currentDriver = ClientCfg.Driver3D == CClientConfig::DrvAuto ? autoDrivers[autoDriverIndex] : driver;
+
+		nlinfo("3D: display created with the %s driver", getCurrentDriverName());
 
 		// Enable or disable VSync
 		if (ClientCfg.WaitVBL)
