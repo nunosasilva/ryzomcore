@@ -3227,3 +3227,44 @@ unclipped water triangle would look exactly like this. Agent
 `f1fb99/vulkan-water-artifacts`, base `10f50f310`) is reproducing, comparing
 GL2/GL3/official, tracing the water draw and evaluating either enabling the
 water-shader path for Vulkan or fixing the soft path.
+
+## Configuration window: 3D driver section (branch `config-driver-panel`)
+
+Merged-ready commit `e28a37c7a` on `config-driver-panel` (based on `6d683f8bd`).
+GRAPHICS in the Configuration window (`u`) now has a **Driver** entry directly
+below SPECIAL EFFECTS. The page is informational only; the driver is selected
+at startup and cannot change at runtime.
+
+- `getDriverName()` in `init.cpp` now returns the interface names (`OpenGL (2)`,
+  `OpenGL3`, `Vulkan`, `DirectX`) and is also used for the
+  `3D: display created with the ... driver` log line. The resolved enum is kept
+  in `currentDriver` and exposed as `getCurrentDriverName()` (`global.h`), which
+  is registered for Lua in `lua_ihm_ryzom.cpp` as `getCurrentDriverName`.
+  For `Driver3D="Auto"` the value is `autoDrivers[autoDriverIndex]`, so it
+  reports the candidate that actually created the display, including the
+  `setDisplay()` fallback path.
+- `game_config.xml`: new tree node `drv` (`name="uiConfigDriver"`) after `fxs`,
+  and a `drv` content group after `fx` with one text view (`driver_name`).
+  `game_config.lua`: `drv` added to `configHideAll()`, and
+  `game:configInit()` sets `driver_name.text` to
+  `i18n.get("uiConfigDriverDesc"):toUtf8() .. getCurrentDriverName()`.
+  No new `.uxt` ids: `uiConfigDriver`/`uiConfigDriverDesc` already exist in all
+  shipped languages, so no `gamedev.bnp` string update is required.
+
+**Data shipping**: loose files win over `gamedev.bnp` (verified in the log:
+`insertFileInMap(game_config.xml, ...): already inserted from 'gamedev.bnp@'
+but special case so override it`). The test run dir used
+`data/gamedev/interfaces_v3/game_config.xml` and `game_config.lua` as loose
+files; no BNP was modified. For a normal install, either repack `gamedev.bnp`
+with the two data files or drop those loose files into
+`data/gamedev/interfaces_v3/`.
+
+**Verified** (mats006 slot 1, 1280x800, gamescope, Debug `build-vulkan`):
+`Driver3D` = `Vulkan` -> "Driver: Vulkan"; `Auto` -> "Driver: Vulkan" (log:
+`3D: display created with the Vulkan driver`); `OpenGL3` -> "Driver: OpenGL3";
+`OpenGL` -> "Driver: OpenGL (2)". Screenshots and logs in
+`tmp/drvpanel-evidence/` (`vulkan-panel.jpg`, `auto-panel.jpg`,
+`opengl3-panel.jpg`, `opengl2-panel.jpg`). The tree row, section switching and
+the rest of the window are unchanged; no clipping at 1280x800. Tests drove the
+window through the debug `/luaScript` command and the tree; that is not part of
+the commit. No clients were left running.
