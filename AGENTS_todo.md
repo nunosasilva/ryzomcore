@@ -3420,3 +3420,73 @@ screenshots, perf data, extracted files or build artifacts any more.
 instead; delete large intermediates as soon as they are not needed. Existing
 evidence was reduced: /tmp/opencode went from 4.3 GB to <1 GB, the important
 screenshots/dumps moved to `tmp/prhorizon/`, old build copies deleted.
+
+## Prime Roots white horizon: ROOT CAUSE FOUND AND FIXED (nelvp programs)
+
+The user repositioned Matsfour at "Under Spring" (mats004 slot 0) and the
+white artifact was reproduced again with the black-fallback binary. The view is
+`/home/nuno/.local/share/opencode/worktree/f1fb99/vulkan-prime-roots-horizon/tmp/prhorizon/cap/vkA_2400.png`
+(before): pure white from the horizon to the top, 48.8% of the top third;
+GL2 at the same spot (`finalgl_screenshot_2026-11-13_005.jpg`) is 0.005% white
+and 67.4% black, like the official client.
+
+### How the draw was found
+
+- `NLVK_DRAWLOG_FRAME=3000`: per-draw log with material, four texture stages,
+  blend/depth/lighting flags, vertex-buffer flags, active user VP and NDC
+  bounds (temporary instrumentation, removed before the commit).
+- `NLVK_SKIP_DRAW` / `NLVK_SKIP_FILE` and `NLVK_SKIP_TEX`: skip by draw index,
+  live range list or texture name. Skipping **all** draws made the frame black;
+  skipping 0-1600 left the UI and made the 3D background black; **NLVK_NOVP=1**
+  made the white disappear.
+- Drawing each draw in an encoded colour (`NLVK_DRAWCOLOR`, fragment debug
+  branch, alpha preserved) put the white pixel on the landscape/decoration
+  draws. The decisive A/B was the **profile**: `glsl330v` disabled still had
+  the white; **`nelvp` disabled removed it** (1.1% white left, all UI text and
+  labels; 76% black).
+
+### Root cause
+
+The old NeL assembly vertex programs (`IProgram::nelvp`, converted to GLSL by
+`convertNelvpToGLSL`) do not feed the Vulkan pixel path correctly. The
+landscape/decoration programs render the whole distant landscape **white**
+instead of the rock/moss textures. The same programs work through GL2/GL3 and
+through the engine's non-VP fallback, which is what `NLVK_NOVP=1` selects.
+
+### Fix (committed)
+
+- `nel/src/3d/driver/vulkan/driver_vulkan_vp.cpp`: `supportVertexProgram()`
+  returns false for `IProgram::nelvp` by default, so the engine takes its
+  fixed-function fallback (the reference path). `NLVK_VPNELVP=1` re-enables
+  the converted programs for debugging. `glsl330v`, the opt-in GPU-skinning
+  insert path and the committed missing-texture black fallback are unchanged.
+- `driver_vulkan_target.cpp` / `driver_vulkan.{h,cpp}`: offscreen colour
+  targets are cleared to opaque black once per frame before their first use.
+  Vulkan does not zero-initialise colour images; GL's FBOs are effectively
+  black and the engine relies on that for pixels no geometry covers (a hole in
+  a cave ceiling). This makes the background behind the landscape black rather
+  than the previous frame/allocation content.
+
+### Verification
+
+- Vulkan, same spot and settings (`FXAA=1, Bloom=0, Vision=800,
+  LandscapeThreshold=2000, CameraDistance=13, MicroVeget=1`):
+  `finalvk_3000.png` / `finalvk_3600.png`: white 1.1% (UI only), black 76.5%;
+  the horizon is dark like GL2 (`finalgl_screenshot_2026-11-13_005.jpg`).
+- The no-VP landscape is darker/less detailed than the GL2 texture pass (the
+  nelvp programs also carry the landscape tile shading), but the white
+  artifact is gone and the official's black horizon is matched.
+- `NLVK_VALIDATION=1` on the clean build had only the known gamescope
+  swapchain WSI messages; no new errors.
+
+### Follow-up (why the fallback is not the end state)
+
+The real bug is in the nelvp -> Vulkan GLSL conversion / varying feed for the
+landscape/decoration programs. Fixing `convertNelvpToGLSL` or the pixel input
+link would let `nelvp` be re-enabled without losing the landscape detail; the
+`NLVK_VPNELVP=1` switch and the draw/VP trace above are the tools for that.
+Until then the fixed-function path is the correct, reference-matching
+behaviour and is what ships.
+
+Accounts: mats005 = water agent, mats006 = config agent, mats004 slot 0 =
+Matsfour (now at Under Spring, alive at 200/200, not moved further).

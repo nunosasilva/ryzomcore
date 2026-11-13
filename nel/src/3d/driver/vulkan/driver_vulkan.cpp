@@ -1822,6 +1822,7 @@ bool CDriverVulkan::beginFrame()
 	beginUploadBatch();
 
 	_FrameOpen = true;
+	_FrameClearedTargets.clear();
 	// Dynamic state is per command buffer: it starts from the defaults.
 	_LastPipeline = VK_NULL_HANDLE;
 	_BlendConstantsSet = false;
