@@ -288,10 +288,17 @@ void CPath::clearMap ()
 	getInstance()->_FileContainer.clearMap();
 }
 
+void CFileContainer::clearMissingFiles ()
+{
+	std::lock_guard<std::mutex> lock(_MissingFilesMutex);
+	_MissingFiles.clear();
+}
+
 void CFileContainer::clearMap ()
 {
 	nlassert(!_MemoryCompressed);
 	_Files.clear ();
+	clearMissingFiles ();
 	CBigFile::getInstance().removeAll ();
 	CStreamedPackageManager::getInstance().unloadAll ();
 	NL_DISPLAY_PATH("PATH: CPath::clearMap(): map directory cleared");
@@ -333,6 +340,8 @@ void CPath::remapExtension (const string &ext1, const string &ext2, bool substit
 void CFileContainer::remapExtension (const string &ext1, const string &ext2, bool substitute)
 {
 	nlassert(!_MemoryCompressed);
+
+	clearMissingFiles ();
 
 	string ext1lwr = toLowerAscii(ext1);
 	string ext2lwr = toLowerAscii(ext2);
@@ -417,6 +426,7 @@ void CFileContainer::remapFile (const std::string &file1, const std::string &fil
 {
 	if (file1.empty()) return;
 	if (file2.empty()) return;
+	clearMissingFiles ();
 	_RemappedFiles[toLowerAscii(file1)] = toLowerAscii(file2);
 }
 
@@ -514,6 +524,31 @@ string CFileContainer::lookup (const string &filename, bool throwException, bool
 	if (itss != _RemappedFiles.end())
 		str = itss->second;
 
+	// A name that already failed is not probed again until the search paths,
+	// the file maps or a remapping change. Entities and items ask for the same
+	// missing shape/texture once per instance, and each retry used to repeat
+	// the search and the warning. The local-directory probe uses the original
+	// filename, so keep it in the key.
+	string missingKey;
+	if (!filename.empty())
+	{
+		missingKey = str;
+		if (lookupInLocalDirectory)
+		{
+			missingKey += '\n';
+			// The local-directory probe uses the caller's exact name, and
+			// Linux filesystems are case sensitive, so keep the real case.
+			missingKey += filename;
+		}
+		std::lock_guard<std::mutex> lock(_MissingFilesMutex);
+		if (_MissingFiles.find(missingKey) != _MissingFiles.end())
+		{
+			if (throwException)
+				throw EPathNotFound (filename);
+			return "";
+		}
+	}
+
 	if (_MemoryCompressed)
 	{
 		CMCFileEntry *pMCFE = MCfind(str);
@@ -582,6 +617,14 @@ string CFileContainer::lookup (const string &filename, bool throwException, bool
 	}
 
 	// Not found
+	// Only remember misses that were allowed to warn: a silent probe (e.g.
+	// the zone search) must not suppress a later visible warning.
+	if (displayWarning && !missingKey.empty())
+	{
+		std::lock_guard<std::mutex> lock(_MissingFilesMutex);
+		if (_MissingFiles.size() < 8192)
+			_MissingFiles.insert(missingKey);
+	}
 	if (displayWarning)
 	{
 		if(filename.empty())
@@ -978,6 +1021,7 @@ void CPath::removeAllAlternativeSearchPath ()
 void CFileContainer::removeAllAlternativeSearchPath ()
 {
 	_AlternativePaths.clear ();
+	clearMissingFiles ();
 	NL_DISPLAY_PATH("PATH: CPath::RemoveAllAternativeSearchPath(): removed");
 }
 
@@ -992,6 +1036,9 @@ void CFileContainer::addSearchPath (const string &path, bool recurse, bool alter
 	//H_AUTO_INST(addSearchPath);
 
 	nlassert(!_MemoryCompressed);
+
+	// A path can provide a file that was missing before.
+	clearMissingFiles ();
 
 	// check empty directory
 	if (path.empty())
@@ -1577,6 +1624,8 @@ void CFileContainer::addIgnoredDoubleFile(const std::string &ignoredFile)
 void CFileContainer::insertFileInMap (const string &filename, const string &filepath, bool remap, const string &extension)
 {
 	nlassert(!_MemoryCompressed);
+	// The file may be one that lookup() previously reported as missing.
+	clearMissingFiles ();
 	// find if the file already exist
 	TFiles::iterator it = _Files.find (toLowerAscii(filename));
 	if (it != _Files.end ())
@@ -1694,6 +1743,7 @@ void CPath::removeBigFiles(const std::vector<std::string> &bnpFilenames)
 void CFileContainer::removeBigFiles(const std::vector<std::string> &bnpFilenames)
 {
 	nlassert(!isMemoryCompressed());
+	clearMissingFiles ();
 	CHashSet<TSStringId> bnpStrIds;
 	TFiles::iterator fileIt, fileCurrIt;
 	for (uint k = 0; k < bnpFilenames.size(); ++k)
@@ -1753,6 +1803,7 @@ void CFileContainer::memoryCompress()
 
 	SSMext.memoryCompress();
 	SSMpath.memoryCompress();
+	clearMissingFiles ();
 	uint nDbg = (uint)_Files.size();
 	uint nDbg2 = SSMext.getCount();
 	uint nDbg3 = SSMpath.getCount();

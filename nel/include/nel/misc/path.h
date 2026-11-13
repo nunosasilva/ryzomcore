@@ -27,6 +27,8 @@
 #include "string_mapper.h"
 
 #include <map>
+#include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -275,6 +277,14 @@ private:
 	typedef std::map<std::string, CFileEntry>	TFiles;
 	TFiles	 _Files; // first is the filename in lowercase (can be with a remapped extension)
 
+	/** Names that already failed to resolve. A caller (an entity, an item, a
+	 * texture) usually asks again for the same missing file, and each retry
+	 * used to repeat the map search, the fileExists() probes and the warning.
+	 * Cleared whenever a search path/map or a remapping changes.
+	 */
+	std::set<std::string>	_MissingFiles;
+	std::mutex				_MissingFilesMutex;
+
 
 
 	// If memory compressed use this
@@ -328,6 +338,8 @@ private:
 	CMCFileEntry	*MCfind (const std::string &filename);
 	sint			findExtension (const std::string &ext1, const std::string &ext2);
 	void			insertFileInMap (const std::string &filename, const std::string &filepath, bool remap, const std::string &extension);
+	/// Forget the files that lookup() failed to find (call when the maps change).
+	void			clearMissingFiles ();
 };
 
 

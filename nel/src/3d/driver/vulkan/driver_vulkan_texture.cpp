@@ -43,6 +43,27 @@ static uint64 uploadNowNs()
 		std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+/// Accumulate the duration of a scope into the NLVK_STATS texture counters.
+class CTextureCreateTimer
+{
+public:
+	CTextureCreateTimer(bool enabled, uint64 *total, uint64 *count)
+		: _Enabled(enabled), _Start(enabled ? uploadNowNs() : 0), _Total(total), _Count(count) {}
+	~CTextureCreateTimer()
+	{
+		if (_Enabled)
+		{
+			*_Total += uploadNowNs() - _Start;
+			++*_Count;
+		}
+	}
+private:
+	bool	_Enabled;
+	uint64	_Start;
+	uint64	*_Total;
+	uint64	*_Count;
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -162,6 +183,8 @@ CTextureDrvInfosVulkan::~CTextureDrvInfosVulkan()
 bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCount,
 	VkImageUsageFlags usage, VkFormat format, CTextureVulkan &out, uint32 layers, bool cube)
 {
+	CTextureCreateTimer statsTimer(_StatsEnabled, &_StatsTextureCreateNs, &_StatsTextureCreates);
+
 	VkImageCreateInfo ici;
 	memset(&ici, 0, sizeof(ici));
 	ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;

@@ -42,6 +42,7 @@
 #include "nel/misc/mutex.h"
 #include "nel/misc/report.h"
 #include "nel/misc/system_utils.h"
+#include "nel/misc/time_nl.h"
 #include "nel/misc/variable.h"
 
 #include "nel/misc/debug.h"
@@ -82,7 +83,16 @@ const char *IDisplayer::dateToHumanString ()
 
 const char *IDisplayer::dateToHumanString (time_t date)
 {
-	static char cstime[25];
+	// localtime() re-reads the timezone file here (~2 us); a logging burst
+	// has many lines in the same second, so only convert when it changes.
+	// The buffer and the cache are per thread: the old static buffer could be
+	// overwritten by another thread between the conversion and its use.
+	static thread_local char cstime[25];
+	static thread_local time_t lastDate = (time_t)-1;
+	if (date == lastDate)
+		return cstime;
+	lastDate = date;
+
 	struct tm *tms = localtime(&date);
 	if (tms)
 		strftime (cstime, 25, "%Y/%m/%d %H:%M:%S", tms);
@@ -248,7 +258,12 @@ void CStdDisplayer::doDisplay ( const CLog::TDisplayInfo& args, const char *mess
 		if (!args.CallstackAndLog.empty())
 			printf ("%s", args.CallstackAndLog.c_str());
 
-		fflush(stdout);
+		// Do not flush every line: on a terminal stdout is already line
+		// buffered, and when it is redirected the default buffering keeps a
+		// log burst from turning into one write() syscall per message. Only
+		// errors and asserts must reach the console immediately.
+		if (args.LogType == CLog::LOG_ERROR || args.LogType == CLog::LOG_ASSERT)
+			fflush(stdout);
 	}
 
 #ifdef NL_OS_WINDOWS
@@ -345,14 +360,14 @@ void CStdDisplayer::doDisplay ( const CLog::TDisplayInfo& args, const char *mess
 }
 
 CFileDisplayer::CFileDisplayer (const std::string &filename, bool eraseLastLog, const char *displayerName, bool raw) :
-	IDisplayer (displayerName), _NeedHeader(true), _LastLogSizeChecked(0), _Raw(raw)
+	IDisplayer (displayerName), _NeedHeader(true), _LastLogSizeChecked(0), _Raw(raw), _LastFlushTime(0.0)
 {
 	_FilePointer = (FILE*)1;
 	setParam (filename, eraseLastLog);
 }
 
 CFileDisplayer::CFileDisplayer () :
-	IDisplayer (""), _NeedHeader(true), _LastLogSizeChecked(0), _Raw(false)
+	IDisplayer (""), _NeedHeader(true), _LastLogSizeChecked(0), _Raw(false), _LastFlushTime(0.0)
 {
 	_FilePointer = (FILE*)1;
 }
@@ -361,9 +376,16 @@ CFileDisplayer::~CFileDisplayer ()
 {
 	if (_FilePointer > (FILE*)1)
 	{
+		fflush(_FilePointer);
 		fclose(_FilePointer);
 		_FilePointer = NULL;
 	}
+}
+
+void CFileDisplayer::flush ()
+{
+	if (_FilePointer > (FILE*)1)
+		fflush(_FilePointer);
 }
 
 void CFileDisplayer::setParam (const std::string &filename, bool eraseLastLog)
@@ -402,8 +424,10 @@ void CFileDisplayer::setParam (const std::string &filename, bool eraseLastLog)
 
 	if (_FilePointer > (FILE*)1)
 	{
+		fflush (_FilePointer);
 		fclose (_FilePointer);
 		_FilePointer = (FILE*)1;
+		_LastFlushTime = 0.0;
 	}
 }
 
@@ -479,6 +503,9 @@ void CFileDisplayer::doDisplay ( const CLog::TDisplayInfo& args, const char *mes
 		// if the file is too big (>5mb), rename it and create another one (check only after 20 lines to speed up)
 		if (_LastLogSizeChecked++ > 20)
 		{
+		  // Reset the counter, otherwise ftell() (an lseek syscall) is done
+		  // for every line after the first 20.
+		  _LastLogSizeChecked = 0;
 		  int res = ftell (_FilePointer);
 		  if (res > 5*1024*1024)
 		    {
@@ -527,7 +554,18 @@ void CFileDisplayer::doDisplay ( const CLog::TDisplayInfo& args, const char *mes
 			}
 		}
 
-		fflush (_FilePointer);
+		// Flushing every line costs one write() syscall per message, which
+		// shows up as jitter during the bursts of a zone load. Let stdio batch
+		// the normal lines and flush at most once per second. Errors and
+		// asserts still go out immediately, and the crash report uses the
+		// memory displayer, so a crash loses at most one second of the file.
+		const double now = NLMISC::CTime::ticksToSecond(NLMISC::CTime::getPerformanceTime());
+		if (args.LogType == CLog::LOG_ERROR || args.LogType == CLog::LOG_ASSERT ||
+			now - _LastFlushTime >= 1.0)
+		{
+			fflush (_FilePointer);
+			_LastFlushTime = now;
+		}
 	}
 }
 

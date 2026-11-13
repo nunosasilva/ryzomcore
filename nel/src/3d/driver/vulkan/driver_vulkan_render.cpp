@@ -817,7 +817,17 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	pci.subpass = 0;
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
-	VkResult res = vkCreateGraphicsPipelines(_Device, VK_NULL_HANDLE, 1, &pci, NULL, &pipeline);
+	const uint64 pipelineStart = _StatsEnabled ? nowNs() : 0;
+	VkResult res = vkCreateGraphicsPipelines(_Device, _VkPipelineCache, 1, &pci, NULL, &pipeline);
+	if (_StatsEnabled)
+	{
+		const uint64 took = nowNs() - pipelineStart;
+		_StatsPipelineCreateNs += took;
+		++_StatsPipelineCreates;
+		if (took > 20 * 1000 * 1000)
+			nlinfo("Vulkan: pipeline compile took %.1f ms (mega %d, target %d, vertex flags 0x%x)",
+				(double)took / 1e6, (int)key.Mega, (int)key.Target, (uint)key.VertexFlags);
+	}
 	if (res != VK_SUCCESS)
 	{
 		nlwarning("Vulkan: vkCreateGraphicsPipelines failed (%d)", (int)res);
@@ -933,7 +943,14 @@ void CDriverVulkan::drawTestTriangle(VkCommandBuffer cmd)
 		pci.pDynamicState = &dynamicState;
 		pci.layout = _PipelineLayout;
 		pci.renderPass = _RenderPass;
-		if (vkCreateGraphicsPipelines(_Device, VK_NULL_HANDLE, 1, &pci, NULL, &_TestPipeline) != VK_SUCCESS)
+		const uint64 testStart = _StatsEnabled ? nowNs() : 0;
+		const VkResult testRes = vkCreateGraphicsPipelines(_Device, _VkPipelineCache, 1, &pci, NULL, &_TestPipeline);
+		if (_StatsEnabled)
+		{
+			_StatsPipelineCreateNs += nowNs() - testStart;
+			++_StatsPipelineCreates;
+		}
+		if (testRes != VK_SUCCESS)
 		{
 			nlwarning("Vulkan: test pipeline creation failed");
 			return;
