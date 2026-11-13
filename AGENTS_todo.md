@@ -3115,3 +3115,14 @@ the vegetables sampling unit 1 get alpha~0 beyond the projected area.
 The agent will first run the decisive `NL_VEG_USERMAT` test (force identity on
 stages 0/1), then trace the cache desync and fix it minimally without touching
 the vegetable LOD fast path.
+
+## The user's live install is ~/.local/share/Ryzom/ryzom_live
+
+The running client's exe resolves to
+`/home/nuno/.local/share/Ryzom/ryzom_live/ryzom_client_vulkan_opt`, not
+`~/Projects/ryzom/ryzom_live/` (both hold a copy; update both). Use
+`cp` to a temp name + `mv` because overwriting a running executable fails
+(ETXTBSY) and `cp -f` onto it can be messy. Current optimized binary
+(36.6 MB, static, Release+FINAL_VERSION=OFF) includes the fdset, offload,
+Karavan, cursor and descriptor-pool fixes; smoke-tested at 1280x800 on the
+login scene (Vulkan, validation on) with a clean windowclose exit.
