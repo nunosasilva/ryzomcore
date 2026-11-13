@@ -110,7 +110,7 @@ end
 function game:configHideAll()
 
 	local	uiList = {
-		'explanation', 'general', 'landscape', 'fx', 'char', 'hud', 'language', 'alpha_colors',
+		'explanation', 'general', 'landscape', 'fx', 'drv', 'char', 'hud', 'language', 'alpha_colors',
 		'chat_colors', 'entity_colors', 'in_scene_user', 'in_scene_friend', 'in_scene_enemy',
 		'in_scene_chat_messages', 'win_colors', 'win_colors_r2', 'mouse', 'keyb', 'vr', 'sound', 'landmark_colors', 'help'
 	};
@@ -142,6 +142,12 @@ end
 ------------------------------------------------------------------------------------------------------------
 --
 function game:configInit()
+
+	-- technical information: the driver is chosen at startup, so it never changes
+	local driverName = getUI('ui:interface:game_config:content:drv:driver_name');
+	if driverName ~= nil then
+		driverName.text = i18n.get('uiConfigDriverDesc'):toUtf8() .. getCurrentDriverName();
+	end
 
 	-- init language
 	local lang = getClientCfg('LanguageCode');
