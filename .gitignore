@@ -311,3 +311,6 @@ AGENTS_nuno.md
 
 # Local test accounts (never commit)
 /AGENTS_accounts.md
+
+# Agent instructions and handoff files stay local
+/AGENTS*.md
