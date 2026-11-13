@@ -175,8 +175,6 @@ CDriverVulkan::CDriverVulkan()
 	// Zero every Vulkan handle/state that is not in the member init list.
 	_PipelineLayout = VK_NULL_HANDLE;
 	_DescriptorSetLayout = VK_NULL_HANDLE;
-	_DescriptorPools[0] = VK_NULL_HANDLE;
-	_DescriptorPools[1] = VK_NULL_HANDLE;
 	_VertexShader = VK_NULL_HANDLE;
 	_FragmentShader = VK_NULL_HANDLE;
 	_DefaultSampler = VK_NULL_HANDLE;
@@ -474,6 +472,74 @@ bool CDriverVulkan::pickPhysicalDevice()
 	}
 	nlwarning("Vulkan: no device with a graphics+present queue");
 	return false;
+}
+
+/// Sets a fresh descriptor pool of a frame slot can hold. A frame that needs
+/// more adds another, larger pool (see allocDescriptorSet()).
+static const uint32 NL_VK_DESCRIPTOR_POOL_SETS = 4096;
+/// Descriptors one set of either layout can use: the simple layout allocates
+/// 1 UBO and 4 samplers, the mega layout 7 UBOs and 8 samplers. Sizing the
+/// pool for the larger one lets both layouts share it.
+static const uint32 NL_VK_DESCRIPTOR_SET_SAMPLERS = (uint32)NL_VK_MEGA_SAMPLER_COUNT;
+static const uint32 NL_VK_DESCRIPTOR_SET_UNIFORMS = 7;
+
+bool CDriverVulkan::createDescriptorPool(uint32 frame, uint32 maxSets)
+{
+	VkDescriptorPoolSize poolSize[2];
+	poolSize[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	poolSize[0].descriptorCount = NL_VK_DESCRIPTOR_SET_SAMPLERS * maxSets;
+	poolSize[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	poolSize[1].descriptorCount = NL_VK_DESCRIPTOR_SET_UNIFORMS * maxSets;
+	VkDescriptorPoolCreateInfo dpci;
+	memset(&dpci, 0, sizeof(dpci));
+	dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	dpci.maxSets = maxSets;
+	dpci.poolSizeCount = 2;
+	dpci.pPoolSizes = poolSize;
+	VkDescriptorPool pool = VK_NULL_HANDLE;
+	if (!checkVk(vkCreateDescriptorPool(_Device, &dpci, NULL, &pool), "vkCreateDescriptorPool"))
+		return false;
+	_DescriptorPools[frame].push_back(pool);
+	return true;
+}
+
+VkDescriptorSet CDriverVulkan::allocDescriptorSet(VkDescriptorSetLayout layout)
+{
+	const uint32 frame = _FrameIndex;
+	if (_DescriptorPools[frame].empty() && !createDescriptorPool(frame, NL_VK_DESCRIPTOR_POOL_SETS))
+		return VK_NULL_HANDLE;
+
+	VkDescriptorSetAllocateInfo dsai;
+	memset(&dsai, 0, sizeof(dsai));
+	dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	dsai.descriptorPool = _DescriptorPools[frame].back();
+	dsai.descriptorSetCount = 1;
+	dsai.pSetLayouts = &layout;
+
+	VkDescriptorSet set = VK_NULL_HANDLE;
+	VkResult result = vkAllocateDescriptorSets(_Device, &dsai, &set);
+	if (result == VK_ERROR_OUT_OF_POOL_MEMORY || result == VK_ERROR_FRAGMENTED_POOL)
+	{
+		// This frame has more draws than the pool holds. Add a larger pool to
+		// the slot and retry; the pools are reset (not recreated) when the
+		// slot is reused, so a dense frame only pays for this once. The new
+		// pool doubles the previous capacity, up to 131072 sets, so the list
+		// stays short even for a frame with a hundred thousand draws.
+		const uint32 shift = std::min<size_t>(_DescriptorPools[frame].size(), 5);
+		const uint32 maxSets = NL_VK_DESCRIPTOR_POOL_SETS << shift;
+		if (!createDescriptorPool(frame, maxSets))
+			return VK_NULL_HANDLE;
+		dsai.descriptorPool = _DescriptorPools[frame].back();
+		result = vkAllocateDescriptorSets(_Device, &dsai, &set);
+		if (result == VK_SUCCESS)
+			nlinfo("Vulkan: descriptor pool for frame slot %u grown to %u sets", frame, maxSets);
+	}
+	if (result != VK_SUCCESS)
+	{
+		nlwarning("Vulkan: vkAllocateDescriptorSets failed (%d %s)", (int)result, vkResultName(result));
+		return VK_NULL_HANDLE;
+	}
+	return set;
 }
 
 bool CDriverVulkan::createLogicalDevice()
@@ -1075,19 +1141,8 @@ bool CDriverVulkan::initVulkan()
 		if (!checkVk(vkCreateDescriptorSetLayout(_Device, &dslci, NULL, &_DescriptorSetLayout), "vkCreateDescriptorSetLayout"))
 			return false;
 
-		VkDescriptorPoolSize poolSize[2];
-		poolSize[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		poolSize[0].descriptorCount = 4 * 4096;
-		poolSize[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		poolSize[1].descriptorCount = 4096;
-		VkDescriptorPoolCreateInfo dpci;
-		memset(&dpci, 0, sizeof(dpci));
-		dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-		dpci.maxSets = 4096;
-		dpci.poolSizeCount = 2;
-		dpci.pPoolSizes = poolSize;
 		for (uint i = 0; i < 2; ++i)
-			if (!checkVk(vkCreateDescriptorPool(_Device, &dpci, NULL, &_DescriptorPools[i]), "vkCreateDescriptorPool"))
+			if (!createDescriptorPool(i, NL_VK_DESCRIPTOR_POOL_SETS))
 				return false;
 
 		VkPipelineLayoutCreateInfo plci;
@@ -1216,7 +1271,11 @@ void CDriverVulkan::shutdownVulkan()
 		if (_PipelineLayout) { vkDestroyPipelineLayout(_Device, _PipelineLayout, NULL); _PipelineLayout = VK_NULL_HANDLE; }
 		if (_DescriptorSetLayout) { vkDestroyDescriptorSetLayout(_Device, _DescriptorSetLayout, NULL); _DescriptorSetLayout = VK_NULL_HANDLE; }
 		for (uint i = 0; i < 2; ++i)
-			if (_DescriptorPools[i]) { vkDestroyDescriptorPool(_Device, _DescriptorPools[i], NULL); _DescriptorPools[i] = VK_NULL_HANDLE; }
+		{
+			for (size_t pool = 0; pool < _DescriptorPools[i].size(); ++pool)
+				vkDestroyDescriptorPool(_Device, _DescriptorPools[i][pool], NULL);
+			_DescriptorPools[i].clear();
+		}
 		if (_GpuTimeQuery) { vkDestroyQueryPool(_Device, _GpuTimeQuery, NULL); _GpuTimeQuery = VK_NULL_HANDLE; }
 
 		// Shaders.
@@ -1616,7 +1675,10 @@ bool CDriverVulkan::beginFrame()
 	// Resources retired at least three frames ago cannot be referenced by any
 	// command buffer that is still executing (see the retireBefore comment
 	// below), so they are freed here without a device-wide wait.
-	vkResetDescriptorPool(_Device, _DescriptorPools[frame], 0);
+	// Every pool of this frame slot is reused: resetting returns all the sets
+	// the previous frame allocated from it.
+	for (size_t pool = 0; pool < _DescriptorPools[frame].size(); ++pool)
+		vkResetDescriptorPool(_Device, _DescriptorPools[frame][pool], 0);
 	{
 		// Retire a resource once three swap-buffer frames have passed since it
 		// was retired (tag + 3 <= counter). Two frames are not enough: a resource

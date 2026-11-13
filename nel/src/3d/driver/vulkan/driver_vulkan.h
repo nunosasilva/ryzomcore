@@ -685,6 +685,10 @@ private:
 	bool					createSurface();
 	bool					pickPhysicalDevice();
 	bool					createLogicalDevice();
+	/// Allocate one descriptor set for the current frame, adding a larger
+	/// descriptor pool to that frame slot when the current one is full.
+	VkDescriptorSet			allocDescriptorSet(VkDescriptorSetLayout layout);
+	bool					createDescriptorPool(uint32 frame, uint32 maxSets);
 	bool					createSwapchain();
 	void					destroySwapchain();
 	bool					createDepthResources();
@@ -856,7 +860,13 @@ private:
 	VkPipelineLayout			_PipelineLayout;
 	VkPipeline				_TestPipeline;
 	VkDescriptorSetLayout		_DescriptorSetLayout;
-	VkDescriptorPool			_DescriptorPools[2];
+	/// One descriptor pool list per frame slot. A draw allocates one set from
+	/// the last pool; a frame with more draws than the current pool holds adds
+	/// another pool, and all of them are reset (not recreated) when the frame
+	/// slot is reused. Fixed-size pools would silently drop the draws that do
+	/// not fit, which loses the end of the frame (the interface and the final
+	/// scene blit).
+	std::vector<VkDescriptorPool> _DescriptorPools[2];
 	std::map<uint32, VkShaderModule>	_VertexShaderVariants;
 	std::map<uint32, VkShaderModule>	_FragmentShaderVariants;
 	VkShaderModule				_VertexShader;
