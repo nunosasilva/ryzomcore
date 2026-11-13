@@ -570,7 +570,20 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	if (it != _PipelineCache.end())
 		return it->second.Pipeline;
 
-	uint32 shaderFlags = key.VertexFlags & (CVertexBuffer::PrimaryColorFlag | CVertexBuffer::TexCoord0Flag);
+	// The simple vertex shader source depends on exactly these vertex flags:
+	// PrimaryColorFlag picks the colour source of the unlit path, NormalFlag
+	// picks the lit branch (and the reflection vector), and TexCoord0..3 pick
+	// the UVs selectUv() can return. The cache key must cover all of them: with
+	// only PrimaryColor|TexCoord0, a variant compiled for a vertex format
+	// without a normal was reused for a lit draw that has one, so that draw
+	// silently took the unlit path and painted its material colour. That is
+	// what turned the untextured, lit sky/fog dome white in Prime Roots (the
+	// dome is a lit material with a black diffuse, so the lit branch is black).
+	const uint32 simpleVertexFlags =
+		CVertexBuffer::PrimaryColorFlag | CVertexBuffer::NormalFlag |
+		CVertexBuffer::TexCoord0Flag | CVertexBuffer::TexCoord1Flag |
+		CVertexBuffer::TexCoord2Flag | CVertexBuffer::TexCoord3Flag;
+	uint32 shaderFlags = key.VertexFlags & simpleVertexFlags;
 	VkShaderModule vertexShader;
 	VkShaderModule fragmentShader;
 	VkPipelineLayout pipelineLayout = _PipelineLayout;
