@@ -145,15 +145,18 @@ struct CMaterialUBOData
 nlctassert(sizeof(CMaterialUBOData) == 480);
 
 // ***************************************************************************
-// Water pixel program parameters (std140, 32 bytes, matches GLSL NlWater).
+// Water pixel program parameters (std140, 48 bytes, matches GLSL NlWater).
 // The bump maps are stored as normal maps: the shader expands them with
 // scale * texel + bias, the same normalisation the GL3 water shader uses.
+// reflectParams is (scaleReflectedRay, bias, 0, 1): the water VP maps the
+// reflected ray to [0,1] with -ray * scale + bias.
 struct CWaterUBOData
 {
 	float bump0ScaleBias[4];  // 16 (2 * factor, -factor, 0, 0)
 	float bump1ScaleBias[4];  // 16
+	float reflectParams[4];   // 16 (0.5, 0.5, 0, 1)
 };
-nlctassert(sizeof(CWaterUBOData) == 32);
+nlctassert(sizeof(CWaterUBOData) == 48);
 
 // GLSL headers prepended to the generated mega programs.
 std::string buildVulkanLightTableHeader(sint maxLights);
