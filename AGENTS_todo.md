@@ -3177,3 +3177,19 @@ The user positions the avatar for the microvegetation test himself (mats004
 slot 1) and logs out; agents must not log in during that (wait 5 minutes, then
 use the saved position). General rule: if a test needs a precise viewpoint,
 ask the user to place the character rather than walking there.
+
+## GL2 microvegetation: FIXED and merged
+
+Merged `190100d4f` (branch `vulkan-microveget-fix`, commit `05e79f2cc`).
+`activeVertexProgram()` now re-runs `setupGlArrays()` on the current VB when a
+program is activated right after a fixed-function array setup (ARB/NV/EXT).
+Root cause and evidence are in the branch's AGENTS_todo section above.
+
+Verified in the optimized static Release binary with `Driver3D="OpenGL"` at the
+user-saved spot (mats004 slot 1 "Cetin", big green field): dense flowers across
+the field (`/tmp/opencode/ryzomtest/gl2static_crop.png`). GL3/Vulkan unchanged.
+
+**Installed**: `ryzom_client_vulkan_opt` updated in both
+`~/Projects/ryzom/ryzom_live/` and `~/.local/share/Ryzom/ryzom_live/`
+(36.6 MB, static, Release+FINAL_VERSION=OFF), with fdset, offload, Karavan,
+cursor, descriptor-pool and this fix.
