@@ -96,8 +96,10 @@ void			CLandscapeVBAllocator::updateDriver(IDriver *driver)
 			// the four landscape programs are hand-written GLSL on a user UBO, so a driver
 			// that can take UBOs can run them without nelvp support. This is the same predicate
 			// setupVBFormatAndVertexProgram() branches on below, so the gate and the code
-			// path cannot disagree. Only CDriverGL3 returns true (driver_opengl3.h:1497);
-			// no driver today takes this half without also taking the nelvp half.
+			// path cannot disagree. CDriverGL3 and CDriverVulkan take this half; Vulkan
+			// does it while nelvp is disabled by the white-horizon workaround, which is
+			// why CLandscape::setDriver() must derive _VertexShaderOk from the same
+			// nelvp-or-UBO predicate.
 			_Driver->supportBuiltinUBO()));
 
 		// must reallocate the VertexBuffer.

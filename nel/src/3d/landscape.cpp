@@ -580,22 +580,23 @@ void			CLandscape::setDriver(IDriver *drv)
 		_Driver= drv;
 
 		// Does the driver support VertexShader???
-		// only if VP supported by GPU.
-		// Left on nelvp on purpose, unlike the CLandscapeVBAllocator gate (which now also
-		// accepts a UBO-capable driver, since all four landscape programs are hand-written
-		// GLSL). This flag also feeds _DriverOkForVegetable just below, and the vegetable
-		// program is still nelvp-only: vegetablevb_allocator.cpp:112 hard-asserts
-		// supportVertexProgram(nelvp). Widening this gate before that is ported would let a
-		// driver claim support for a program it cannot compile. Wind tree already has a UBO
-		// variant (meshvp_wind_tree.cpp:446), vegetable does not.
-		_VertexShaderOk = (!_Driver->isVertexProgramEmulated() && (
-			_Driver->supportVertexProgram(CVertexProgram::nelvp)
-			));
-
+		// Use exactly the same predicate as CLandscapeVBAllocator::updateDriver(): the
+		// landscape programs exist both as nelvp and as hand-written GLSL/UBO twins, so a
+		// driver that can take a UBO can run them even when nelvp is unavailable (the
+		// Vulkan white-horizon workaround). If the two predicates disagree, the allocator
+		// builds the VP vertex layout while the fill takes the non-VP branch, and the
+		// lightmap pass reads the unwritten GeomInfo/TEX2 attribute (black landscape).
+		const bool vpNotEmulated = !_Driver->isVertexProgramEmulated();
+		const bool nelvpOk = vpNotEmulated && _Driver->supportVertexProgram(CVertexProgram::nelvp);
+		_VertexShaderOk = vpNotEmulated && (nelvpOk || _Driver->supportBuiltinUBO());
 
 		// Does the driver has sufficient requirements for Vegetable???
 		// only if VP supported by GPU, and Only if max vertices allowed.
-		_DriverOkForVegetable = _VertexShaderOk && (_Driver->getMaxVerticesByVertexBufferHard()>=(uint)NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_MAX);
+		// Vegetables are still nelvp-only: vegetablevb_allocator.cpp:112 hard-asserts
+		// supportVertexProgram(nelvp). Keep them on the narrow predicate until the lit
+		// passes have a UBO variant (the wind tree already has one,
+		// meshvp_wind_tree.cpp:446).
+		_DriverOkForVegetable = nelvpOk && (_Driver->getMaxVerticesByVertexBufferHard()>=(uint)NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_MAX);
 
 		// Enable unsynchronized write mode if VP and triple-buffered frame pipeline are available.
 		bool unsyncMode = _VertexShaderOk && _Driver->isTripleBufferPipelined();
