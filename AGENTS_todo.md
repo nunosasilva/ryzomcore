@@ -2820,3 +2820,136 @@ Two user reports, two agents:
   near window corners does not change under Vulkan (it does under OpenGL); the
   Vulkan driver has the cursor calls stubbed. Port/share the GL3 X11 cursor
   handling.
+
+## Bug: microvegetation invisible under Driver3D="OpenGL" (GL2), NOT fixed
+
+Account `mats005` slot 1 (character **Kykikos**, Silan, jungle hill at
+`(9878, -11472)`), worktree `f1fb99/vulkan-microveget` (base `da2eaed0e`),
+Debug `build-vulkan`, gamescope `--backend=headless -W 1280 -H 800`, run dir
+`/tmp/opencode/vulkan-microveget/run` (data/cfg/cache symlinked to the user's
+install). Evidence (screenshots + logs) in
+`~/.local/share/opencode/worktree/f1fb99/microveget-evidence/`.
+
+### What is broken
+
+Same build, same spot, fresh login (default camera):
+
+* `Driver3D="OpenGL3"` and `Vulkan`: the ground is covered with the small
+  flowers/grass tufts (vegetables) out to ~30 m, matching the official client.
+* `Driver3D="OpenGL"` (GL2): only a thin band of vegetation within ~8-10 m of
+  the camera; the rest of the ground is bare. Same build, same data.
+* `~/Projects/ryzom/ryzom_live/ryzom_client` (official client, `#d210c1f`,
+  Oct 27) at the same spot and same lighting: dense vegetation.
+  `microveget-evidence/official-gl2.png` vs `fin-base.png`.
+
+So the regression is real, GL2-only, and *older* than `ce1fe9887`: the
+`vulkan-integrate-verify` evidence from Nov 11 08:23
+(`/tmp/opencode/iv/evidence/ingame_gl_same_build.png`) already shows the same
+bare ground on GL2, and `ce1fe9887` is from Nov 11 23:36. The suspect is
+therefore the core4 import (`a9f6fd37b`) in the **GL2 driver**, not the
+vegetable LOD fast path.
+
+### Mechanism (verified)
+
+1. Not a creation problem. GL2 and GL3 report the same vegetable data:
+   `clip=38 sort=608 ig=407 vertsUnlitHard=49993` (GL2) vs `49995` (GL3).
+   All the vegetables in this scene are in the **z-sort (alpha blended)**
+   pass: `tris [lit=0 lit2=0 unlit=0 unlit2=0 zsort=8938]`.
+2. Not a draw-list problem. The z-sort layer model submits the expected number
+   of triangles (`zsort layer blocks=36 tris=1700 drawnTris=1700`).
+3. The **geometry is drawn at every distance**: with the material's textures
+   unbound (`setTexture(0,nullptr); setTexture(1,nullptr)`) the whole field
+   shows as white quads out to the horizon.
+4. The **vertex-program alpha is not the limiter**: a debug vertex program that
+   writes the z-sort alpha (`MAD o[COL0].w, dist, c[11].x, v[9].w`) as the colour
+   shows the whole visible ground saturated (alpha >= 1 out to ~40 m), so
+   `v[9].w` (= `blendDistMax/10`, logged as 5.00) and `c[11].x` (=-0.1) are
+   correct.
+5. Disabling the **alpha test** (`setAlphaTest(false)` on the z-sort material,
+   verified in the log) changes nothing.
+6. The **vertex buffer and attribute setup are correct** (logged from
+   `setupGlArraysForARBVertexProgram`): `mode=HwARB stride=60
+   pos(Float4,0x0) tc0(Float2,0x10) tc1(Float4,0x18) tc2(Float3,0x28)
+   c0(UChar4,0x34) c1(UChar4,0x38)`; the generated ARBvp1.0 program reads
+   `vertex.attrib[9].w` and writes `result.texcoord[1] = vertex.attrib[8]`.
+7. The **vegetable texture is fine**: `microveget_jungle_au.png@Fmt:0@MMp:On`,
+   512x512, `pixelFormat=7` (DXT5), `mipCount=10`, `glfmt=0x83f3`; mean alpha
+   per mip level is constant (~48-53/255) so the mip chain is not empty.
+8. Ruled out by direct A/B in one game session (file-driven debug variant):
+   forcing `GL_LINEAR`/`GL_NEAREST` (mips off), removing only the DLM stage 0,
+   putting the DLM texture on stage 1, `Shadows=0`, forcing the soft
+   (`NL_VEG_SOFT`) vertex-buffer path, `AnisotropicFilter` and the
+   `MicroVegetDensity` config (same cfg as the official client).
+9. Removing **stage 1** (the vegetable texture) makes the vegetation disappear
+   entirely (the fragment alpha then falls back to the DLM's alpha, which is
+   ~0), and removing **both** stages makes it all visible: the fragment alpha in
+   the normal case is `tex1.a * vertex.a`, and it comes out ~0 for the far
+   instances.
+
+Conclusion: in GL2 the z-sort vegetable fragments sample the vegetable texture
+with alpha ~0 beyond ~10 m, while GL3/Vulkan sample the same texture correctly.
+The remaining suspects are all in the GL2 *texture sampling state* on unit 1:
+a stale **texture matrix** (`IDRV_MAT_USER_TEX_MAT_1`, set by
+`CMaterial::setUserTexMat` from e.g. `shadow_map.cpp`), a stale **texture env**
+on unit 1, or the texcoord array/routing for the VP path. A `usermat` debug
+variant that sets an identity user texture matrix on stages 0/1 was built and
+started twice, but the client was killed by another agent's
+`pkill gamescope --backend headless` before a usable screenshot could be taken
+(use `gamescope --backend=headless` to dodge that pkill).
+
+### Debug hooks used (removed, re-add in minutes)
+
+Everything was gated by env vars and removed before this commit; the useful
+ones, all in `nel/src/3d/vegetable_manager.cpp` unless noted:
+
+* `CVegetableManager::render()`: log visible clip/sort/IG counts and the
+  per-render-pass triangle counts (`ig->_RdrPass[k].NTriangles`).
+* `buildVegetableNelvpSource()`: replace the z-sort program body with one of
+  `alpha1` (`o[COL0].w = c[8].y`), `colorw` (`o[COL0].xyz = v[9].wwww`),
+  `colora` (the computed z-sort alpha as colour), `colordist`, `white`.
+  Reading the variant from a small file and re-calling `initVertexProgram()`
+  for all passes when it changes lets one game session test several variants.
+* `setupRenderStateForBlendLayerModel()`: `setTexture(0,nullptr)` /
+  `setTexture(1,nullptr)` / `setTexture(1, dlmTexture)` /
+  `setUserTexMat(0/1, identity)` before `setupMaterial`.
+* `nel/src/3d/driver/opengl/driver_opengl_texture.cpp`
+  `setupTextureEx()`: log the format/mip count and mean alpha per mip of any
+  texture whose share name contains `microveget`.
+* `nel/src/3d/driver/opengl/driver_opengl_vertex.cpp`
+  `setupGlArraysForARBVertexProgram()`: log the format/stride/offsets of the
+  vegetable VB (stride 60, format 0xc1d) once.
+* `nel/src/3d/landscape.cpp` `CLandscape::refine()`: log per-distance-type IG
+  counts and per-block `_CurDistType` (useful; `igPerDist[0]` is legitimately
+  0 because every distType-0 IG is empty).
+
+### Next step for whoever picks this up
+
+1. Re-run the `usermat` variant (identity texture matrices on stages 0 and 1)
+   in a session you control. If the far vegetation appears, the bug is the
+   leaked `IDRV_MAT_USER_TEX_MAT_*` / `glMatrixMode(GL_TEXTURE)` state, and the
+   fix is to reset the texture matrices in `CDriverGL::setupMaterial()` (the
+   existing `setupUserTextureMatrix()` only resets units while
+   `_UserTexMatEnabled != 0`), or to make the vegetable material always set
+   identity matrices.
+2. If that is not it, diff the GL2 driver's texture path against
+   `a9f6fd37b^` (`driver_opengl_texture.cpp`, `driver_opengl_material.cpp`,
+   `driver_opengl_vertex.cpp`) and bisect by reverting single functions; the
+   regression was introduced by the core4 import.
+3. A pragmatic fallback, if the exact state leak cannot be found quickly, is to
+   force `MipMapOff` + `Clamp` + no anisotropy for the vegetable texture and/or
+   raise the z-sort alpha, but note that neither mip filtering nor the alpha
+   test changed anything in the A/B, so neither is the root cause.
+
+### Running GL2 without gamescope (tip)
+
+Another agent's scripts `pkill -9 -f "gamescope --backend headless"`, which
+kills this worktree's clients a few seconds after the world loads (it happened
+three times here). Two ways out:
+
+* use `gamescope --backend=headless ...` (note the `=`) so the pkill pattern
+  does not match, or
+* run the client on a private Xvfb and capture with `xwd`:
+  `Xvfb :22 -screen 0 1280x800x24 +extension GLX &`, then
+  `DISPLAY=:22 LD_LIBRARY_PATH=build-vulkan/lib build-vulkan/bin/ryzom_client_dev mats005 passDOSma slot 1 --nopatch 1`.
+  llvmpipe provides GL 4.5 with ARB_vertex_program, so the GL2 path (including
+  the vegetable vertex program) is representative, only slow.
