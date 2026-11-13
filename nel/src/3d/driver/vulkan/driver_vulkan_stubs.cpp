@@ -274,35 +274,6 @@ sint CDriverVulkan::getTotalVideoMemory() const
 	return 4194304;
 }
 
-void CDriverVulkan::showCursor(bool b)
-{
-}
-
-void CDriverVulkan::setMousePos(float x, float y)
-{
-}
-
-void CDriverVulkan::setCapture(bool b)
-{
-}
-
-bool CDriverVulkan::isSystemCursorCaptured()
-{
-	return false;
-}
-
-void CDriverVulkan::addCursor(const std::string &name, const NLMISC::CBitmap &bitmap)
-{
-}
-
-void CDriverVulkan::setCursor(const std::string &name, NLMISC::CRGBA col, uint8 rot, sint hotSpotX, sint hotSpotY, bool forceRebuild)
-{
-}
-
-void CDriverVulkan::setCursorScale(float scale)
-{
-}
-
 bool CDriverVulkan::textureCoordinateAlternativeMode() const
 {
 	return false;
