@@ -844,14 +844,8 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		imageInfos[stage].sampler = tex ? tex->Sampler : (cubeStage ? _WhiteCubeTexture.Sampler : _WhiteTexture.Sampler);
 	}
 
-	VkDescriptorSetAllocateInfo dsai;
-	memset(&dsai, 0, sizeof(dsai));
-	dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	dsai.descriptorPool = _DescriptorPools[_FrameIndex];
-	dsai.descriptorSetCount = 1;
-	dsai.pSetLayouts = &_MegaDescriptorSetLayout;
-	VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-	if (vkAllocateDescriptorSets(_Device, &dsai, &descriptorSet) != VK_SUCCESS)
+	VkDescriptorSet descriptorSet = allocDescriptorSet(_MegaDescriptorSetLayout);
+	if (descriptorSet == VK_NULL_HANDLE)
 		return false;
 	if (_StatsEnabled)
 		++_StatsDescriptorSets;
