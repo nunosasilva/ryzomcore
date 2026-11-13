@@ -3092,3 +3092,26 @@ three times here). Two ways out:
   `DISPLAY=:22 LD_LIBRARY_PATH=build-vulkan/lib build-vulkan/bin/ryzom_client_dev mats005 passDOSma slot 1 --nopatch 1`.
   llvmpipe provides GL 4.5 with ARB_vertex_program, so the GL2 path (including
   the vegetable vertex program) is representative, only slow.
+
+## GL2 microvegetation: continuation agent and concrete suspect
+
+Previous agent (`vulkan-microveget`, commit `8c01749c8`, merged) reproduced it
+GL2-only and documented the mechanism but did not fix it. Continuation
+`vulkan-microveget-fix` (mats004 slot 1, worktree `f1fb99/vulkan-microveget`,
+branch `vulkan-microveget-fix` from `ee227a9e7`) has a concrete suspect found
+in the code:
+
+`CDriverGLStates::forceDefaults(nbStages)` (`driver_opengl_states.cpp`) calls
+the raw `nglActiveTextureARB()` per stage and never updates
+`_CurrentActiveTextureARB`, so after it returns the cached active unit is stale
+while GL is really on `nbStages-1`. `activeTextureARB(k)` then skips the GL
+call when the cache matches `k`, so a later `glLoadIdentity()` /
+`glLoadMatrixf()` / bind hits the wrong unit. If that happens in
+`CDriverGL::disableUserTextureMatrix()`, the identity goes to the wrong unit and
+the `_UserTexMatEnabled` bit is still cleared: the shadow map's world->UV
+projection (`setUserTexMat(0/1, _XYZToUWV...)`) stays on unit 1 forever, and
+the vegetables sampling unit 1 get alpha~0 beyond the projected area.
+
+The agent will first run the decisive `NL_VEG_USERMAT` test (force identity on
+stages 0/1), then trace the cache desync and fix it minimally without touching
+the vegetable LOD fast path.
