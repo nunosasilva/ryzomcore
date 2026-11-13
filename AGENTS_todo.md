@@ -2960,7 +2960,7 @@ new pool, which is fine); no other fixed-size per-frame limits were found in
 this path (the vertex/index/uniform rings already grow). The user's static
 `ryzom_client_vulkan_opt` must be rebuilt to ship the fix.
 
-## Bug: microvegetation invisible under Driver3D="OpenGL" (GL2), NOT fixed
+## Bug: microvegetation invisible under Driver3D="OpenGL" (GL2) — FIXED
 
 Account `mats005` slot 1 (character **Kykikos**, Silan, jungle hill at
 `(9878, -11472)`), worktree `f1fb99/vulkan-microveget` (base `da2eaed0e`),
@@ -3078,6 +3078,50 @@ ones, all in `nel/src/3d/vegetable_manager.cpp` unless noted:
    force `MipMapOff` + `Clamp` + no anisotropy for the vegetable texture and/or
    raise the z-sort alpha, but note that neither mip filtering nor the alpha
    test changed anything in the A/B, so neither is the root cause.
+
+### Root cause (found and fixed)
+
+The user texture matrix was a red herring: the `NL_VEG_USERMAT` A/B (identity
+user matrices on stages 0/1) and a `GL_TEXTURE_MATRIX`/`GL_ACTIVE_TEXTURE`
+trace showed the texture matrices are already identity and the active-unit
+cache stays in sync (the `forceDefaults()` end already resets both the cache
+and GL to unit 0).  The regression is in the vertex-array setup, not the
+texture state, and it is not distance dependent: **the z-sort vegetable draws
+read zeroed vertex attributes**, so every triangle collapses to a point.
+
+Why: `CVegetableBlendLayerModel::render()` binds its vertex buffer *before*
+`setupRenderStateForBlendLayerModel()` activates the z-sort vertex program.
+That order was introduced by the core4 import because the GL3 driver selects
+its program from the vertex format at `setupMaterial()` time.  In the GL2
+driver `CDriverGL::setupGlArrays()` decides between `setupGlArraysStd()` and
+`setupGlArraysForARBVertexProgram()` from `isVertexProgramEnabled()` at the
+moment the VB is activated.  With no program active yet it takes the
+fixed-function path, which disables every ARB vertex attribute array; the
+program is activated afterwards and the attribs are never enabled again, so
+`v[0]`, `v[3]`, `v[8]`, ... all read (0,0,0,1).  Traced at the draw
+(`glGetVertexAttribiv`): `attribs=` empty before the fix, and
+`[0:4/GL_FLOAT/60][3:4/GL_UNSIGNED_BYTE/60][4:4/GL_UNSIGNED_BYTE/60][8:2/GL_FLOAT/60][9:4/GL_FLOAT/60][10:3/GL_FLOAT/60]`
+after it.
+
+The near band seen earlier was the other vegetable passes (unlit/alpha-test),
+which activate the program before the VB and therefore work; the z-sort layer
+models, which carry most of the flowers, were always lost.
+
+Fix (`CDriverGL::activeVertexProgram()`, `driver_opengl_vertex_program.cpp`):
+after a program activation succeeds, if the last array setup was for the
+fixed-function pipeline (`!_LastSetupGLArrayVertexProgram`) and a vertex buffer
+is current, call `setupGlArrays(_LastVB)` so the VB's arrays are re-set up for
+the program.  This is generic (covers ARB/NV/EXT) and only fires on the
+fixed-function -> vertex-program transition.
+
+Verified with `mats004` slot 1 (`Cetin`) at `(10319.6, -11446.2)` (the field the
+user saved), same camera, GL2 vs GL3 vs Vulkan: GL2 now shows the same dense
+flower/grass field as GL3 and Vulkan; the GL3 and Vulkan screenshots are
+unchanged; Vulkan `NLVK_STATS` shows the same 371 `0xc1d` vegetable draws per
+frame and `NLVK_VALIDATION=1` only prints the pre-existing "vertex attribute
+not consumed" warnings.  All debug hooks (`NL_GL_TRACE`, `NL_VEG_VARIANT_FILE`,
+`NL_VEG_VPSCREEN`, white texture, VEGSTATS/VEGPASS/VEGLAYER traces) were
+removed before the commit.
 
 ### Running GL2 without gamescope (tip)
 
