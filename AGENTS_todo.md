@@ -2820,3 +2820,11 @@ Two user reports, two agents:
   near window corners does not change under Vulkan (it does under OpenGL); the
   Vulkan driver has the cursor calls stubbed. Port/share the GL3 X11 cursor
   handling.
+
+## Regression: microvegetation missing with Driver3D="OpenGL"
+
+Agent `vulkan-microveget` (mats005, worktree `f1fb99/vulkan-microveget`, base
+`da2eaed0e`) is reproducing the missing microvegetation under the legacy GL2
+driver in our build (official client and GL3/Vulkan to compare), bisecting the
+recent shared-engine commits (prime suspect: the vegetable LOD fast path from
+`ce1fe9887`), and fixing it without losing the Vulkan/GL3 optimization.
