@@ -91,6 +91,7 @@ extern NLWEB::CHttpPackageProvider *HttpPackageProvider; // Http provider from o
 
 // Main System
 extern NL3D::UDriver				*Driver;		// The main 3D Driver
+extern const char					*getCurrentDriverName(); // Name of the 3D driver actually in use (resolved at startup)
 extern NL3D::IStereoDisplay			*StereoDisplay; // Stereo display
 extern NL3D::IStereoHMD				*StereoHMD;		// Head mount display
 extern bool							StereoDisplayAttached; // Is stereo display handling the display mode
