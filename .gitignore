@@ -314,3 +314,6 @@ AGENTS_nuno.md
 
 # Agent instructions and handoff files stay local
 /AGENTS*.md
+
+# Local reference screenshots (never commit)
+/local-screenshots/
