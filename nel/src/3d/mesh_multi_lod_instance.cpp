@@ -136,15 +136,18 @@ void		CMeshMultiLodInstance::traverseLoadBalancing()
 			nextSlot=&(shape->_MeshVector[Lod0+1]);
 		}
 
-		// Max dist before blend
-		float startBlend;
-		if (nextSlot)
-			startBlend=slot.DistMax-nextSlot->BlendLength;
-		else
-			startBlend=slot.DistMax-slot.BlendLength;
+		// Max dist before blend.
+		// The slot that is blending out owns the blend length: its BlendOut flag
+		// starts the crossfade. The next slot's BlendLength describes the
+		// transition out of *it*, and using it here made the outgoing and
+		// incoming meshes overlap for its length. With the plant LODs that is a
+		// 15 m band against a 5 m fade-out on the near slot, so a Zorai flag (or
+		// tree, or tent) stayed visible as a static copy next to the waving one
+		// from 30 m down to 15 m.
+		float startBlend=slot.DistMax-slot.BlendLength;
 
-		// In blend zone ?
-		if ( startBlend < distance )
+		// In blend zone ? (a zero length blend would divide by zero)
+		if ( slot.BlendLength > 0.f && startBlend < distance )
 		{
 			// Alpha factor for main Lod
 			BlendFactor = (slot.DistMax-distance)/(slot.DistMax-startBlend);
