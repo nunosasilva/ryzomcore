@@ -63,6 +63,19 @@ static int ignoreXError(Display *, XErrorEvent *)
 	return 0;
 }
 
+/// Process-wide handler: protocol errors are reported, not fatal. The GL3
+/// driver does the same (nelXErrorsHandler). Cursor updates are sent while the
+/// interface draws, so a window destroyed by the WM between two frames would
+/// otherwise make Xlib exit the game on a BadWindow.
+static int logXError(Display *dpy, XErrorEvent *e)
+{
+	char buf[80];
+	XGetErrorText(dpy, e->error_code, buf, sizeof(buf));
+	nlwarning("Vulkan: X error: %s (request %d.%d, resource 0x%lx)",
+		buf, e->request_code, e->minor_code, (unsigned long)e->resourceid);
+	return 0;
+}
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL vulkanDebugCallback(
 	VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 	VkDebugUtilsMessageTypeFlagsEXT type,
@@ -121,6 +134,16 @@ CDriverVulkan::CDriverVulkan()
 	, _PresentLogLastNs(0)
 	, _SkippedFrames(0)
 	, _SwapchainGeneration(0)
+	, _CurrRot(0)
+	, _CurrHotSpotX(0)
+	, _CurrHotSpotY(0)
+	, _CursorScale(1.f)
+	, _MouseCaptured(false)
+	, _BlankCursor(EmptyCursor)
+	, _AppliedCursor(EmptyCursor)
+	, _AlphaBlendedCursorSupported(false)
+	, _AlphaBlendedCursorSupportRetrieved(false)
+	, _XRenderVersion(0)
 	, _PipelineLayout(VK_NULL_HANDLE)
 	, _TestPipeline(VK_NULL_HANDLE)
 	, _Instance(VK_NULL_HANDLE)
@@ -226,6 +249,9 @@ CDriverVulkan::CDriverVulkan()
 	_TexturesDirty = false;
 	_ClearColorMask = 0xF;
 	memset(_StageTextures, 0, sizeof(_StageTextures));
+
+	_CurrName.clear();
+	_CurrCol = CRGBA::White;
 
 	// Light and ambient state, matching the GL3 driver's initial values.
 	_LightTableSize = 0;
@@ -1270,6 +1296,7 @@ void CDriverVulkan::shutdownVulkan()
 	// destroyed the window (or the surface never got created), so X errors are
 	// ignored here instead of being turned into a process exit by Xlib.
 #if defined(NL_OS_UNIX) && !defined(NL_OS_MAC)
+	releaseCursors();
 	_EventEmitter.closeIM();
 #endif
 	if (_Display)
@@ -1317,6 +1344,7 @@ bool CDriverVulkan::setDisplay(nlWindow wnd, const GfxMode &mode, bool show, boo
 		nlwarning("Vulkan: cannot open X display");
 		return false;
 	}
+	XSetErrorHandler(logXError);
 
 	_WindowWidth = mode.Width ? mode.Width : 1280;
 	_WindowHeight = mode.Height ? mode.Height : 800;
@@ -1345,6 +1373,8 @@ bool CDriverVulkan::setDisplay(nlWindow wnd, const GfxMode &mode, bool show, boo
 #if defined(NL_OS_UNIX) && !defined(NL_OS_MAC)
 	_EventEmitter.init(_Display, _XWindow, NULL);
 #endif
+
+	createCursors();
 
 	if (!initVulkan())
 	{
