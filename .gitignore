@@ -305,3 +305,6 @@ build-*/
 
 # Messages for the user (agent -> human), not for version control
 AGENTS_nuno.md
+
+# Scratch space for agents/tests (never commit)
+/tmp/

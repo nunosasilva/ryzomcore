@@ -3410,3 +3410,13 @@ above if the horizon is still white). Optimized binary rebuilt with the fix
 
 Accounts right now: config-driver-panel moved to mats006 slot 1; water agent on
 mats005 slot 2; mats004 slot 0 (Matsfour) is at the Sources respawn.
+
+## Scratch space: use <worktree>/tmp/, NEVER /tmp
+
+The user reports that agents writing evidence to `/tmp` (a 14 GB tmpfs) caused
+swap thrashing and odd system behaviour. `/tmp` must not be used for logs,
+screenshots, perf data, extracted files or build artifacts any more.
+`<worktree>/tmp/` is git-ignored (`.gitignore` now has `/tmp/`) and must be used
+instead; delete large intermediates as soon as they are not needed. Existing
+evidence was reduced: /tmp/opencode went from 4.3 GB to <1 GB, the important
+screenshots/dumps moved to `tmp/prhorizon/`, old build copies deleted.
