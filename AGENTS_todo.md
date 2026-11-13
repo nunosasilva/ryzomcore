@@ -3391,3 +3391,22 @@ the remaining question for the re-test at the spot.
   now (the shared `ryzom_client_dev` basename check was removed).
 - The user's client is on `mats007`; our nested gamescope display is separate
   (the runner prints it).
+
+## White horizon: merged, but the Under Spring view still needs a re-check
+
+Merged `d5bfc4b7b` (branch `vulkan-prime-roots-horizon`, commit `d2d053e8f`).
+The white is a draw, not the clear/FXAA target. Fix: a material stage whose
+texture exists but has no image now samples a 1x1 opaque-black fallback like
+GL's incomplete texture, instead of being dropped (which used the white
+vertex/material colour). Synthetic missing-texture A/B: white -> black.
+
+**Unverified at the actual spot**: Matsfour was killed by a Fierce Yelk while
+the client was online (no movement) and respawned at the Sources cave,
+`(3292.23, -11335.28, 1.0)`, alive at 200/200; the old position
+`(3437.33, -11119.32, 11.0)` is gone. The user must reposition Matsfour at
+"Under Spring" for the final Vulkan-vs-GL2 check (see the draw-tracing recipe
+above if the horizon is still white). Optimized binary rebuilt with the fix
+(09:20, both installs).
+
+Accounts right now: config-driver-panel moved to mats006 slot 1; water agent on
+mats005 slot 2; mats004 slot 0 (Matsfour) is at the Sources respawn.
