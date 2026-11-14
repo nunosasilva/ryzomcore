@@ -418,6 +418,61 @@ void commitCamera()
 }
 
 // ***************************************************************************
+// Mirror the sky and canopy cameras for a water reflection pass: commitCamera()
+// set them from the eye camera, but the reflection image must see the mirrored
+// world. The next commitCamera() (after the pass) restores them from the eye.
+static void mirrorReflectionCameras(const UWaterReflectionInfo &reflInfo,
+	CFrustum &savedCanopyFrustum, bool &canopyFrustumSaved)
+{
+	CMatrix reflCamMatrix = reflInfo.ReflViewMatrix;
+	reflCamMatrix.invert();
+	CViewport reflViewport;
+	reflViewport.init(reflInfo.UBias, reflInfo.VBias, reflInfo.UScale, reflInfo.VScale);
+
+	if (s_SkyMode == NewSky)
+	{
+		CSky &sky = ContinentMngr.cur()->CurrentSky;
+		UCamera camSky = sky.getScene()->getCam();
+		sky.getScene()->setViewport(reflViewport);
+		CFrustum skyFrust(reflInfo.FrustumLeft, reflInfo.FrustumRight,
+			reflInfo.FrustumBottom, reflInfo.FrustumTop,
+			reflInfo.FrustumNear, SkyCameraZFar, true);
+		camSky.setFrustum(skyFrust);
+		CMatrix skyCameraMatrix = reflCamMatrix;
+		skyCameraMatrix.setPos(CVector::Null);
+		camSky.setMatrix(skyCameraMatrix);
+	}
+
+	if (SceneRoot)
+	{
+		UCamera camRoot = SceneRoot->getCam();
+		if (!camRoot.empty())
+		{
+			SceneRoot->setViewport(reflViewport);
+			// Scale the sub-frustum window to the canopy camera's near plane.
+			// The canopy frustum is not re-set per pass, so save it for the
+			// caller to restore after the reflection passes.
+			CFrustum rootFrust = camRoot.getFrustum();
+			if (!canopyFrustumSaved)
+			{
+				savedCanopyFrustum = rootFrust;
+				canopyFrustumSaved = true;
+			}
+			float subScale = rootFrust.Near / reflInfo.FrustumNear;
+			rootFrust.Left = reflInfo.FrustumLeft * subScale;
+			rootFrust.Right = reflInfo.FrustumRight * subScale;
+			rootFrust.Bottom = reflInfo.FrustumBottom * subScale;
+			rootFrust.Top = reflInfo.FrustumTop * subScale;
+			camRoot.setFrustum(rootFrust);
+			camRoot.setPos(reflCamMatrix.getPos());
+			CQuat reflRotQuat;
+			reflCamMatrix.getRot(reflRotQuat);
+			camRoot.setRotQuat(reflRotQuat);
+		}
+	}
+}
+
+// ***************************************************************************
 
 void	beginRenderCanopyPart()
 {
@@ -1752,6 +1807,44 @@ bool mainLoop()
 							{
 								s_ForceFullDetail.backup();
 								s_ForceFullDetail.set();
+							}
+						}
+					}
+
+					// Realtime planar water reflections: fill this frame's
+					// reflection targets before the main scene pass. Each
+					// pass renders the same scene through its mirrored camera
+					// with the water clip plane enabled (all set up by
+					// beginWaterReflectionPass). Traversals are reused for
+					// the reflected camera (the engine mirrors the clip
+					// traversal), and water/flares exclude themselves. The
+					// stereo display owns the per-eye interleaving of these
+					// passes, so that path keeps the envmap.
+					if (!StereoDisplay)
+					{
+						uint numReflections = Scene->beginWaterReflectionPasses();
+						CFrustum savedCanopyFrustum;
+						bool canopyFrustumSaved = false;
+						for (uint reflPass = 0; reflPass < numReflections; ++reflPass)
+						{
+							UWaterReflectionInfo reflInfo;
+							Scene->beginWaterReflectionPass(reflPass, reflInfo);
+							mirrorReflectionCameras(reflInfo, savedCanopyFrustum, canopyFrustumSaved);
+							doRenderScene(false, true);
+							Scene->endWaterReflectionPass(reflPass);
+						}
+						Scene->endWaterReflectionPasses();
+						if (numReflections != 0)
+						{
+							// sky/canopy back to the eye camera and viewport
+							commitCamera();
+							if (SceneRoot)
+								SceneRoot->setViewport(Scene->getViewport());
+							if (canopyFrustumSaved)
+							{
+								UCamera camRoot = SceneRoot->getCam();
+								if (!camRoot.empty())
+									camRoot.setFrustum(savedCanopyFrustum);
 							}
 						}
 					}

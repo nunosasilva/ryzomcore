@@ -988,6 +988,9 @@ void CWaterModel::setupMaterialNVertexShader(IDriver *drv, CWaterShape *shape, c
 	// select a water FP variant on this flag); legacy envmap draws keep the
 	// texture-alpha semantics
 	CWaterModel::_WaterMat.setWaterCalcReflectivity(planar || envCalc);
+	// Stage 2 is a realtime planar reflection for this draw (drivers that
+	// recompute the envmap lookup per fragment sample texCoord2 instead).
+	CWaterModel::_WaterMat.setWaterPlanarReflection(planar);
 	if (planar)
 	{
 		CWaterModel::_WaterMat.setTexture(2, _PlanarReflection->Texture);
