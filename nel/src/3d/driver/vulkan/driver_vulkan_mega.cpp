@@ -479,6 +479,7 @@ void megavkVPGenerate(std::string &result, bool fogOrPpl, const char *insertSour
 	ss << std::endl;
 
 	ss << "  gl_Position = modelViewProjection * nlPos;" << std::endl;
+	ss << "  gl_PointSize = 1.0; // point-list draws (occlusion probes)" << std::endl;
 	ss << "  // NeL's projection matrix writes the OpenGL clip depth range [-w, w];" << std::endl;
 	ss << "  // the Vulkan viewport expects [0, w]." << std::endl;
 	ss << "  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;" << std::endl;

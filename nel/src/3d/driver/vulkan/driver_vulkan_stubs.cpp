@@ -422,11 +422,12 @@ bool CDriverVulkan::setAdapter(uint adapter)
 
 bool CDriverVulkan::supportOcclusionQuery() const
 {
-	return false;
-}
-
-void CDriverVulkan::deleteOcclusionQuery(IOcclusionQuery *oq)
-{
+	// NLVK_NOQUERIES=1 is a debug switch for A/B captures: it restores the
+	// pre-implementation behaviour (CFlareModel returns before drawing
+	// anything) without rebuilding the driver.
+	if (getenv("NLVK_NOQUERIES") != NULL)
+		return false;
+	return _OcclusionPools[0] != VK_NULL_HANDLE && _OcclusionPools[1] != VK_NULL_HANDLE;
 }
 
 void CDriverVulkan::enableStencilTest(bool enable)
@@ -476,11 +477,6 @@ const char * CDriverVulkan::getDriverInformation()
 const char * CDriverVulkan::getVideocardInformation()
 {
 	return _DeviceProps.deviceName;
-}
-
-IOcclusionQuery * CDriverVulkan::createOcclusionQuery()
-{
-	return NULL;
 }
 
 bool CDriverVulkan::initVertexBufferHard(uint agpMem, uint vramMem)

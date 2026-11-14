@@ -52,6 +52,7 @@ using namespace NL3D;
 using namespace NLMISC;
 
 class CDriverVulkan;
+class COcclusionQueryVulkan;
 
 /// X11 cursor handle. The Vulkan driver only has an X11 window backend for
 /// now, so this is the same type the GL3 driver uses on that platform.
@@ -310,6 +311,7 @@ inline uint64 insertVertexShaderKey(uint32 programId, uint fogOrPpl, uint hwClip
 
 class CDriverVulkan : public IDriver
 {
+	friend class COcclusionQueryVulkan;
 public:
 	CDriverVulkan();
 	virtual ~CDriverVulkan();
@@ -711,6 +713,30 @@ private:
 	bool					_GpuTimeEnabled;
 	double					_GpuTimePeriod;
 
+	// --- Occlusion queries (flares, item 7) ---
+	// One query pool per frame slot. beginFrame() resets the pool of the slot
+	// it is about to record, before the render pass opens, and therefore
+	// never touches a query that the other in-flight frame may still use.
+	// Query objects take a fresh slot at every begin(), so an object that the
+	// engine reuses cannot collide with its own previous, still-pending issue.
+	static const uint32		NL_VK_OCCLUSION_SLOTS = 4096;
+	VkQueryPool				_OcclusionPools[2];
+	uint32					_OcclusionNextSlot[2];
+	/// Frame counter of the last submission that recorded into each pool.
+	uint64					_OcclusionIssuedFrame[2];
+	/// Frame counter whose fence has been waited. A query result is readable
+	/// when its issue frame is <= this.
+	uint64					_OcclusionCompletedFrame[2];
+	/// VK_QUERY_CONTROL_PRECISE_BIT is only valid when the device reports
+	/// occlusionQueryPrecise; without it the sample counts may be 0/1.
+	bool					_OcclusionPrecise;
+	/// Query objects issued into each pool in the current round. beginFrame()
+	/// harvests their results before the pool is reset, so a result survives
+	/// even if the engine polls it a frame later than expected.
+	std::vector<COcclusionQueryVulkan *>	_OcclusionFrameQueries[2];
+	bool					createOcclusionPools();
+	void					harvestOcclusionQueries(uint32 frame);
+
 	uint32					_FrameIndex;
 	uint32					_ImageIndex;
 	bool					_FrameOpen;
@@ -870,6 +896,11 @@ private:
 	/// NLVK_STATS=1: per-draw CPU cost counters, logged every 120 frames.
 	bool					_StatsEnabled;
 	uint64					_StatsDraws;
+	/// Flare occlusion queries issued/harvested in the stats window, and the
+	/// number of query objects the engine has created.
+	uint64					_StatsOcclusionIssued;
+	uint64					_StatsOcclusionHarvested;
+	uint64					_OcclusionCreatedCount;
 	uint64					_StatsDescriptorNs;
 	uint64					_StatsIndexNs;
 	/// Breakdown of the per-draw region: pipeline-key build, pipeline lookup,
