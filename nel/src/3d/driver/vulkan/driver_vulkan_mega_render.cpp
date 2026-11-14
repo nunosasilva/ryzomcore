@@ -159,6 +159,7 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 		key.WaterCalcRefl = 0;
 		key.WaterDiffuse = 0;
 		key.WaterPlanar = 0;
+		key.SimpleCube0 = (_StageTextures[0] && _StageTextures[0]->Cube) ? 1 : 0;
 		_WaterPPVariant = 0;
 	}
 }

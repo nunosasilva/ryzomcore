@@ -162,6 +162,7 @@ CDriverVulkan::CDriverVulkan()
 	, _OffscreenRenderPass(VK_NULL_HANDLE)
 	, _RenderTargetTexture(NULL)
 	, _RenderTargetInfo(NULL)
+	, _RenderTargetFace(0)
 	, _RenderTargetBinds(0)
 	, _RenderTargetLogged(false)
 	, _DepthFormat(VK_FORMAT_UNDEFINED)
@@ -1407,15 +1408,7 @@ void CDriverVulkan::shutdownVulkan()
 	if (_Device)
 	{
 		for (uint i = 0; i < _PendingTextureDestroy.size(); ++i)
-		{
-			CTextureVulkan tex = _PendingTextureDestroy[i].second;
-			// Render targets own a framebuffer as well as the image and view.
-			if (tex.Framebuffer) vkDestroyFramebuffer(_Device, tex.Framebuffer, NULL);
-			if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
-			if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
-			if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
-			if (tex.Memory) vkFreeMemory(_Device, tex.Memory, NULL);
-		}
+			freeTextureObjects(_PendingTextureDestroy[i].second);
 		for (uint i = 0; i < _PendingBufferDestroy.size(); ++i)
 		{
 			vkDestroyBuffer(_Device, _PendingBufferDestroy[i].second.first, NULL);
@@ -1494,6 +1487,7 @@ void CDriverVulkan::shutdownVulkan()
 			vkDestroyShaderModule(_Device, it->second, NULL);
 		_VertexShaderVariants.clear();
 		if (_FragmentShader) { vkDestroyShaderModule(_Device, _FragmentShader, NULL); _FragmentShader = VK_NULL_HANDLE; }
+		if (_FragmentShaderCube) { vkDestroyShaderModule(_Device, _FragmentShaderCube, NULL); _FragmentShaderCube = VK_NULL_HANDLE; }
 		shutdownMega();
 
 		// Ring and debug buffers.
@@ -1920,11 +1914,7 @@ bool CDriverVulkan::beginFrame()
 				continue;
 			}
 			CTextureVulkan tex = _PendingTextureDestroy[i].second;
-			if (tex.Framebuffer) vkDestroyFramebuffer(_Device, tex.Framebuffer, NULL);
-			if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
-			if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
-			if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
-			if (tex.Memory) vkFreeMemory(_Device, tex.Memory, NULL);
+			freeTextureObjects(tex);
 			_PendingTextureDestroy[i] = _PendingTextureDestroy.back();
 			_PendingTextureDestroy.pop_back();
 		}
@@ -2027,6 +2017,7 @@ bool CDriverVulkan::beginFrame()
 	_MegaLightMapDynTableValid = false;
 	_RenderTargetTexture = NULL;
 	_RenderTargetInfo = NULL;
+	_RenderTargetFace = 0;
 	_IndexRingFrameBase = _FrameIndex * _IndexRingHalf;
 	_IndexRingOffset = _IndexRingFrameBase;
 	// The texture staging ring may already hold data allocated between the
