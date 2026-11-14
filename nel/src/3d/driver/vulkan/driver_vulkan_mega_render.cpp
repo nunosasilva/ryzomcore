@@ -142,8 +142,9 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 		key.WaterPP = water ? 1 : 0;
 		key.WaterCalcRefl = water && _CurrentMaterial->isWaterCalcReflectivity() ? 1 : 0;
 		key.WaterDiffuse = water && _CurrentMaterial->getTexture(3) != NULL ? 1 : 0;
+		key.WaterPlanar = water && _CurrentMaterial->isWaterPlanarReflection() ? 1 : 0;
 		_WaterPPVariant = key.WaterPP
-			? (1u | (key.WaterCalcRefl << 1) | (key.WaterDiffuse << 2))
+			? (1u | (key.WaterCalcRefl << 1) | (key.WaterDiffuse << 2) | (key.WaterPlanar << 3))
 			: 0u;
 	}
 	else
@@ -157,6 +158,7 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 		key.WaterPP = 0;
 		key.WaterCalcRefl = 0;
 		key.WaterDiffuse = 0;
+		key.WaterPlanar = 0;
 		_WaterPPVariant = 0;
 	}
 }
@@ -353,7 +355,7 @@ VkShaderModule CDriverVulkan::getMegaVertexShader()
 		return _MegaVertexShader;
 
 	std::string body;
-	megavkVPGenerate(body, true);
+	megavkVPGenerate(body, true, NULL, _ShaderClipDistance);
 	std::string source;
 	if (!assembleMegaSource(body, NULL, source))
 	{
@@ -402,15 +404,15 @@ VkShaderModule CDriverVulkan::getMegaPixelShader(bool cube, bool specular)
 	return module;
 }
 
-VkShaderModule CDriverVulkan::getWaterPixelShader(bool calcReflectivity, bool diffuse)
+VkShaderModule CDriverVulkan::getWaterPixelShader(bool calcReflectivity, bool diffuse, bool planar)
 {
-	const uint32 key = (calcReflectivity ? 1u : 0u) | (diffuse ? 2u : 0u);
+	const uint32 key = (calcReflectivity ? 1u : 0u) | (diffuse ? 2u : 0u) | (planar ? 4u : 0u);
 	map<uint32, VkShaderModule>::iterator it = _WaterPixelShaderVariants.find(key);
 	if (it != _WaterPixelShaderVariants.end())
 		return it->second;
 
 	std::string body;
-	watervkPPGenerate(body, calcReflectivity, diffuse);
+	watervkPPGenerate(body, calcReflectivity, diffuse, planar);
 	std::string source;
 	if (!assembleMegaSource(body, NULL, source))
 	{
@@ -423,8 +425,8 @@ VkShaderModule CDriverVulkan::getWaterPixelShader(bool calcReflectivity, bool di
 		nlwarning("Vulkan: water pixel program failed to compile");
 		return VK_NULL_HANDLE;
 	}
-	nlinfo("Vulkan: compiled water pixel program (calcReflectivity=%d, diffuse=%d)",
-		calcReflectivity ? 1 : 0, diffuse ? 1 : 0);
+	nlinfo("Vulkan: compiled water pixel program (calcReflectivity=%d, diffuse=%d, planar=%d)",
+		calcReflectivity ? 1 : 0, diffuse ? 1 : 0, planar ? 1 : 0);
 	_WaterPixelShaderVariants[key] = module;
 	return module;
 }
@@ -465,7 +467,9 @@ const CCameraUBOData &CDriverVulkan::stageMegaCameraUBO()
 	data.fogParams[0] = _FogStart;
 	data.fogParams[1] = _FogEnd;
 	data.fogMode = (sint32)_FogMode;
-	data.clipPlaneMask = 0;
+	data.clipPlaneMask = clipPlaneMask();
+	for (uint i = 0; i < MaxClipPlanes; ++i)
+		memcpy(data.clipPlane[i], _ClipPlaneEye[i], 4 * sizeof(float));
 
 	// Camera world position: inverse view translation (used by PPL).
 	{

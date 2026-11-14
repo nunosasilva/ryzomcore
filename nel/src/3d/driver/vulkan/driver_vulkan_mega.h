@@ -173,7 +173,11 @@ extern const char *VulkanMaterialHeader;
 /// nlPreTransform(inout vec4, inout vec3, inout vec4, inout vec4). When set, it
 /// is spliced into the program and called on the vertex inputs before the
 /// model-view-projection transform, exactly like the GL3 mega generator.
-void megavkVPGenerate(std::string &result, bool fogOrPpl, const char *insertSource = NULL);
+///
+/// writeClip writes gl_ClipDistance from the camera UBO's clip planes and
+/// mask (the device must have shaderClipDistance enabled).
+void megavkVPGenerate(std::string &result, bool fogOrPpl, const char *insertSource = NULL,
+	bool writeClip = false);
 
 /// Generate the Vulkan mega pixel program.
 /// fogOrPpl adds fog and per-pixel lighting, cube makes sampler1 a samplerCube
@@ -186,7 +190,9 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 /// modulates the result, and the blend alpha comes from the environment map
 /// (or, for calculated reflectivity, from the per-vertex base boosted by the
 /// reflection's luminance). Uses the camera, object and water blocks.
-void watervkPPGenerate(std::string &result, bool calcReflectivity, bool diffuse);
+/// planar samples the per-vertex planar reflection UVs (texCoord2) instead of
+/// recomputing the environment lookup from the camera vector.
+void watervkPPGenerate(std::string &result, bool calcReflectivity, bool diffuse, bool planar);
 
 /// Builtin UBO blocks plus the user blocks described by a vertex program's
 /// UniformBufferFormats (implemented in driver_vulkan_vp.cpp). Returns false

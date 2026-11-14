@@ -451,14 +451,6 @@ void CDriverVulkan::stencilMask(uint mask)
 {
 }
 
-void CDriverVulkan::enableClipPlane(uint index, bool enable)
-{
-}
-
-void CDriverVulkan::setClipPlane(uint index, const NLMISC::CPlane &plane)
-{
-}
-
 NLMISC::IEventEmitter * CDriverVulkan::getEventEmitter()
 {
 	return &_EventEmitter;

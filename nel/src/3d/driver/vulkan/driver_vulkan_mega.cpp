@@ -365,11 +365,13 @@ const char *VulkanMaterialHeader =
 // Vertex program
 // ---------------------------------------------------------------------------
 
-void megavkVPGenerate(std::string &result, bool fogOrPpl, const char *insertSource)
+void megavkVPGenerate(std::string &result, bool fogOrPpl, const char *insertSource, bool writeClip)
 {
 	std::stringstream ss;
 	ss << "#version 450" << std::endl;
 	ss << "// Vulkan Megashader Vertex Program (fogOrPpl=" << (int)fogOrPpl;
+	if (writeClip)
+		ss << ", clip";
 	if (insertSource)
 		ss << ", insert";
 	ss << ")" << std::endl;
@@ -487,6 +489,22 @@ void megavkVPGenerate(std::string &result, bool fogOrPpl, const char *insertSour
 
 	// Eye-space position (always needed: lighting, texgen, fog)
 	ss << "  vec4 ecPos4 = modelView * nlPos;" << std::endl;
+	if (writeClip)
+	{
+		// User clip planes (the water reflection pass): same eye-space planes
+		// and mask as the GL3 mega VP's hwClip variant. Vulkan always consumes
+		// a written clip distance, so disabled planes write 1.0.
+		ss << "  if (nlClipPlaneMask == 0) {" << std::endl;
+		for (int i = 0; i < 6; ++i)
+			ss << "    gl_ClipDistance[" << i << "] = 1.0;" << std::endl;
+		ss << "  } else {" << std::endl;
+		for (int i = 0; i < 6; ++i)
+		{
+			ss << "    gl_ClipDistance[" << i << "] = ((nlClipPlaneMask & " << (1 << i)
+			   << ") != 0) ? dot(clipPlane" << i << ", ecPos4) : 1.0;" << std::endl;
+		}
+		ss << "  }" << std::endl;
+	}
 	if (fogOrPpl)
 	{
 		ss << "  ecPos = ecPos4;" << std::endl;
@@ -1050,12 +1068,12 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	result = emitUsedVaryings(ss.str());
 }
 
-void watervkPPGenerate(std::string &result, bool calcReflectivity, bool diffuse)
+void watervkPPGenerate(std::string &result, bool calcReflectivity, bool diffuse, bool planar)
 {
 	std::stringstream ss;
 	ss << "#version 450" << std::endl;
 	ss << "// Vulkan water pixel program (calcReflectivity=" << (int)calcReflectivity
-	   << ", diffuse=" << (int)diffuse << ")" << std::endl;
+	   << ", diffuse=" << (int)diffuse << ", planar=" << (int)planar << ")" << std::endl;
 	ss << std::endl;
 
 	ss << "layout(location = 0) out vec4 fragColor;" << std::endl;
@@ -1110,10 +1128,25 @@ void watervkPPGenerate(std::string &result, bool calcReflectivity, bool diffuse)
 	// uses. Keep the per-vertex texCoord2.z for calculated reflectivity; only
 	// the envmap lookup becomes per-pixel.
 	ss << "  vec3 eyePos = ecPos.xyz / ecPos.w;" << std::endl;
-	ss << "  vec3 worldPosFrag = transpose(mat3(viewMatrix)) * (eyePos - viewMatrix[3].xyz);" << std::endl;
-	ss << "  vec3 toObs = normalize(cameraWorldPos - worldPosFrag);" << std::endl;
-	ss << "  vec2 envUv = -toObs.xy * reflectParams.x + reflectParams.y;" << std::endl;
-	ss << "  vec4 col = texture(sampler2, envUv + b1);" << std::endl;
+	if (planar)
+	{
+		// Planar reflection: the water VP (planar variant) already projected
+		// the vertex through the reflected camera's sub-frustum and wrote the
+		// UV in texCoord2, including the active reflection-target tile. Sample
+		// it directly, as GL3 does. Reflection targets are offscreen textures,
+		// which this driver stores top-down; undo that here like the mega
+		// pixel program does for render-target stages (stage 2 bit).
+		ss << "  vec2 uv2 = texCoord2.xy + b1;" << std::endl;
+		ss << "  if ((nlRtFlipMask & 4) != 0) uv2.y = 1.0 - uv2.y;" << std::endl;
+		ss << "  vec4 col = texture(sampler2, uv2);" << std::endl;
+	}
+	else
+	{
+		ss << "  vec3 worldPosFrag = transpose(mat3(viewMatrix)) * (eyePos - viewMatrix[3].xyz);" << std::endl;
+		ss << "  vec3 toObs = normalize(cameraWorldPos - worldPosFrag);" << std::endl;
+		ss << "  vec2 envUv = -toObs.xy * reflectParams.x + reflectParams.y;" << std::endl;
+		ss << "  vec4 col = texture(sampler2, envUv + b1);" << std::endl;
+	}
 	if (calcReflectivity)
 	{
 		// Calculated reflectivity: the per-vertex fresnel base (texCoord2.z)

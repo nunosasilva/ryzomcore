@@ -288,6 +288,7 @@ struct CPipelineKey
 	uint32	WaterPP;          // water pixel stage (CMaterial::Water with the water VP)
 	uint32	WaterCalcRefl;    // water PP derives alpha from the per-vertex reflectivity
 	uint32	WaterDiffuse;     // water PP multiplies the colour map (stage 3)
+	uint32	WaterPlanar;      // water PP samples the planar reflection UVs (texCoord2)
 
 	bool operator==(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
 	bool operator<(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) < 0; }
@@ -300,10 +301,11 @@ struct CPipelineVulkan
 };
 
 /// Key of a glsl3vi mega vertex program variant: the insert program id plus
-/// the two GL3 variant bits. Only (fogOrPpl=1, hwClip=0) is generated for now:
-/// the mega pixel stage is always the fog/PPL variant and the driver reports
-/// no hardware clip plane support. Keeping the bits in the key leaves room for
-/// the remaining variants without invalidating the insert program identity.
+/// the two GL3 variant bits. Only (fogOrPpl=1, hwClip=0) is generated: the
+/// mega pixel stage is always the fog/PPL variant and the clip planes are
+/// folded at draw time from the camera UBO (see megavkVPGenerate). Keeping the
+/// bits in the key leaves room for the remaining variants without invalidating
+/// the insert program identity.
 inline uint64 insertVertexShaderKey(uint32 programId, uint fogOrPpl, uint hwClip)
 {
 	return ((uint64)programId << 2) | ((uint64)(fogOrPpl & 1u) << 1) | (hwClip & 1u);
@@ -536,7 +538,17 @@ public:
 	virtual bool bindUniformBuffer(TUBBinding binding, CUniformBuffer *ub) override;
 	virtual bool supportBuiltinUBO() const override { return getenv("NLVK_NOUBO") == NULL; }
 	virtual uint getMaxLightTableSize() const override;
-	virtual bool supportVertexProgramClipPlanes() const override { return false; }
+	/// User clip planes: the vertex shaders write gl_ClipDistance from the
+	/// camera UBO (mega) or the per-draw block (simple path), so the engine's
+	/// water reflection passes can clip geometry below the water plane.
+	/// NLVK_NOCLIP=1 is a debug switch for A/B captures: it reports no clip
+	/// support and so restores the static-envmap water path.
+	virtual bool supportVertexProgramClipPlanes() const override
+	{
+		return getenv("NLVK_NOCLIP") == NULL && _ShaderClipDistance;
+	}
+	/// The shaders fold the plane mask at draw time, so no engine-side clip
+	/// variant is needed (GL3 without GLES behaves the same way per pass).
 	virtual bool needVertexProgramClipVariant() const override { return false; }
 	virtual bool supportLargeUBOArrays() const override { return true; }
 	virtual bool isTripleBufferPipelined() const override { return false; }
@@ -737,6 +749,20 @@ private:
 	bool					createOcclusionPools();
 	void					harvestOcclusionQueries(uint32 frame);
 
+	// --- User clip planes (water reflection passes, item 6) ---
+	/// shaderClipDistance device feature: when false the shaders are compiled
+	/// without gl_ClipDistance writes and supportVertexProgramClipPlanes()
+	/// stays false, so the engine keeps the static envmap water path.
+	bool					_ShaderClipDistance;
+	static const uint		MaxClipPlanes = 6;
+	bool					_ClipPlaneEnabled[MaxClipPlanes];
+	/// Planes in the same eye space as the vertex shaders' ecPos (world plane
+	/// transformed by the inverse view matrix, see setClipPlane()).
+	float					_ClipPlaneEye[MaxClipPlanes][4];
+	/// Mask of _ClipPlaneEnabled, staged into the camera UBO and the simple
+	/// per-draw block.
+	sint32					clipPlaneMask() const;
+
 	uint32					_FrameIndex;
 	uint32					_ImageIndex;
 	bool					_FrameOpen;
@@ -866,8 +892,9 @@ private:
 	void					shutdownMega();
 	VkShaderModule			getMegaVertexShader();
 	VkShaderModule			getMegaPixelShader(bool cube, bool specular);
-	/// Water pixel stage, one variant per (calculated reflectivity, colour map).
-	VkShaderModule			getWaterPixelShader(bool calcReflectivity, bool diffuse);
+	/// Water pixel stage, one variant per (calculated reflectivity, colour
+	/// map, planar reflection UVs).
+	VkShaderModule			getWaterPixelShader(bool calcReflectivity, bool diffuse, bool planar);
 	bool					canUseMegaPath(bool &cube);
 	void					fillMegaPipelineKey(CPipelineKey &key);
 	bool					bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb);
@@ -1245,8 +1272,11 @@ private:
 		float	SpecularTexMtx[16];		// 912 (inverse view rotation, reflection texgen)
 		float	ModelView[16];			// 976 (eye-space position for texgen and fog)
 		float	TexEnvConstant[4][4];	// 1040 (TexEnv stage constant colours)
-	};									// 1104
-	static_assert(sizeof(SSimpleUniforms) == 1104, "SSimpleUniforms must match the std140 NlSimple block");
+		sint32	ClipPlaneMask;			// 1104 (bit i = user clip plane i enabled)
+		sint32	Pad3[3];				// 1108 (std140: clipPlane is vec4-aligned)
+		float	ClipPlane[6][4];		// 1120 (eye-space user clip planes)
+	};									// 1216
+	static_assert(sizeof(SSimpleUniforms) == 1216, "SSimpleUniforms must match the std140 NlSimple block");
 
 	VkBuffer				_UniformRing;
 	VkDeviceMemory			_UniformRingMemory;

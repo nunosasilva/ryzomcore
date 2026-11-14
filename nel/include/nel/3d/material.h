@@ -106,6 +106,14 @@ const uint32 IDRV_MAT_USER_TEX_FIRST_BIT = 20;
    render material, never present in streamed content). */
 const uint32 IDRV_MAT_WATER_CALC_REFLECTIVITY	=	0x10000000;
 
+/* Water shader draw whose stage 2 reflection texture is the realtime planar
+   reflection (a render target with UVs projected on the CPU through the
+   reflected camera), not the artist environment map. Drivers that answer the
+   envmap lookup from the vertex-to-camera vector must sample the water
+   vertex program's texCoord2 UVs instead. Runtime-only flag, like the one
+   above. */
+const uint32 IDRV_MAT_WATER_PLANAR_REFLECTION	=	0x20000000;
+
 // For TexCoordGen
 const uint32 IDRV_MAT_TEX_GEN_SHIFT  =   2;
 const uint32 IDRV_MAT_TEX_GEN_MASK  =   0x03;
@@ -752,6 +760,10 @@ public:
 	/// Calculated water reflectivity semantics for this draw (see IDRV_MAT_WATER_CALC_REFLECTIVITY)
 	void					setWaterCalcReflectivity(bool on) { if (on) _Flags|=IDRV_MAT_WATER_CALC_REFLECTIVITY; else _Flags&=~IDRV_MAT_WATER_CALC_REFLECTIVITY; }
 	bool					isWaterCalcReflectivity() const { return (_Flags&IDRV_MAT_WATER_CALC_REFLECTIVITY)!=0; }
+
+	/// Stage 2 is the realtime planar reflection render target (see IDRV_MAT_WATER_PLANAR_REFLECTION)
+	void					setWaterPlanarReflection(bool on) { if (on) _Flags|=IDRV_MAT_WATER_PLANAR_REFLECTION; else _Flags&=~IDRV_MAT_WATER_PLANAR_REFLECTION; }
+	bool					isWaterPlanarReflection() const { return (_Flags&IDRV_MAT_WATER_PLANAR_REFLECTION)!=0; }
 
 
 
