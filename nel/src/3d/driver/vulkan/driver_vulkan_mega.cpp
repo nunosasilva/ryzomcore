@@ -1144,8 +1144,8 @@ void watervkPPGenerate(std::string &result, bool calcReflectivity, bool diffuse,
 	{
 		ss << "  vec3 worldPosFrag = transpose(mat3(viewMatrix)) * (eyePos - viewMatrix[3].xyz);" << std::endl;
 		ss << "  vec3 toObs = normalize(cameraWorldPos - worldPosFrag);" << std::endl;
-		ss << "  vec2 envUv = -toObs.xy * reflectParams.x + reflectParams.y;" << std::endl;
-		ss << "  vec4 col = texture(sampler2, envUv + b1);" << std::endl;
+		ss << "  vec2 envUv = -toObs.xy * reflectParams.x + reflectParams.y + b1;" << std::endl;
+		ss << "  vec4 col = texture(sampler2, envUv);" << std::endl;
 	}
 	if (calcReflectivity)
 	{

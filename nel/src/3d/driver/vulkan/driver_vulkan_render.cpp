@@ -105,10 +105,11 @@ static const char *s_UniformBlockGLSL =
 	"    mat4 modelView;\n"                 // 976
 	"    vec4 texEnvConstant[4];\n"         // 1040 (TexEnv stage constant colours)
 	"    int  clipPlaneMask;\n"             // 1104 (user clip planes, water reflections)
+	"    int  cubeFlip;\n"                  // 1108 (stage-0 cube render target: flip each face)
 	"    vec4 clipPlane[6];\n"              // 1120 (eye space)
 	"} nl;\n";                              // 1216
 
-static std::string buildVertexShader(uint32 flags, bool writeClip)
+static std::string buildVertexShader(uint32 flags, bool writeClip, bool cube0)
 {
 	bool hasColor = (flags & CVertexBuffer::PrimaryColorFlag) != 0;
 	bool hasNormal = (flags & CVertexBuffer::NormalFlag) != 0;
@@ -125,7 +126,12 @@ static std::string buildVertexShader(uint32 flags, bool writeClip)
 		if (flags & (CVertexBuffer::TexCoord0Flag << i))
 		{
 			char line[64];
-			snprintf(line, sizeof(line), "layout(location = %u) in vec2 attrTexCoord%u;\n", 8 + i, i);
+			// A cube map stage 0 (the water env map flatten pass) needs the
+			// whole direction, which the engine stores in a 3-float TexCoord0.
+			// Only that variant declares three components; every 2D stage
+			// keeps the vec2 that NeL UVs fit in.
+			snprintf(line, sizeof(line), "layout(location = %u) in %s attrTexCoord%u;\n",
+				8 + i, (cube0 && i == 0) ? "vec3" : "vec2", i);
 			src += line;
 		}
 	}
@@ -143,7 +149,8 @@ static std::string buildVertexShader(uint32 flags, bool writeClip)
 		if (flags & (CVertexBuffer::TexCoord0Flag << i))
 		{
 			char line[96];
-			snprintf(line, sizeof(line), "    if (routing == %u) return vec4(attrTexCoord%u, 0.0, 1.0);\n", i, i);
+			snprintf(line, sizeof(line), "    if (routing == %u) return vec4(attrTexCoord%u, %s);\n",
+				i, i, (cube0 && i == 0) ? "1.0" : "0.0, 1.0");
 			src += line;
 			anyUv = true;
 		}
@@ -155,7 +162,18 @@ static std::string buildVertexShader(uint32 flags, bool writeClip)
 	src += "void main() {\n"
 		"    vec4 objPos = vec4(attrPosition, 1.0);\n"
 		"    vec4 pos = nl.mvp * objPos;\n"
-		"    pos.z = (pos.z + pos.w) * 0.5;\n"
+		"    pos.z = (pos.z + pos.w) * 0.5;\n";
+	if (cube0)
+	{
+		// The only draw with a cube on stage 0 is the water env map flatten
+		// pass, which builds a lookup image the water pixel program samples
+		// with GL-oriented (V = 0 at the bottom) coordinates. Render targets
+		// in this driver are stored top-down, so the pass is drawn vertically
+		// mirrored to leave the image in GL's orientation. The material is
+		// double sided, so flipping the winding is harmless.
+		src += "    pos.y = -pos.y;\n";
+	}
+	src +=
 		"    gl_Position = pos;\n"
 		"    // Point-list draws (the flare occlusion probe) need a defined size;\n"
 		"    // without this Vulkan leaves it undefined (1.0 on RADV, not elsewhere).\n"
@@ -297,20 +315,51 @@ static std::string buildVertexShader(uint32 flags, bool writeClip)
 
 /// TexEnv interpreter, the same packing as CMaterial::CTexEnv (see the GL3 mega
 /// pixel program for the reference implementation).
-static const std::string s_FragmentShader =
-	std::string("#version 450\n")
-	+ "layout(location = 0) in vec4 vColor;\n"
-	"layout(location = 1) in vec4 vUv0;\n"
-	"layout(location = 2) in vec4 vUv1;\n"
-	"layout(location = 3) in vec4 vUv2;\n"
-	"layout(location = 4) in vec4 vUv3;\n"
-	"layout(location = 5) in float vFogDepth;\n"
-	"layout(binding = 0) uniform sampler2D tex0;\n"
-	"layout(binding = 1) uniform sampler2D tex1;\n"
-	"layout(binding = 2) uniform sampler2D tex2;\n"
-	"layout(binding = 3) uniform sampler2D tex3;\n"
-	+ std::string(s_UniformBlockGLSL)
-	+ "layout(location = 0) out vec4 fragColor;\n"
+///
+/// The cube variant is used by the one draw whose stage 0 is a cube texture:
+/// the water environment map flatten pass. Stage 0 then samples a samplerCube
+/// with the 3-component direction the flatten vertex buffer stores in
+/// TexCoord0. Every other stage stays a 2D sampler.
+static std::string buildFragmentShader(bool cube0)
+{
+	std::string src;
+	src += "#version 450\n";
+	src += "layout(location = 0) in vec4 vColor;\n";
+	src += "layout(location = 1) in vec4 vUv0;\n";
+	src += "layout(location = 2) in vec4 vUv1;\n";
+	src += "layout(location = 3) in vec4 vUv2;\n";
+	src += "layout(location = 4) in vec4 vUv3;\n";
+	src += "layout(location = 5) in float vFogDepth;\n";
+	if (cube0)
+		src += "layout(binding = 0) uniform samplerCube tex0;\n";
+	else
+		src += "layout(binding = 0) uniform sampler2D tex0;\n";
+	src += "layout(binding = 1) uniform sampler2D tex1;\n";
+	src += "layout(binding = 2) uniform sampler2D tex2;\n";
+	src += "layout(binding = 3) uniform sampler2D tex3;\n";
+	src += s_UniformBlockGLSL;
+	src += "layout(location = 0) out vec4 fragColor;\n";
+	if (cube0)
+	{
+		// A cube render target is rendered one face at a time through a 2D
+		// view, so each face's rows are stored top-down, the reverse of the GL
+		// FBO orientation the flatten vertex buffer was built for. Vulkan cube
+		// sampling addresses image row 0 as t = -1, so the sampled content is
+		// mirrored vertically. Flipping the face's minor axis (the one the
+		// cube map face table uses as t) per face undoes that and matches GL.
+		src += "vec3 cubeTargetFlip(vec3 d) {\n"
+			"    vec3 a = abs(d);\n"
+			"    if (a.x >= a.y && a.x >= a.z) return vec3(d.x, -d.y, d.z);\n"
+			"    if (a.y >= a.z) return vec3(d.x, d.y, -d.z);\n"
+			"    return vec3(d.x, -d.y, d.z);\n"
+			"}\n"
+			"vec4 sampleCube0(vec4 uv) {\n"
+			"    vec3 d = uv.xyz;\n"
+			"    if (nl.cubeFlip != 0) d = cubeTargetFlip(d);\n"
+			"    return texture(tex0, d);\n"
+			"}\n";
+	}
+	src +=
 	"vec4 getTexEnvSrc(int src, vec4 texel, vec4 previous, vec4 diffuse, vec4 cnst) {\n"
 	"  return (src == 0) ? texel : (src == 1) ? previous : (src == 2) ? diffuse : cnst;\n"
 	"}\n"
@@ -387,8 +436,12 @@ static const std::string s_FragmentShader =
 	"    return fColor;\n"
 	"}\n"
 	"void main() {\n"
-	"    vec4 frag = vColor;\n"
-	"    if ((nl.flags & 1) != 0) frag = applyTexEnv(nl.texEnv0, texture(tex0, uvOfStage(vUv0, nl.rtFlipMask & 1u)), frag, vColor, nl.texEnvConstant[0]);\n"
+	"    vec4 frag = vColor;\n";
+	if (cube0)
+		src += "    if ((nl.flags & 1) != 0) frag = applyTexEnv(nl.texEnv0, sampleCube0(vUv0), frag, vColor, nl.texEnvConstant[0]);\n";
+	else
+		src += "    if ((nl.flags & 1) != 0) frag = applyTexEnv(nl.texEnv0, texture(tex0, uvOfStage(vUv0, nl.rtFlipMask & 1u)), frag, vColor, nl.texEnvConstant[0]);\n";
+	src +=
 	"    if ((nl.flags & 2) != 0) frag = applyTexEnv(nl.texEnv1, texture(tex1, uvOfStage(vUv1, nl.rtFlipMask & 2u)), frag, vColor, nl.texEnvConstant[1]);\n"
 	"    if ((nl.flags & 4) != 0) frag = applyTexEnv(nl.texEnv2, texture(tex2, uvOfStage(vUv2, nl.rtFlipMask & 4u)), frag, vColor, nl.texEnvConstant[2]);\n"
 	"    if ((nl.flags & 8) != 0) frag = applyTexEnv(nl.texEnv3, texture(tex3, uvOfStage(vUv3, nl.rtFlipMask & 8u)), frag, vColor, nl.texEnvConstant[3]);\n"
@@ -396,6 +449,8 @@ static const std::string s_FragmentShader =
 	"    if (nl.fogEnabled != 0) frag = applyFog(frag);\n"
 	"    fragColor = frag;\n"
 	"}\n";
+	return src;
+}
 
 struct SPushConstants
 {
@@ -679,20 +734,29 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	}
 	else
 	{
+		// A stage-0 cube changes the vertex input of TexCoord0 (3 floats, the
+		// lookup direction) and the fragment program (samplerCube), so both
+		// variants are part of the cache key.
+		const uint32 cubeBit = key.SimpleCube0 != 0 ? 0x80000000u : 0u;
+		shaderFlags |= cubeBit;
 		vertexShader = _VertexShaderVariants[shaderFlags];
 		if (vertexShader == VK_NULL_HANDLE)
 		{
-			std::string source = buildVertexShader(key.VertexFlags, _ShaderClipDistance);
+			std::string source = buildVertexShader(key.VertexFlags, _ShaderClipDistance, key.SimpleCube0 != 0);
 			if (!compileShader(source.c_str(), &vertexShader, true))
 				return VK_NULL_HANDLE;
 			_VertexShaderVariants[shaderFlags] = vertexShader;
 		}
-		fragmentShader = _FragmentShader;
+		fragmentShader = key.SimpleCube0 != 0 ? _FragmentShaderCube : _FragmentShader;
 		if (fragmentShader == VK_NULL_HANDLE)
 		{
-			if (!compileShader(s_FragmentShader.c_str(), &fragmentShader, false))
+			std::string source = buildFragmentShader(key.SimpleCube0 != 0);
+			if (!compileShader(source.c_str(), &fragmentShader, false))
 				return VK_NULL_HANDLE;
-			_FragmentShader = fragmentShader;
+			if (key.SimpleCube0 != 0)
+				_FragmentShaderCube = fragmentShader;
+			else
+				_FragmentShader = fragmentShader;
 		}
 	}
 	if (vertexShader == VK_NULL_HANDLE || fragmentShader == VK_NULL_HANDLE)
@@ -1715,7 +1779,9 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	// A render target image is sampled with V = 0 at the top, while NeL texture
 	// coordinates put V = 0 at the bottom. Every stage bound to a target is
 	// flipped in the pixel shader (the bloom passes and the final scene blit
-	// would otherwise be upside down).
+	// would otherwise be upside down). A stage-0 cube render target is the
+	// exception: its lookup is a direction, so the fragment program flips the
+	// face's vertical axis instead (see buildFragmentShader()).
 	u.RtFlipMask = 0;
 	for (uint stage = 0; stage < 4; ++stage)
 	{
@@ -1727,6 +1793,8 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 		if (texture && texture->getRenderTarget() && texture->isOffscreenTexture())
 			u.RtFlipMask |= (1u << stage);
 	}
+	const ITexture *stage0Tex = _CurrentMaterial->getTexture(0);
+	u.CubeFlip = (key.SimpleCube0 != 0 && stage0Tex && stage0Tex->getRenderTarget()) ? 1 : 0;
 
 	// Resolve up to four lights for this object (std140: separate vec4 arrays).
 	uint lightCount = 0;
@@ -1864,10 +1932,11 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	for (uint stage = 0; stage < 4; ++stage)
 	{
 		CTextureVulkan *tex = _StageTextures[stage];
-		// The simple fragment shader declares every stage as sampler2D. A cube
-		// texture on a draw that the mega path cannot take (a non-stage-1 cube)
-		// would be an incompatible descriptor; bind the white 2D texture there.
-		if (tex && tex->Cube)
+		// The simple fragment shader declares every other stage as sampler2D.
+		// A cube texture on a draw that the mega path cannot take (a non-stage-1
+		// cube) would be an incompatible descriptor; bind the white 2D texture
+		// there. Stage 0 is the exception: its shader variant declares a cube.
+		if (tex && tex->Cube && !(stage == 0 && key.SimpleCube0 != 0))
 			tex = NULL;
 		infos[stage].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		infos[stage].imageView = tex ? tex->View : getWhiteTexture();

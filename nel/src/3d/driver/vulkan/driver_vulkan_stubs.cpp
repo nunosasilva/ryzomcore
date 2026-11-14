@@ -352,7 +352,11 @@ bool CDriverVulkan::supportWaterShader() const
 
 bool CDriverVulkan::cubemapZPositiveForward() const
 {
-	return true;
+	// Vulkan cube sampling follows the GL convention (-Z is forward), and the
+	// cube upload applies the same face orientation fixes as the GL3 driver.
+	// Reporting the D3D convention (+Z forward) makes CWaterEnvMap swap the
+	// +/-Y render faces and mirrors the water environment map vertically.
+	return false;
 }
 
 bool CDriverVulkan::supportTextureAddrMode(CMaterial::TTexAddressingMode mode) const
