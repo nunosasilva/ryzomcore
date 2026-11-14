@@ -902,6 +902,10 @@ private:
 	void					stageMegaLightTableUBO();
 	void					stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data);
 	void					stageMegaMaterialUBO(CMaterial &mat, CMaterialUBOData &data);
+	/// True when this draw uses the LightMap material shader. GL3 replaces the
+	/// object's light list on these draws with the engine's dynamic lightmap
+	/// light (or none), so the baked lightmap is never doubled by scene lights.
+	bool					isLightMapDraw() const;
 	uint32					allocUniformBlock(const void *data, uint32 size);
 	/// Make room for one more per-draw uniform block, growing the ring without
 	/// invalidating blocks a frame in flight may still reference.
@@ -1072,6 +1076,16 @@ private:
 	/// whether it still matches the engine's light state.
 	bool						_MegaLightTableValid;
 	uint32						_MegaLightTableOffset;
+	/// Dynamic light applied to static lightmapped geometry (the player torch).
+	/// GL3 replaces the object's light list with this single light on LightMap
+	/// draws; Vulkan binds it through a dedicated 1-entry table so the scene's
+	/// light table stays untouched.
+	CLightTableUBOEntry			_LightMapDynLightEntry;
+	bool						_LightMapDynamicLightEnabled;
+	bool						_MegaLightMapDynTableValid;
+	uint32						_MegaLightMapDynTableOffset;
+	/// One-shot diagnostic for the dynamic lightmap light.
+	bool						_LightMapDynLogged;
 	VkBuffer					_MegaUserBuffer;
 	VkDeviceMemory				_MegaUserBufferMemory;
 	CCameraUBOData				_MegaCameraData;

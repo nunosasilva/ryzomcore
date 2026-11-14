@@ -570,6 +570,23 @@ void CDriverVulkan::stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data)
 		}
 	}
 
+	// Static lightmapped geometry: GL3's setupLightMapDynamicLighting() gives
+	// these vertices only the engine's dynamic light (the player torch), or no
+	// light at all, never the scene's lights: the lightmap already contains
+	// them. Entry 0 of the dedicated table bound for these draws holds the
+	// dynamic light (see bindMegaDescriptors()).
+	if (isLightMapDraw())
+	{
+		const sint32 dynIndex = _LightMapDynamicLightEnabled ? 0 : -1;
+		for (uint i = 0; i < 4; ++i)
+		{
+			data.lightIndices01[i] = (i == 0) ? dynIndex : -1;
+			data.lightFactors01[i] = (i == 0 && dynIndex >= 0) ? 1.f : 0.f;
+			data.lightIndices45[i] = -1;
+			data.lightFactors45[i] = 0.f;
+		}
+	}
+
 	// Self illumination (ambient + per-light ambient, modulated by the material
 	// ambient, plus the material emissive)
 	const CMaterial &mat = *_CurrentMaterial;
@@ -804,6 +821,7 @@ bool CDriverVulkan::growUniformRing(uint32 required)
 	memset(_UserUBStageSize, 0, sizeof(_UserUBStageSize));
 	// The frame's light table block lives in the old buffer too.
 	_MegaLightTableValid = false;
+	_MegaLightMapDynTableValid = false;
 	nlinfo("Vulkan: uniform ring grown to %u bytes", newSize);
 	return true;
 }
@@ -823,7 +841,27 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	stageMegaMaterialUBO(*_CurrentMaterial, materialData);
 	// The light table is scene state, not per-object: stage it once per frame
 	// (or after a light change) instead of copying 12 KiB for every mega draw.
-	if (!_MegaLightTableValid)
+	// LightMap draws with an engine dynamic light bind a dedicated table that
+	// holds only that light: their vertices must not see the scene lights.
+	const bool lightMapDyn = isLightMapDraw() && _LightMapDynamicLightEnabled;
+	if (lightMapDyn)
+	{
+		if (!_MegaLightMapDynTableValid)
+		{
+			CLightTableUBOEntry entries[NL_VK_MEGA_MAX_LIGHT_TABLE];
+			for (uint i = 0; i < NL_VK_MEGA_MAX_LIGHT_TABLE; ++i)
+			{
+				memset(&entries[i], 0, sizeof(entries[i]));
+				entries[i].mode = -1;
+			}
+			entries[0] = _LightMapDynLightEntry;
+			_MegaLightMapDynTableOffset = allocUniformBlock(entries, sizeof(entries));
+			if (_MegaLightMapDynTableOffset == 0xFFFFFFFF)
+				return false;
+			_MegaLightMapDynTableValid = true;
+		}
+	}
+	else if (!_MegaLightTableValid)
 	{
 		stageMegaLightTableUBO();
 		_MegaLightTableOffset = allocUniformBlock(_MegaLightTableEntries, sizeof(_MegaLightTableEntries));
@@ -842,7 +880,7 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	}
 
 	const uint32 cameraOffset = allocUniformBlock(&cameraData, sizeof(cameraData));
-	const uint32 lightTableOffset = _MegaLightTableOffset;
+	const uint32 lightTableOffset = lightMapDyn ? _MegaLightMapDynTableOffset : _MegaLightTableOffset;
 	const uint32 objectOffset = allocUniformBlock(&objectData, sizeof(objectData));
 	const uint32 materialOffset = allocUniformBlock(&materialData, sizeof(materialData));
 	if (cameraOffset == 0xFFFFFFFF || lightTableOffset == 0xFFFFFFFF ||
