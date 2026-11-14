@@ -71,22 +71,28 @@ bool CDriverVulkan::canUseMegaPath(bool &cube)
 	cube = false;
 	if (!_MegaResourcesReady || !_CurrentMaterial)
 		return false;
-	switch (_CurrentMaterial->getShader())
+	// NLVK_MEGA=1 (debug A/B): skip the material-class filter. The shader
+	// generator maps the classes it does not implement to a plain textured
+	// material, like the GL3 driver's getSupportedShader().
+	if (!_MegaForceAll)
 	{
-	case CMaterial::Normal:
-	case CMaterial::UserColor:
-	case CMaterial::Specular:
-		break;
-	// LightMap materials are drawn by the multi-pass staging implemented in
-	// beginMaterialMultiPass()/setupMaterialPass().
-	case CMaterial::LightMap:
-		break;
-	// Water uses the engine's water vertex program and the driver's water
-	// pixel program (see getWaterPixelShader()).
-	case CMaterial::Water:
-		break;
-	default:
-		return false;
+		switch (_CurrentMaterial->getShader())
+		{
+		case CMaterial::Normal:
+		case CMaterial::UserColor:
+		case CMaterial::Specular:
+			break;
+		// LightMap materials are drawn by the multi-pass staging implemented
+		// in beginMaterialMultiPass()/setupMaterialPass().
+		case CMaterial::LightMap:
+			break;
+		// Water uses the engine's water vertex program and the driver's water
+		// pixel program (see getWaterPixelShader()).
+		case CMaterial::Water:
+			break;
+		default:
+			return false;
+		}
 	}
 
 	// The mega pixel program declares sampler1 as samplerCube for the Specular
@@ -117,10 +123,13 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 
 	bool cube = false;
 	const bool materialOk = canUseMegaPath(cube);
-	// The mega path is used for every draw when NLVK_MEGA=1 selects it, for
-	// the draws of an active user vertex program, and for a user pixel program
-	// (it needs the mega descriptor layout for its UBO and samplers). Cube
-	// textures and Specular materials also require it: the simple shader has
+	// The mega path is the default for every draw whose material class and
+	// texture bindings it supports (see canUseMegaPath()). It is also required
+	// for the draws of an active user vertex program and for a user pixel
+	// program (they need the mega descriptor layout for their UBO and
+	// samplers). NLVK_MEGA=0 keeps those required draws on mega but returns
+	// everything else to the simple shader.
+	// Cube textures and Specular materials also require it: the simple shader has
 	// neither a samplerCube nor the Specular blend equation, and applying the
 	// material's texenv to a Specular reflection mask would zero the alpha and
 	// make alpha-tested materials (the Karavan tents) disappear.
@@ -264,6 +273,8 @@ void CDriverVulkan::shutdownMega()
 	for (uint i = 0; i < UBBindingCount; ++i)
 		_BoundUserUB[i] = NULL;
 	_MegaResourcesReady = false;
+	// A new device gets a fresh compile attempt.
+	_MegaVertexShaderFailed = false;
 	if (!_Device)
 	{
 		_UserVPShaders.clear();
@@ -354,6 +365,8 @@ VkShaderModule CDriverVulkan::getMegaVertexShader()
 {
 	if (_MegaVertexShader != VK_NULL_HANDLE)
 		return _MegaVertexShader;
+	if (_MegaVertexShaderFailed)
+		return VK_NULL_HANDLE;
 
 	std::string body;
 	megavkVPGenerate(body, true, NULL, _ShaderClipDistance);
@@ -362,6 +375,7 @@ VkShaderModule CDriverVulkan::getMegaVertexShader()
 	{
 		nlwarning("Vulkan: mega vertex program could not be assembled");
 		_MegaEnabled = false;
+		_MegaVertexShaderFailed = true;
 		return VK_NULL_HANDLE;
 	}
 	VkShaderModule module = VK_NULL_HANDLE;
@@ -370,6 +384,7 @@ VkShaderModule CDriverVulkan::getMegaVertexShader()
 		// Retrying the same compile on every draw would only repeat the failure.
 		nlwarning("Vulkan: mega vertex program failed to compile, falling back to the simple shader");
 		_MegaEnabled = false;
+		_MegaVertexShaderFailed = true;
 		return VK_NULL_HANDLE;
 	}
 	nlinfo("Vulkan: compiled mega vertex program");
@@ -391,6 +406,7 @@ VkShaderModule CDriverVulkan::getMegaPixelShader(bool cube, bool specular)
 	{
 		nlwarning("Vulkan: mega pixel program could not be assembled");
 		_MegaEnabled = false;
+		_MegaPixelShaderVariants[key] = VK_NULL_HANDLE;
 		return VK_NULL_HANDLE;
 	}
 	VkShaderModule module = VK_NULL_HANDLE;
@@ -398,6 +414,7 @@ VkShaderModule CDriverVulkan::getMegaPixelShader(bool cube, bool specular)
 	{
 		nlwarning("Vulkan: mega pixel program failed to compile, falling back to the simple shader");
 		_MegaEnabled = false;
+		_MegaPixelShaderVariants[key] = VK_NULL_HANDLE;
 		return VK_NULL_HANDLE;
 	}
 	nlinfo("Vulkan: compiled mega pixel program (cube=%d, specular=%d)", cube ? 1 : 0, specular ? 1 : 0);

@@ -1153,7 +1153,19 @@ private:
 	bool						_UsedTextureMemorySumEnabled;
 
 	// --- Mega shader resources ---
+	/// Select the mega (GL3-equivalent) shader for the draws it supports. On by
+	/// default; NLVK_MEGA=0 restores the small generated "simple" shader for
+	/// A/B, and a failed init/compile turns it off for the session.
 	bool						_MegaEnabled;
+	/// NLVK_MEGA=1: also use the mega shader for the material classes
+	/// canUseMegaPath() normally declines (debug A/B only). Resource checks
+	/// (mega resources, cube bindings) still apply.
+	bool						_MegaForceAll;
+	/// Once the generated mega vertex program fails to compile it never will;
+	/// remember that so the forced draws (specular/cube/user VP) do not retry
+	/// and re-log it on every draw. Pixel variants cache the failure in their
+	/// map with a null module.
+	bool						_MegaVertexShaderFailed;
 	bool						_MegaResourcesReady; // mega descriptor layout/pipeline layout exist
 	VkDescriptorSetLayout		_MegaDescriptorSetLayout;
 	VkPipelineLayout			_MegaPipelineLayout;
