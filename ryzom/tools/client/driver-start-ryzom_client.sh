@@ -303,7 +303,7 @@ client_display() {
 # Returns 0 started, 2 account busy (retry), 3 timeout, 4 client died.
 wait_for_client() {
 	local deadline=$((SECONDS + TIMEOUT))
-	local fail_re='already (logged|connected)|disconnected by the server|connection of ryzom failed|login failed'
+	local fail_re='already (logged|connected|in online state)|disconnected by the server|connection of ryzom failed|login failed'
 
 	while [ "$SECONDS" -lt "$deadline" ]; do
 		if ! kill -0 "$CLIENT_PID" 2>/dev/null; then
