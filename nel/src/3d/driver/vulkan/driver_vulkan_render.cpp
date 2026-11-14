@@ -1476,9 +1476,12 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 		// engine has not touched it since. setupTextureEx() would rebuild the
 		// share name (two allocations) and look it up under the driver lock
 		// for every draw, which the profile shows as the driver's main cost.
+		// A wrap/filter change is flagged separately from touch() and only
+		// needs the sampler re-resolved.
 		if (texture && texture == _StageTextureSrc[stage] &&
 			_StageTextures[stage] && _StageTextures[stage] == _StageTextureVk[stage] &&
-			_StageTextureGen[stage] == _TextureGeneration && !texture->touched())
+			_StageTextureGen[stage] == _TextureGeneration && !texture->touched() &&
+			!texture->filterOrWrapModeTouched())
 			continue;
 		_StageTextures[stage] = NULL;
 		_StageTextureSrc[stage] = NULL;
@@ -1516,6 +1519,9 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 				_StageTextureSrc[stage] = texture;
 				_StageTextureVk[stage] = &_BlackTexture;
 				_StageTextureGen[stage] = _TextureGeneration;
+				// The image-less texture never gets a sampler of its own; do
+				// not let a wrap/filter change re-run this path every draw.
+				texture->clearFilterOrWrapModeTouched();
 			}
 		}
 	}
