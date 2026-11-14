@@ -383,6 +383,105 @@ void CView::getCamera3rdPersonSetupInternal(CVector &cameraStart, CVector &camer
 }
 
 //-----------------------------------------------
+// getTentCameraCollision :
+// Tents have no visual collision mesh, so the test above lets the third-person
+// camera pass through them. From inside, their single-sided walls are culled
+// and the tent looks wall-less, and the camera entering/leaving it makes the
+// walls flicker while running. Test the camera arm against the AABB of nearby
+// tents and report the earliest intersection as a fraction of the segment.
+//-----------------------------------------------
+static bool getTentCameraCollision(const CVector &start, const CVector &end, float radius, float &t)
+{
+	const CVector seg = end - start;
+	const float segLen2 = seg.sqrnorm();
+	float bestT = 1.f;
+	bool found = false;
+
+	auto &entities = EntitiesMngr.entities();
+	const uint numEntities = (uint)entities.size();
+	for (uint i = 0; i < numEntities; ++i)
+	{
+		CEntityCL *entity = entities[i];
+		if (!entity)
+			continue;
+
+		const NLMISC::CAABBox &box = entity->box();
+		const CVector center = box.getCenter();
+		const float boxRadius = box.getHalfSize().norm();
+		// Small props (chests, packs) are not worth a camera jump.
+		if (boxRadius < 2.f)
+			continue;
+
+		// Cheap segment/sphere reject before building the sheet name (which
+		// allocates) and running the exact slab test.
+		const float u = segLen2 > 1e-6f
+			? std::max(0.f, std::min(1.f, (center - start) * seg / segLen2))
+			: 0.f;
+		const CVector closest = start + seg * u;
+		const float reach = boxRadius + radius;
+		if ((center - closest).sqrnorm() > reach * reach)
+			continue;
+
+		// Tents are the mission props with tall single-sided walls and a roof:
+		// the third-person camera can enter them and their walls then vanish.
+		// Fences, barriers and crates are low and must not pull the camera in.
+		const std::string sheet = entity->sheetId().toString();
+		if (sheet.compare(0, 11, "object_tent") != 0)
+			continue;
+
+		const CVector min = box.getMin() - CVector(radius, radius, radius);
+		const CVector max = box.getMax() + CVector(radius, radius, radius);
+
+		// If the character itself is inside the prop, there is nothing to
+		// clamp against; leave the camera alone.
+		if (start.x > min.x && start.x < max.x &&
+			start.y > min.y && start.y < max.y &&
+			start.z > min.z && start.z < max.z)
+			continue;
+
+		const float s[3] = { start.x, start.y, start.z };
+		const float d[3] = { seg.x, seg.y, seg.z };
+		const float mn[3] = { min.x, min.y, min.z };
+		const float mx[3] = { max.x, max.y, max.z };
+		float tmin = 0.f, tmax = 1.f;
+		bool hit = true;
+		for (uint axis = 0; axis < 3; ++axis)
+		{
+			if (fabsf(d[axis]) < 1e-6f)
+			{
+				if (s[axis] < mn[axis] || s[axis] > mx[axis])
+				{
+					hit = false;
+					break;
+				}
+			}
+			else
+			{
+				float t1 = (mn[axis] - s[axis]) / d[axis];
+				float t2 = (mx[axis] - s[axis]) / d[axis];
+				if (t1 > t2)
+					std::swap(t1, t2);
+				tmin = std::max(tmin, t1);
+				tmax = std::min(tmax, t2);
+				if (tmin > tmax)
+				{
+					hit = false;
+					break;
+				}
+			}
+		}
+		if (hit && tmin < bestT)
+		{
+			bestT = tmin;
+			found = true;
+		}
+	}
+
+	t = bestT;
+	return found;
+}
+
+//-----------------------------------------------
 // updateCameraCollision :
 //-----------------------------------------------
 void CView::updateCameraCollision()
@@ -444,6 +543,18 @@ void CView::updateCameraCollision()
 				// remove the threshold
 				_CollisionCameraDist-= _CameraCollisionThreshold;
 				clamp(_CollisionCameraDist, 0, _CurrentCameraDist);
+			}
+
+			// Tents have no visual collision mesh: clamp the arm against
+			// their AABB so the camera does not enter their walls.
+			float propT;
+			if (getTentCameraCollision(cameraTestStart, cameraEnd, colRadius, propT))
+			{
+				float propDist = testStartDecal + (cameraEnd - cameraTestStart).norm() * propT;
+				propDist -= _CameraCollisionThreshold;
+				clamp(propDist, 0, _CurrentCameraDist);
+				if (propDist < _CollisionCameraDist)
+					_CollisionCameraDist = propDist;
 			}
 
 			// **** Ensure the position in cluster system
