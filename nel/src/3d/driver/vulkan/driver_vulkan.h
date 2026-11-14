@@ -166,7 +166,14 @@ struct CTextureVulkan
 		: Image(VK_NULL_HANDLE), Memory(VK_NULL_HANDLE), MemorySize(0), View(VK_NULL_HANDLE), Sampler(VK_NULL_HANDLE)
 		, Framebuffer(VK_NULL_HANDLE), Width(0), Height(0), MipLevels(1), Layers(1), Cube(false), HasAlpha(false), Uploaded(false)
 		, Compressed(false), CompressFromRGBA(false), SourceFormat(CBitmap::DonTKnow), Format(VK_FORMAT_UNDEFINED), Usage(0)
-		, Layout(VK_IMAGE_LAYOUT_UNDEFINED), DepthTarget(-1) {}
+		, Layout(VK_IMAGE_LAYOUT_UNDEFINED), DepthTarget(-1)
+	{
+		for (uint i = 0; i < 6; ++i)
+		{
+			FaceViews[i] = VK_NULL_HANDLE;
+			FaceFramebuffers[i] = VK_NULL_HANDLE;
+		}
+	}
 
 	VkImage			Image;
 	VkDeviceMemory	Memory;
@@ -176,8 +183,14 @@ struct CTextureVulkan
 	VkSampler		Sampler;
 	/// Created when the texture is used as a render target, so that one image
 	/// is both the colour attachment and the sampled texture. Always built
-	/// with the offscreen render pass.
+	/// with the offscreen render pass. Unused for cube targets, which need one
+	/// framebuffer per face (FaceFramebuffers) instead.
 	VkFramebuffer	Framebuffer;
+	/// Cube render targets: a 2D, single-layer view of each face. Vulkan
+	/// samples the cube image through View, but renders into one face at a
+	/// time through these views (a framebuffer attachment cannot be a cube).
+	VkImageView		FaceViews[6];
+	VkFramebuffer	FaceFramebuffers[6];
 	uint32			Width;
 	uint32			Height;
 	/// Number of mip levels the image was created with.
@@ -289,6 +302,7 @@ struct CPipelineKey
 	uint32	WaterCalcRefl;    // water PP derives alpha from the per-vertex reflectivity
 	uint32	WaterDiffuse;     // water PP multiplies the colour map (stage 3)
 	uint32	WaterPlanar;      // water PP samples the planar reflection UVs (texCoord2)
+	uint32	SimpleCube0;      // simple shader: stage 0 is a cube, sampled with .xyz
 
 	bool operator==(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
 	bool operator<(const CPipelineKey &o) const { return memcmp(this, &o, sizeof(*this)) < 0; }
@@ -700,6 +714,8 @@ private:
 	/// texture is the pass being recorded (_FrameOpen is still true).
 	ITexture				*_RenderTargetTexture;
 	CTextureVulkan			*_RenderTargetInfo;
+	/// Cube face currently bound as the render target (0 for 2D targets).
+	uint32					_RenderTargetFace;
 	/// Number of setRenderTarget() binds, reported with the frame counters.
 	uint64					_RenderTargetBinds;
 	bool					_RenderTargetLogged;
@@ -859,10 +875,13 @@ private:
 	/// Depth/stencil attachment shared by the targets of this size.
 	sint32					getDepthTarget(uint32 width, uint32 height);
 	bool					createTargetFramebuffer(CTextureVulkan &target, VkRenderPass pass);
+	/// Framebuffer that renders into one face of a cube target.
+	bool					createCubeFaceFramebuffer(CTextureVulkan &target, uint32 face, VkRenderPass pass);
 	/// Make 'tex' usable as a render target (image with colour-attachment
-	/// usage, framebuffer); recreated when the texture size changes.
+	/// usage, framebuffer or one framebuffer per cube face); recreated when
+	/// the texture size or its cubeness changes.
 	bool					ensureRenderTarget(ITexture &tex, CTextureVulkan &target);
-	void					beginOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target, VkExtent2D extent);
+	void					beginOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target, VkFramebuffer framebuffer, VkExtent2D extent);
 	void					endOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target);
 	void					destroyDepthTargets();
 
@@ -991,6 +1010,12 @@ private:
 	CTextureDrvInfosVulkan	*findTextureDrvInfos(const ITexture &tex) const;
 	CTextureVulkan			*getTextureVulkan(ITexture &tex);
 	bool					uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool upload);
+	/// Create the image of a texture used as a render target. Cube textures
+	/// get a six-layer, cube-compatible image plus one 2D view per face.
+	bool					createRenderTargetImage(ITexture &tex, CTextureVulkan &out);
+	/// Size of a render target texture in pixels; cube textures take it from
+	/// their face textures when the cube itself has no size.
+	static void				renderTargetSize(ITexture &tex, uint32 &width, uint32 &height);
 	/// Upload all six faces of a CTextureCube into one cube image. The mega
 	/// pixel program samples stage 1 of a Specular material as a cube map.
 	bool					uploadTextureCubeVulkan(ITexture &tex, CTextureVulkan &out);
@@ -1001,6 +1026,9 @@ private:
 	/// not compressed (or the device has no BC support).
 	VkFormat				compressedTextureFormat(CBitmap::TType format) const;
 	void					destroyTexture(CTextureVulkan &tex);
+	/// Destroy the Vulkan objects of a texture immediately. Only for objects
+	/// no submitted command can reference any more.
+	void					freeTextureObjects(CTextureVulkan &tex);
 	/// Install a freshly uploaded image in `info`, retiring the previous one
 	/// and keeping the texture-memory counter in sync.
 	void					setTextureImage(CTextureDrvInfosVulkan &info, CTextureVulkan &created);
@@ -1038,6 +1066,9 @@ private:
 	std::map<uint32, VkShaderModule>	_FragmentShaderVariants;
 	VkShaderModule				_VertexShader;
 	VkShaderModule				_FragmentShader;
+	/// Simple fragment program for a draw whose stage 0 is a cube (the water
+	/// env map flatten pass): binding 0 is a samplerCube.
+	VkShaderModule				_FragmentShaderCube;
 	VkSampler					_DefaultSampler;
 	CTextureVulkan				_WhiteTexture;
 	CTextureVulkan				_BlackTexture;
@@ -1053,7 +1084,7 @@ private:
 	/// FXAA scene target relies on the sky/geometry to cover it) would show the
 	/// previous frame's content (or the allocation's old pixels) wherever
 	/// nothing is drawn. GL's FBO textures are effectively black there.
-	std::set<VkImage>			_FrameClearedTargets;
+	std::set<std::pair<VkImage, uint32> >	_FrameClearedTargets;
 	bool						_UsedTextureMemorySumEnabled;
 
 	// --- Mega shader resources ---
@@ -1287,7 +1318,8 @@ private:
 		float	ModelView[16];			// 976 (eye-space position for texgen and fog)
 		float	TexEnvConstant[4][4];	// 1040 (TexEnv stage constant colours)
 		sint32	ClipPlaneMask;			// 1104 (bit i = user clip plane i enabled)
-		sint32	Pad3[3];				// 1108 (std140: clipPlane is vec4-aligned)
+		sint32	CubeFlip;				// 1108 (stage-0 cube target: flip each face vertically)
+		sint32	Pad3[2];				// 1112 (std140: clipPlane is vec4-aligned)
 		float	ClipPlane[6][4];		// 1120 (eye-space user clip planes)
 	};									// 1216
 	static_assert(sizeof(SSimpleUniforms) == 1216, "SSimpleUniforms must match the std140 NlSimple block");

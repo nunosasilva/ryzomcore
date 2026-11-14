@@ -122,13 +122,31 @@ VkBuffer CDriverVulkan::createStagingBuffer(VkDeviceSize size, VkDeviceMemory *m
 	return buffer;
 }
 
+void CDriverVulkan::freeTextureObjects(CTextureVulkan &tex)
+{
+	if (!_Device)
+		return;
+	for (uint i = 0; i < 6; ++i)
+	{
+		if (tex.FaceFramebuffers[i]) vkDestroyFramebuffer(_Device, tex.FaceFramebuffers[i], NULL);
+		if (tex.FaceViews[i]) vkDestroyImageView(_Device, tex.FaceViews[i], NULL);
+	}
+	if (tex.Framebuffer) vkDestroyFramebuffer(_Device, tex.Framebuffer, NULL);
+	if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
+	if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
+	if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
+	if (tex.Memory) vkFreeMemory(_Device, tex.Memory, NULL);
+	tex = CTextureVulkan();
+}
+
 void CDriverVulkan::destroyTexture(CTextureVulkan &tex)
 {
 	if (!_Device)
 		return;
 	if (tex.Image == VK_NULL_HANDLE && tex.Memory == VK_NULL_HANDLE &&
 		tex.View == VK_NULL_HANDLE && tex.Sampler == VK_NULL_HANDLE &&
-		tex.Framebuffer == VK_NULL_HANDLE)
+		tex.Framebuffer == VK_NULL_HANDLE &&
+		tex.FaceViews[0] == VK_NULL_HANDLE && tex.FaceFramebuffers[0] == VK_NULL_HANDLE)
 		return;
 	// Commands that reference this texture may still be recording or in flight,
 	// so retire it; beginFrame() frees it once no in-flight frame can use it.
@@ -250,6 +268,96 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 	out.Usage = usage;
 	out.Format = format;
 	out.Layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	return true;
+}
+
+/// NeL cube face -> standard (GL/Vulkan) cube image layer. NeL names its faces
+/// in its Z-up world (+X, -X, +Y, -Y, +Z, -Z), but its +Y texture is the
+/// standard (Y-up) -Z face and its +Z texture the standard +Y face. The GL
+/// drivers apply this remap when they upload or render a cube texture
+/// (CDriverGL::NLCubeFaceToGLCubeFace); the Vulkan cube sampler follows the
+/// same convention, so NeL face k has to live in layer s_nelCubeFaceLayer[k]
+/// for a lookup direction to sample the same NeL face as in GL.
+static const uint32 s_nelCubeFaceLayer[6] = { 0, 1, 5, 4, 2, 3 };
+
+/// Size of a texture used as a render target, in pixels. Cube textures keep
+/// their size on the face textures (CTextureCube itself has none), so fall
+/// back to the first non-null face when the cube does not report a size.
+void CDriverVulkan::renderTargetSize(ITexture &tex, uint32 &width, uint32 &height)
+{
+	width = tex.getWidth();
+	height = tex.getHeight();
+	if (width != 0 && height != 0)
+		return;
+	CTextureCube *cube = dynamic_cast<CTextureCube *>(&tex);
+	width = 0;
+	height = 0;
+	if (!cube)
+		return;
+	for (uint i = 0; i < 6; ++i)
+	{
+		ITexture *face = cube->getTexture((CTextureCube::TFace)i);
+		if (face && face->getWidth() != 0 && face->getHeight() != 0)
+		{
+			width = face->getWidth();
+			height = face->getHeight();
+			return;
+		}
+	}
+}
+
+bool CDriverVulkan::createRenderTargetImage(ITexture &tex, CTextureVulkan &out)
+{
+	const bool cube = tex.isTextureCube();
+	uint32 width = 0;
+	uint32 height = 0;
+	renderTargetSize(tex, width, height);
+	if (width == 0 || height == 0)
+		return false;
+
+	// A cube render target is six faces of one image. Vulkan cannot attach a
+	// cube view to a framebuffer, so the faces get their own 2D views and
+	// framebuffers (see ensureRenderTarget()), while the sampling view stays a
+	// cube view so the flatten pass can read it like GL does.
+	if (cube && width != height)
+	{
+		nlwarning("Vulkan: cube render target with non-square faces %ux%u is not supported", width, height);
+		return false;
+	}
+
+	const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	if (!createTextureImage(width, height, 1, usage, NL_VK_TEXTURE_FORMAT, out, cube ? 6 : 1, cube))
+	{
+		freeTextureObjects(out);
+		return false;
+	}
+	out.HasAlpha = true;
+	out.SourceFormat = tex.getPixelFormat();
+
+	if (cube)
+	{
+		for (uint32 face = 0; face < 6; ++face)
+		{
+			VkImageViewCreateInfo vci;
+			memset(&vci, 0, sizeof(vci));
+			vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+			vci.image = out.Image;
+			vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			vci.format = out.Format;
+			vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			vci.subresourceRange.baseMipLevel = 0;
+			vci.subresourceRange.levelCount = 1;
+			vci.subresourceRange.baseArrayLayer = s_nelCubeFaceLayer[face];
+			vci.subresourceRange.layerCount = 1;
+			if (vkCreateImageView(_Device, &vci, NULL, &out.FaceViews[face]) != VK_SUCCESS)
+			{
+				freeTextureObjects(out);
+				return false;
+			}
+		}
+	}
+	nldebug("Vulkan: %srender target %ux%u created", cube ? "cube " : "", width, height);
 	return true;
 }
 
@@ -690,14 +798,17 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	destroyTexture(out);
 
 	// A render target is drawn into, not uploaded: give it an image the
-	// render-target path can attach and skip pixel generation entirely.
+	// render-target path can attach and skip pixel generation entirely. Cube
+	// render targets get six layers and one view per face.
 	const bool renderTarget = tex.getRenderTarget();
 	if (!renderTarget)
 		tex.generate();
+	if (renderTarget)
+		return createRenderTargetImage(tex, out);
 
 	// Cube maps are six face textures, not a bitmap on the ITexture itself:
 	// they need a cube image and a face-by-face upload.
-	if (!renderTarget && tex.isTextureCube())
+	if (tex.isTextureCube())
 		return uploadTextureCubeVulkan(tex, out);
 
 	uint width = tex.getWidth();
@@ -713,7 +824,7 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	// (alpha-only fonts, luminance masks, forced RGBA), so only the automatic
 	// case keeps the BC data.
 	VkFormat format = VK_FORMAT_UNDEFINED;
-	if (!renderTarget && tex.getUploadFormat() == ITexture::Auto)
+	if (tex.getUploadFormat() == ITexture::Auto)
 		format = compressedTextureFormat(tex.getPixelFormat());
 	bool compressed = (format != VK_FORMAT_UNDEFINED);
 
@@ -722,7 +833,7 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	// RGBA->DXT compressor (CBitmap::convertToDXTC5 only rewrites DXT1 data),
 	// so the driver encodes BC3 here when the device can sample BC images.
 	bool compressFromRGBA = false;
-	if (!renderTarget && !compressed && _ForceDXTCCompression && _SupportsBC &&
+	if (!compressed && _ForceDXTCCompression && _SupportsBC &&
 		tex.getUploadFormat() == ITexture::Auto && tex.getPixelFormat() == CBitmap::RGBA &&
 		tex.allowDegradation())
 	{
@@ -732,7 +843,7 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	}
 
 	uint mipCount = 1;
-	if (!renderTarget && tex.mipMapOn())
+	if (tex.mipMapOn())
 	{
 		if (compressed && !compressFromRGBA)
 		{
@@ -753,8 +864,6 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	// stretchRect()'s vkCmdBlitImage (the engine also stretches plain textures).
 	VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
 		VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-	if (renderTarget)
-		usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	if (!createTextureImage(width, height, mipCount, usage, format, out))
 		return false;
 
@@ -765,17 +874,14 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	if (compressFromRGBA)
 		nlinfo("Vulkan: ForceDXTC: compressing RGBA texture %ux%u (%u mips) to BC3", width, height, mipCount);
 
-	if (renderTarget)
-		return true;
-
 	if (compressed)
 		nldebug("Vulkan: compressed texture %ux%u %u mips format=%d uploaded as BC",
 			width, height, mipCount, (int)out.SourceFormat);
 
 	if (!upload)
 	{
-		// No pixels yet (a render target or a texture the caller streams in
-		// with uploadTexture()/touchRect()). The image view covers every mip
+		// No pixels yet (a texture the caller streams in with
+		// uploadTexture()/touchRect()). The image view covers every mip
 		// level and the sampler may read any of them, while a region upload
 		// only ever transitions the level it writes, so put the whole image in
 		// the shader-read layout now. The contents are undefined either way.
@@ -1123,17 +1229,18 @@ bool CDriverVulkan::uploadTextureCubeVulkan(ITexture &tex, CTextureVulkan &out)
 			i == CTextureCube::positive_y || i == CTextureCube::negative_y;
 		const bool flipV = i == CTextureCube::positive_z || i == CTextureCube::negative_z;
 		ITexture *face = cube->getTexture((CTextureCube::TFace)i);
+		const uint32 layer = s_nelCubeFaceLayer[i];
 		if (face)
-			copyCubeFaceRGBA(*face, flipH, flipV, dst + faceBytes * i, width, height);
+			copyCubeFaceRGBA(*face, flipH, flipV, dst + faceBytes * layer, width, height);
 		else
-			memset(dst + faceBytes * i, 0, (size_t)faceBytes);
+			memset(dst + faceBytes * layer, 0, (size_t)faceBytes);
 
 		VkBufferImageCopy &region = copy.Regions[copy.RegionCount];
 		memset(&region, 0, sizeof(region));
-		region.bufferOffset = staging.Offset + faceBytes * i;
+		region.bufferOffset = staging.Offset + faceBytes * layer;
 		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		region.imageSubresource.mipLevel = 0;
-		region.imageSubresource.baseArrayLayer = i;
+		region.imageSubresource.baseArrayLayer = layer;
 		region.imageSubresource.layerCount = 1;
 		region.imageExtent.width = width;
 		region.imageExtent.height = height;

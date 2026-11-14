@@ -292,26 +292,55 @@ bool CDriverVulkan::createTargetFramebuffer(CTextureVulkan &target, VkRenderPass
 	return true;
 }
 
+bool CDriverVulkan::createCubeFaceFramebuffer(CTextureVulkan &target, uint32 face, VkRenderPass pass)
+{
+	if (face >= 6 || target.FaceViews[face] == VK_NULL_HANDLE)
+		return false;
+	sint32 depthIndex = getDepthTarget(target.Width, target.Height);
+	if (depthIndex < 0)
+		return false;
+	target.DepthTarget = depthIndex;
+
+	VkImageView views[2] = { target.FaceViews[face], _DepthTargets[depthIndex].View };
+	VkFramebufferCreateInfo fci;
+	memset(&fci, 0, sizeof(fci));
+	fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+	fci.renderPass = pass;
+	fci.attachmentCount = 2;
+	fci.pAttachments = views;
+	fci.width = target.Width;
+	fci.height = target.Height;
+	fci.layers = 1;
+	if (vkCreateFramebuffer(_Device, &fci, NULL, &target.FaceFramebuffers[face]) != VK_SUCCESS)
+	{
+		target.FaceFramebuffers[face] = VK_NULL_HANDLE;
+		target.DepthTarget = -1;
+		return false;
+	}
+	return true;
+}
+
 bool CDriverVulkan::ensureRenderTarget(ITexture &tex, CTextureVulkan &target)
 {
-	uint32 width = tex.getWidth();
-	uint32 height = tex.getHeight();
+	const bool cube = tex.isTextureCube();
+	uint32 width = 0;
+	uint32 height = 0;
+	renderTargetSize(tex, width, height);
 	if (width == 0 || height == 0)
 		return false;
 
 	const bool usable = target.Image != VK_NULL_HANDLE &&
 		(target.Usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0 &&
-		target.Width == width && target.Height == height;
+		target.Width == width && target.Height == height &&
+		target.Cube == cube;
 
 	if (!usable)
 	{
 		// The texture was set up before it was flagged as a render target, or
-		// it changed size: its image has no colour-attachment usage, so it has
+		// it changed size or cubeness: its image cannot be attached, so it has
 		// to be recreated. Whatever it held is replaced by rendered pixels.
-		VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 		CTextureVulkan created;
-		if (!createTextureImage(width, height, 1, usage, NL_VK_TEXTURE_FORMAT, created))
+		if (!createRenderTargetImage(tex, created))
 			return false;
 		CTextureDrvInfosVulkan *info = findTextureDrvInfos(tex);
 		if (info)
@@ -321,12 +350,18 @@ bool CDriverVulkan::ensureRenderTarget(ITexture &tex, CTextureVulkan &target)
 			destroyTexture(target);
 			target = created;
 		}
-		target.HasAlpha = true;
-		target.SourceFormat = tex.getPixelFormat();
-		nldebug("Vulkan: render target %ux%u created", width, height);
 	}
 
-	if (target.Framebuffer == VK_NULL_HANDLE &&
+	if (cube)
+	{
+		// One framebuffer per face: a framebuffer attachment is a 2D view of
+		// that face, never the cube view used for sampling.
+		for (uint32 face = 0; face < 6; ++face)
+			if (target.FaceFramebuffers[face] == VK_NULL_HANDLE &&
+				!createCubeFaceFramebuffer(target, face, _OffscreenRenderPass))
+				return false;
+	}
+	else if (target.Framebuffer == VK_NULL_HANDLE &&
 		!createTargetFramebuffer(target, _OffscreenRenderPass))
 		return false;
 
@@ -337,12 +372,14 @@ bool CDriverVulkan::ensureRenderTarget(ITexture &tex, CTextureVulkan &target)
 // Offscreen pass
 // ---------------------------------------------------------------------------
 
-void CDriverVulkan::beginOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target, VkExtent2D extent)
+void CDriverVulkan::beginOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target, VkFramebuffer framebuffer, VkExtent2D extent)
 {
 	// Make the colour image a render target again. It was left in
 	// SHADER_READ_ONLY layout by endOffscreenPass() so that it could be sampled
 	// in between. ALL_COMMANDS as a source scope covers every way the image
-	// could have been used since then (draws, transfers).
+	// could have been used since then (draws, transfers). A cube target is
+	// transitioned as a whole: its layout is per image, and the flatten pass
+	// samples all six layers through the cube view.
 	VkImageMemoryBarrier barrier;
 	memset(&barrier, 0, sizeof(barrier));
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -353,7 +390,7 @@ void CDriverVulkan::beginOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &targ
 	barrier.image = target.Image;
 	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	barrier.subresourceRange.levelCount = 1;
-	barrier.subresourceRange.layerCount = 1;
+	barrier.subresourceRange.layerCount = target.Layers;
 	barrier.srcAccessMask = target.Layout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_WRITE_BIT;
 	barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
 	vkCmdPipelineBarrier(cmd,
@@ -395,7 +432,7 @@ void CDriverVulkan::beginOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &targ
 	memset(&rbi, 0, sizeof(rbi));
 	rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 	rbi.renderPass = _OffscreenRenderPass;
-	rbi.framebuffer = target.Framebuffer;
+	rbi.framebuffer = framebuffer;
 	rbi.renderArea.offset.x = 0;
 	rbi.renderArea.offset.y = 0;
 	rbi.renderArea.extent = extent;
@@ -422,7 +459,7 @@ void CDriverVulkan::endOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target
 	barrier.image = target.Image;
 	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	barrier.subresourceRange.levelCount = 1;
-	barrier.subresourceRange.layerCount = 1;
+	barrier.subresourceRange.layerCount = target.Layers;
 	barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -445,11 +482,18 @@ bool CDriverVulkan::setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 wi
 		nlwarning("Vulkan: setRenderTarget() on a texture that is not a render target");
 		return false;
 	}
-	if (tex && (mipmapLevel != 0 || cubeFace != 0))
+	const bool cube = tex && tex->isTextureCube();
+	if (tex && mipmapLevel != 0)
 	{
-		// Render-target mip levels and cube faces need one view per subresource;
-		// no caller in the engine uses them yet.
-		nlwarning("Vulkan: setRenderTarget(mip=%u, face=%u) is not supported", mipmapLevel, cubeFace);
+		// Render-target mip levels need one view per subresource; no caller in
+		// the engine uses them yet.
+		nlwarning("Vulkan: setRenderTarget(mip=%u) is not supported", mipmapLevel);
+		return false;
+	}
+	if (tex && (cube ? cubeFace >= 6 : cubeFace != 0))
+	{
+		nlwarning("Vulkan: setRenderTarget() on a %s texture with cube face %u",
+			cube ? "cube" : "2D", cubeFace);
 		return false;
 	}
 
@@ -462,6 +506,7 @@ bool CDriverVulkan::setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 wi
 		{
 			_RenderTargetTexture = NULL;
 			_RenderTargetInfo = NULL;
+			_RenderTargetFace = 0;
 			return true;
 		}
 
@@ -470,6 +515,7 @@ bool CDriverVulkan::setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 wi
 		endOffscreenPass(cmd, *target);
 		_RenderTargetTexture = NULL;
 		_RenderTargetInfo = NULL;
+		_RenderTargetFace = 0;
 
 		// setRenderTarget() switched the viewport to the target: restore the
 		// one the main target had when the target was bound.
@@ -482,11 +528,23 @@ bool CDriverVulkan::setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 wi
 	if (!target || !ensureRenderTarget(*tex, *target))
 		return false;
 
+	// Cube targets render one face at a time through a 2D view of that layer;
+	// 2D targets have the view that is also sampled.
+	VkFramebuffer framebuffer = cube ? target->FaceFramebuffers[cubeFace] : target->Framebuffer;
+	if (framebuffer == VK_NULL_HANDLE)
+	{
+		nlwarning("Vulkan: render target has no framebuffer");
+		return false;
+	}
+
 	if (!_FrameOpen && !beginFrame())
 		return false;
 
-	const uint32 targetWidth = tex->getWidth();
-	const uint32 targetHeight = tex->getHeight();
+	uint32 targetWidth = 0;
+	uint32 targetHeight = 0;
+	renderTargetSize(*tex, targetWidth, targetHeight);
+	if (targetWidth == 0 || targetHeight == 0)
+		return false;
 	if (width == 0) width = targetWidth;
 	if (height == 0) height = targetHeight;
 	if (x >= targetWidth || y >= targetHeight)
@@ -498,8 +556,9 @@ bool CDriverVulkan::setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 wi
 
 	// Bind the same target again: keep the pass open so its contents survive.
 	// The shadow-map pass re-issues setRenderTarget() for the same blur
-	// texture between its blur iterations.
-	if (target == _RenderTargetInfo)
+	// texture between its blur iterations. Cube faces are separate attachments,
+	// so a different face always starts a new pass.
+	if (target == _RenderTargetInfo && cubeFace == _RenderTargetFace)
 	{
 		CViewport vp;
 		vp.init((float)x / targetWidth, (float)y / targetHeight,
@@ -522,25 +581,31 @@ bool CDriverVulkan::setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 wi
 
 	_RenderTargetTexture = tex;
 	_RenderTargetInfo = target;
+	_RenderTargetFace = cubeFace;
 	++_RenderTargetBinds;
 	if (!_RenderTargetLogged)
 	{
 		_RenderTargetLogged = true;
-		nlinfo("Vulkan: rendering into offscreen target %ux%u", targetWidth, targetHeight);
+		if (cube)
+			nlinfo("Vulkan: rendering into offscreen cube target %ux%u", targetWidth, targetHeight);
+		else
+			nlinfo("Vulkan: rendering into offscreen target %ux%u", targetWidth, targetHeight);
 	}
 
 	VkExtent2D extent;
 	extent.width = targetWidth;
 	extent.height = targetHeight;
-	beginOffscreenPass(cmd, *target, extent);
+	beginOffscreenPass(cmd, *target, framebuffer, extent);
 
 	// A colour target starts as undefined memory in Vulkan. GL's FBO textures
 	// are effectively zero-filled, and the engine relies on that: it never
 	// clears the FXAA scene target's colour while the sky is enabled, so
 	// pixels no geometry covers (a hole in a cave ceiling, for example) would
 	// otherwise show the previous frame or the allocation's old pixels. Clear
-	// each target once per frame, before its first use, to opaque black.
-	if (_FrameClearedTargets.find(target->Image) == _FrameClearedTargets.end())
+	// each target once per frame, before its first use, to opaque black. Cube
+	// faces are separate views of one image, so the face is part of the key.
+	const std::pair<VkImage, uint32> clearKey(target->Image, cube ? cubeFace : 0u);
+	if (_FrameClearedTargets.find(clearKey) == _FrameClearedTargets.end())
 	{
 		VkClearAttachment attachment;
 		memset(&attachment, 0, sizeof(attachment));
@@ -555,7 +620,7 @@ bool CDriverVulkan::setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 wi
 		rect.rect.extent = extent;
 		rect.layerCount = 1;
 		vkCmdClearAttachments(cmd, 1, &attachment, 1, &rect);
-		_FrameClearedTargets.insert(target->Image);
+		_FrameClearedTargets.insert(clearKey);
 	}
 
 	// The engine usually calls setupViewport() with the region it wants, but a
@@ -592,6 +657,10 @@ bool CDriverVulkan::copyTargetToTexture(ITexture *tex, uint32 offsetx, uint32 of
 		return false;
 
 	CTextureVulkan *src = _RenderTargetInfo;
+	// Copying a whole cube face out would need per-layer layouts and a layer
+	// index; no caller copies from a cube target.
+	if (src->Cube)
+		return false;
 	CTextureVulkan *dst = getTextureVulkan(*tex);
 	if (!dst || dst->Image == VK_NULL_HANDLE)
 		return false;
@@ -701,7 +770,7 @@ bool CDriverVulkan::copyTargetToTexture(ITexture *tex, uint32 offsetx, uint32 of
 	VkExtent2D extent;
 	extent.width = src->Width;
 	extent.height = src->Height;
-	beginOffscreenPass(cmd, *src, extent);
+	beginOffscreenPass(cmd, *src, src->Framebuffer, extent);
 	applyViewportScissor(cmd, extent);
 	return true;
 }
@@ -939,7 +1008,9 @@ bool CDriverVulkan::stretchRectImage(ITexture *srcText, CRect &srcRect, ITexture
 		VkExtent2D extent;
 		extent.width = _RenderTargetInfo->Width;
 		extent.height = _RenderTargetInfo->Height;
-		beginOffscreenPass(cmd, *_RenderTargetInfo, extent);
+		CTextureVulkan &target = *_RenderTargetInfo;
+		VkFramebuffer framebuffer = target.Cube ? target.FaceFramebuffers[_RenderTargetFace] : target.Framebuffer;
+		beginOffscreenPass(cmd, target, framebuffer, extent);
 		applyViewportScissor(cmd, extent);
 	}
 	else

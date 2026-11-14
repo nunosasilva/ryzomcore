@@ -105,7 +105,12 @@ void CWaterEnvMap::init(uint cubeMapSize, uint projection2DSize, TGlobalAnimatio
 		}
 		uint32 Size;
 	};
-	// a 2D testure
+	// The 2D projection is deliberately a plain blank texture, not a
+	// CTextureOffscreen: the water pixel program samples it with GL-oriented
+	// (V = 0 at the bottom) coordinates, and the Vulkan driver renders the
+	// flatten pass vertically mirrored so that image is stored that way too
+	// (see buildVertexShader()'s cube variant). Marking it as an offscreen
+	// texture would make the driver flip V again.
 	class CTexture2DUnshared : public CTextureBlank
 	{
 	public:
