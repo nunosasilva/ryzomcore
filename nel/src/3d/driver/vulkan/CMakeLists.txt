@@ -13,6 +13,16 @@ ELSE()
 ENDIF()
 
 NL_TARGET_DRIVER(${NLDRV_VK_LIB} ${SRC})
+
+# Name the persistent pipeline cache after the build, so replacing a client
+# binary in the same install cannot make a new build read pipelines written by
+# an older one (a stale/mixed blob was observed to draw vegetation as rainbow
+# noise). The cache is per build/GPU, never per account/character.
+IF(RYZOM_VERSION)
+  STRING(SHA1 NL_VK_PIPELINE_CACHE_TAG "${RYZOM_VERSION}")
+  STRING(SUBSTRING "${NL_VK_PIPELINE_CACHE_TAG}" 0 16 NL_VK_PIPELINE_CACHE_TAG)
+  TARGET_COMPILE_DEFINITIONS(${NLDRV_VK_LIB} PRIVATE NL_VK_PIPELINE_CACHE_TAG="${NL_VK_PIPELINE_CACHE_TAG}")
+ENDIF()
 TARGET_INCLUDE_DIRECTORIES(${NLDRV_VK_LIB} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} /usr/include/glslang)
 TARGET_LINK_LIBRARIES(${NLDRV_VK_LIB} nel3d nelmisc Vulkan::Vulkan glslang glslang-default-resource-limits SPIRV SPIRV-Tools-opt SPIRV-Tools pthread)
 IF(NOT WIN32)
