@@ -273,7 +273,17 @@ CDriverVulkan::CDriverVulkan()
 	_ObjectAmbient = CRGBA(0, 0, 0, 255);
 	_AmbientColor = CRGBA(51, 51, 51);
 
-	_MegaEnabled = getenv("NLVK_MEGA") != NULL;
+	// The mega path is the default: it is the GL3-equivalent full shader (light
+	// table, point/spot lights, per-pixel lighting, lightmap passes, dynamic
+	// lightmap light). The small generated shader stays as the fallback for the
+	// draws the mega path cannot take, and as an A/B control:
+	//   NLVK_MEGA=0  force the simple shader everywhere it is still possible
+	//   NLVK_MEGA=1  additionally force the mega shader on material classes
+	//                canUseMegaPath() declines (debug)
+	const char *megaEnv = getenv("NLVK_MEGA");
+	_MegaEnabled = !(megaEnv && megaEnv[0] == '0' && megaEnv[1] == '\0');
+	_MegaForceAll = megaEnv && megaEnv[0] == '1' && megaEnv[1] == '\0';
+	_MegaVertexShaderFailed = false;
 	_WaterPPVariant = 0;
 	_LightMapLogged = false;
 	_MegaResourcesReady = false;

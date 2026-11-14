@@ -759,6 +759,21 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 				_FragmentShader = fragmentShader;
 		}
 	}
+	if (key.Mega && (vertexShader == VK_NULL_HANDLE || fragmentShader == VK_NULL_HANDLE) &&
+		key.UserVP == 0 && key.UserPP == 0 && key.WaterPP == 0)
+	{
+		// The generated mega programs are unavailable (initMega() failed, or
+		// the generated program did not compile, which turns _MegaEnabled off).
+		// A vanilla draw must not be lost: rebuild the key for the simple path
+		// and use that pipeline instead. Draws that replace the mega vertex or
+		// pixel stage (user VP/PP, water) have no simple equivalent.
+		CPipelineKey fallback = key;
+		fallback.Mega = 0;
+		fallback.MegaCube = 0;
+		fallback.MegaSpecular = 0;
+		fallback.SimpleCube0 = (_StageTextures[0] && _StageTextures[0]->Cube) ? 1 : 0;
+		return getPipeline(fallback);
+	}
 	if (vertexShader == VK_NULL_HANDLE || fragmentShader == VK_NULL_HANDLE)
 		return VK_NULL_HANDLE;
 
@@ -925,9 +940,19 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	}
 	if (res != VK_SUCCESS)
 	{
-		nlwarning("Vulkan: vkCreateGraphicsPipelines failed (%d)", (int)res);
+		nlwarning("Vulkan: vkCreateGraphicsPipelines failed (%d)%s", (int)res,
+			key.Mega ? ", retrying on the simple path" : "");
 		if (key.Mega && key.UserVP == 0)
 			_MegaEnabled = false;
+		if (key.Mega && key.UserVP == 0 && key.UserPP == 0 && key.WaterPP == 0)
+		{
+			CPipelineKey fallback = key;
+			fallback.Mega = 0;
+			fallback.MegaCube = 0;
+			fallback.MegaSpecular = 0;
+			fallback.SimpleCube0 = (_StageTextures[0] && _StageTextures[0]->Cube) ? 1 : 0;
+			return getPipeline(fallback);
+		}
 		return VK_NULL_HANDLE;
 	}
 
