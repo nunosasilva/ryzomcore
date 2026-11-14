@@ -65,6 +65,169 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// Samplers
+// ---------------------------------------------------------------------------
+
+/// State of a texture the driver has no ITexture for yet (the 1x1 fallbacks)
+/// or that has not been used through getTextureVulkan() yet: the engine's
+/// own defaults, which is what every texture was sampled with before.
+static CSamplerState defaultSamplerState(bool cube)
+{
+	CSamplerState state;
+	state.Cube = cube;
+	return state;
+}
+
+CSamplerState CDriverVulkan::textureSamplerState(const ITexture &tex) const
+{
+	CSamplerState state;
+	state.Cube = tex.isTextureCube();
+	// GL3 always clamps cube maps, whatever the ITexture says: sampling a
+	// direction outside one face must not wrap it into the opposite one.
+	state.WrapS = (uint8)(state.Cube ? ITexture::Clamp : tex.getWrapS());
+	state.WrapT = (uint8)(state.Cube ? ITexture::Clamp : tex.getWrapT());
+	state.MagFilter = (uint8)tex.getMagFilter();
+	state.MinFilter = (uint8)tex.getMinFilter();
+	// Same rule as GL3's setupTextureBasicParameters(): anisotropy only
+	// applies to min filters that interpolate (mipmapped or not).
+	if (_AnisotropicFilter > 1 && _SamplerAnisotropy &&
+		tex.getMinFilter() > ITexture::NearestMipMapLinear)
+	{
+		uint aniso = (uint)_AnisotropicFilter;
+		if (aniso > _MaxAnisotropy)
+			aniso = _MaxAnisotropy;
+		if (aniso > 255)
+			aniso = 255;
+		if (aniso > 1)
+			state.Aniso = (uint8)aniso;
+	}
+	return state;
+}
+
+VkSampler CDriverVulkan::getSampler(const CSamplerState &state)
+{
+	++_StatsSamplerLookups;
+	std::map<CSamplerState, VkSampler>::const_iterator it = _Samplers.find(state);
+	if (it != _Samplers.end())
+		return it->second;
+
+	VkSamplerCreateInfo sci;
+	memset(&sci, 0, sizeof(sci));
+	sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	sci.magFilter = state.MagFilter == ITexture::Nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+	// The ITexture min filter names both the texture filter and the mip
+	// filter, which Vulkan splits into minFilter and mipmapMode.
+	switch (state.MinFilter)
+	{
+	case ITexture::NearestMipMapOff:
+		sci.minFilter = VK_FILTER_NEAREST;
+		sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		break;
+	case ITexture::NearestMipMapNearest:
+		sci.minFilter = VK_FILTER_NEAREST;
+		sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		break;
+	case ITexture::NearestMipMapLinear:
+		sci.minFilter = VK_FILTER_NEAREST;
+		sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		break;
+	case ITexture::LinearMipMapOff:
+		sci.minFilter = VK_FILTER_LINEAR;
+		sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		break;
+	case ITexture::LinearMipMapNearest:
+		sci.minFilter = VK_FILTER_LINEAR;
+		sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		break;
+	case ITexture::LinearMipMapLinear:
+	default:
+		sci.minFilter = VK_FILTER_LINEAR;
+		sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		break;
+	}
+	const VkSamplerAddressMode wrapS = state.WrapS == ITexture::Repeat
+		? VK_SAMPLER_ADDRESS_MODE_REPEAT : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	const VkSamplerAddressMode wrapT = state.WrapT == ITexture::Repeat
+		? VK_SAMPLER_ADDRESS_MODE_REPEAT : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sci.addressModeU = wrapS;
+	sci.addressModeV = wrapT;
+	// W only addresses the third dimension of 3D/cube images. Cube faces must
+	// not wrap into each other, so they clamp like GL3's cube samplers.
+	sci.addressModeW = state.Cube ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : wrapT;
+	sci.anisotropyEnable = state.Aniso > 1 ? VK_TRUE : VK_FALSE;
+	sci.maxAnisotropy = state.Aniso > 1 ? (float)state.Aniso : 1.f;
+	sci.minLod = 0.f;
+	// GL's no-mipmap modes (GL_LINEAR / GL_NEAREST) sample level 0 only.
+	// Vulkan has no "mipmapping disabled" flag: the equivalent is maxLod 0,
+	// without which a texture would still be minified through its mip chain.
+	// For the mipmapped modes the engine samples whatever chain the texture
+	// has; Vulkan clamps an LOD past the last level to that level, so the
+	// sampler needs no knowledge of the image's mip count (textures sharing a
+	// state can differ there).
+	const bool mipMapped = state.MinFilter != ITexture::NearestMipMapOff &&
+		state.MinFilter != ITexture::LinearMipMapOff;
+	sci.maxLod = mipMapped ? VK_LOD_CLAMP_NONE : 0.f;
+
+	if (_StatsEnabled)
+		++_StatsSamplerCreates;
+	VkSampler sampler = VK_NULL_HANDLE;
+	if (vkCreateSampler(_Device, &sci, NULL, &sampler) != VK_SUCCESS)
+	{
+		nlwarning("Vulkan: vkCreateSampler failed (wrap %u/%u, filters %u/%u, aniso %u)",
+			state.WrapS, state.WrapT, state.MagFilter, state.MinFilter, state.Aniso);
+		return VK_NULL_HANDLE;
+	}
+	_Samplers.insert(std::make_pair(state, sampler));
+	return sampler;
+}
+
+void CDriverVulkan::updateTextureSampler(ITexture &tex, CTextureVulkan &vk)
+{
+	CSamplerState state = textureSamplerState(tex);
+	// The state has been applied; GL3 clears the same flag after
+	// setupTextureBasicParameters(). Only setWrapS/T and setFilterMode raise
+	// it, so a texture that never changes its sampler state pays one compare.
+	tex.clearFilterOrWrapModeTouched();
+	if (vk.Sampler != VK_NULL_HANDLE && vk.SamplerState == state)
+		return;
+	VkSampler sampler = getSampler(state);
+	if (sampler == VK_NULL_HANDLE)
+		return;
+	vk.Sampler = sampler;
+	vk.SamplerState = state;
+}
+
+void CDriverVulkan::setAnisotropicFilter(sint filter)
+{
+	// The client config uses 0 (and -1) for "off"; filter 1 is the same thing
+	// to the hardware.
+	if (filter < 1)
+		filter = 1;
+	if (!_SamplerAnisotropy)
+		filter = 1;
+	else if ((uint)filter > _MaxAnisotropy)
+		filter = (sint)_MaxAnisotropy;
+	if (filter == _AnisotropicFilter)
+		return;
+	_AnisotropicFilter = filter;
+	// Samplers already handed to textures stay valid (the cache is never
+	// pruned), so nothing is destroyed and no frame in flight is disturbed.
+	// Bumping the generation makes the next material setup resolve the stage
+	// again and pick a sampler with the new anisotropy.
+	++_TextureGeneration;
+}
+
+uint CDriverVulkan::getAnisotropicFilter() const
+{
+	return (uint)_AnisotropicFilter;
+}
+
+uint CDriverVulkan::getAnisotropicFilterMaximum() const
+{
+	return _MaxAnisotropy;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -132,7 +295,8 @@ void CDriverVulkan::freeTextureObjects(CTextureVulkan &tex)
 		if (tex.FaceViews[i]) vkDestroyImageView(_Device, tex.FaceViews[i], NULL);
 	}
 	if (tex.Framebuffer) vkDestroyFramebuffer(_Device, tex.Framebuffer, NULL);
-	if (tex.Sampler) vkDestroySampler(_Device, tex.Sampler, NULL);
+	// tex.Sampler is a handle into the driver's sampler cache, shared with
+	// every texture that has the same state: it is not destroyed here.
 	if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
 	if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
 	if (tex.Memory) vkFreeMemory(_Device, tex.Memory, NULL);
@@ -247,18 +411,12 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 	if (vkCreateImageView(_Device, &vci, NULL, &out.View) != VK_SUCCESS)
 		return false;
 
-	VkSamplerCreateInfo sci;
-	memset(&sci, 0, sizeof(sci));
-	sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	sci.magFilter = VK_FILTER_LINEAR;
-	sci.minFilter = VK_FILTER_LINEAR;
-	sci.mipmapMode = mipCount > 1 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
-	sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	// Cube faces must not wrap into each other.
-	sci.addressModeW = cube ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	sci.maxLod = (float)mipCount;
-	vkCreateSampler(_Device, &sci, NULL, &out.Sampler);
+	// A texture starts with the engine's default state (repeat wrap, linear
+	// filtering, linear mips); getTextureVulkan() replaces this handle as soon
+	// as it has an ITexture to read the real state from. The sampler is shared
+	// with every other texture that asks for the same state.
+	out.Sampler = getSampler(defaultSamplerState(cube));
+	out.SamplerState = defaultSamplerState(cube);
 
 	out.Width = width;
 	out.Height = height;
@@ -427,16 +585,10 @@ VkImageView CDriverVulkan::getSolidTexture(CTextureVulkan &target, uint8 r, uint
 		vci.subresourceRange.layerCount = 1;
 		vkCreateImageView(_Device, &vci, NULL, &target.View);
 
-		VkSamplerCreateInfo sci;
-		memset(&sci, 0, sizeof(sci));
-		sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-		sci.magFilter = VK_FILTER_NEAREST;
-		sci.minFilter = VK_FILTER_NEAREST;
-		sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-		sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		vkCreateSampler(_Device, &sci, NULL, &target.Sampler);
+		// Every texel of a 1x1 fallback is the same colour, so the sampler
+		// does not matter; use the shared default one.
+		target.SamplerState = defaultSamplerState(false);
+		target.Sampler = getSampler(target.SamplerState);
 
 		// Upload + transition in one submit.
 		vkDeviceWaitIdle(_Device);
@@ -1570,6 +1722,10 @@ CTextureVulkan *CDriverVulkan::getTextureVulkan(ITexture &tex)
 			return NULL;
 		setTextureImage(*info, created);
 	}
+	// The sampler follows the ITexture state (wrap, filters, anisotropy),
+	// whoever ends up sampling the image: a material stage, a render target
+	// read back as a texture, or the blit helpers.
+	updateTextureSampler(tex, info->Texture);
 	return &info->Texture;
 }
 

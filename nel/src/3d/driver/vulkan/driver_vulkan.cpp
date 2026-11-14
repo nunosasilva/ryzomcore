@@ -204,9 +204,13 @@ CDriverVulkan::CDriverVulkan()
 	_DescriptorSetLayout = VK_NULL_HANDLE;
 	_VertexShader = VK_NULL_HANDLE;
 	_FragmentShader = VK_NULL_HANDLE;
-	_DefaultSampler = VK_NULL_HANDLE;
 	_TestPipeline = VK_NULL_HANDLE;
 	_SupportsBC = false;
+	// samplerAnisotropy / maxSamplerAnisotropy are filled in once the device
+	// is picked; until then the driver reports "no anisotropy".
+	_AnisotropicFilter = 1;
+	_MaxAnisotropy = 1;
+	_SamplerAnisotropy = false;
 	_AllocatedTextureMemory = 0;
 	_UsedTextureMemorySumEnabled = false;
 	_VertexRing = VK_NULL_HANDLE;
@@ -307,6 +311,8 @@ CDriverVulkan::CDriverVulkan()
 	_StatsPipelineBinds = 0;
 	_StatsDescriptorSets = 0;
 	_StatsTextureBinds = 0;
+	_StatsSamplerLookups = 0;
+	_StatsSamplerCreates = 0;
 	memset(_StatsVertexFormats, 0, sizeof(_StatsVertexFormats));
 	_StatsVertexFormatCount = 0;
 	memset(_StageTextureSrc, 0, sizeof(_StageTextureSrc));
@@ -519,6 +525,12 @@ bool CDriverVulkan::pickPhysicalDevice()
 			VkPhysicalDeviceFeatures features;
 			vkGetPhysicalDeviceFeatures(devices[i], &features);
 			_SupportsBC = (features.textureCompressionBC == VK_TRUE);
+			// Anisotropic sampling needs the feature enabled at device
+			// creation; the limit is clamped again in setAnisotropicFilter().
+			_SamplerAnisotropy = features.samplerAnisotropy == VK_TRUE;
+			_MaxAnisotropy = _SamplerAnisotropy ? (uint)props.limits.maxSamplerAnisotropy : 1;
+			if (_MaxAnisotropy < 1)
+				_MaxAnisotropy = 1;
 			nlinfo("Vulkan: using '%s' (API %u.%u.%u)", props.deviceName,
 				VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion), VK_VERSION_PATCH(props.apiVersion));
 			return true;
@@ -617,6 +629,10 @@ bool CDriverVulkan::createLogicalDevice()
 	features.wideLines = VK_TRUE;
 	// Needed to upload DXTC textures without expanding them on the CPU.
 	features.textureCompressionBC = _SupportsBC ? VK_TRUE : VK_FALSE;
+	// Anisotropic sampling: needed by the samplers built from the client's
+	// AnisotropicFilter setting, which the ground/landscape benefits from at
+	// grazing angles. Optional: without it the samplers stay isotropic.
+	features.samplerAnisotropy = _SamplerAnisotropy ? VK_TRUE : VK_FALSE;
 	// Exact sample counts for the flare visibility ratio. Optional: without
 	// it an occlusion query may return 0/1 and the flare pops instead of
 	// fading, which is what GLES does as well.
@@ -1450,15 +1466,21 @@ void CDriverVulkan::shutdownVulkan()
 		_TextureUsed.clear();
 		_AllocatedTextureMemory = 0;
 		CTextureVulkan &white = _WhiteTexture;
-		if (white.Sampler) vkDestroySampler(_Device, white.Sampler, NULL);
 		if (white.View) vkDestroyImageView(_Device, white.View, NULL);
 		if (white.Image) vkDestroyImage(_Device, white.Image, NULL);
 		if (white.Memory) vkFreeMemory(_Device, white.Memory, NULL);
 		CTextureVulkan &black = _BlackTexture;
-		if (black.Sampler) vkDestroySampler(_Device, black.Sampler, NULL);
 		if (black.View) vkDestroyImageView(_Device, black.View, NULL);
 		if (black.Image) vkDestroyImage(_Device, black.Image, NULL);
 		if (black.Memory) vkFreeMemory(_Device, black.Memory, NULL);
+		// Every texture only keeps a handle into this cache, so the samplers
+		// are destroyed here, once, after the device has been idled above.
+		for (std::map<CSamplerState, VkSampler>::iterator it = _Samplers.begin(); it != _Samplers.end(); ++it)
+			vkDestroySampler(_Device, it->second, NULL);
+		_Samplers.clear();
+		_WhiteTexture.Sampler = VK_NULL_HANDLE;
+		_BlackTexture.Sampler = VK_NULL_HANDLE;
+		_WhiteCubeTexture.Sampler = VK_NULL_HANDLE;
 
 		// Pipelines and layouts.
 		for (map<CPipelineKey, CPipelineVulkan>::iterator it = _PipelineCache.begin(); it != _PipelineCache.end(); ++it)
@@ -2374,11 +2396,15 @@ bool CDriverVulkan::swapBuffers()
 			nlinfo("Vulkan stats: texture infos: %llu resolved without a share-name lookup, %llu lookups per frame",
 				(unsigned long long)(_StatsTexInfoHits / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				(unsigned long long)(_StatsTexInfoMisses / (_StatsWindowFrames ? _StatsWindowFrames : 1)));
+			nlinfo("Vulkan stats: samplers: %llu cache lookups/frame, %llu created since startup, %u cached now",
+				(unsigned long long)(_StatsSamplerLookups / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				(unsigned long long)_StatsSamplerCreates, (uint)_Samplers.size());
 			nlinfo("Vulkan stats: synchronous load: pipeline create %.1f ms (%llu), texture create %.1f ms (%llu)",
 				(double)_StatsPipelineCreateNs / 1e6, (unsigned long long)_StatsPipelineCreates,
 				(double)_StatsTextureCreateNs / 1e6, (unsigned long long)_StatsTextureCreates);
 			_StatsTexInfoHits = 0;
 			_StatsTexInfoMisses = 0;
+			_StatsSamplerLookups = 0;
 			_StatsPipelineCreateNs = 0;
 			_StatsPipelineCreates = 0;
 			_StatsTextureCreateNs = 0;

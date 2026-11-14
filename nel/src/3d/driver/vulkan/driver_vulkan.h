@@ -159,6 +159,46 @@ public:
 	uint32		_Size;
 };
 
+/// Sampler state of an ITexture, as the driver has to translate it for
+/// Vulkan. Samplers are immutable objects, so every distinct state gets one
+/// VkSampler, shared by all the textures that ask for it. The fields hold the
+/// ITexture enums (TWrapMode/TMagFilter/TMinFilter), not the VkFilter ones, so
+/// that the key is easy to compare with the engine state.
+struct CSamplerState
+{
+	CSamplerState()
+		: WrapS(ITexture::Repeat), WrapT(ITexture::Repeat),
+		  MagFilter(ITexture::Linear), MinFilter(ITexture::LinearMipMapLinear),
+		  Aniso(1), Cube(false)
+	{}
+
+	uint8	WrapS;
+	uint8	WrapT;
+	uint8	MagFilter;
+	uint8	MinFilter;
+	/// Effective anisotropy (1 = isotropic). Already clamped to the device
+	/// limit and to 1 when the samplerAnisotropy feature is unavailable.
+	uint8	Aniso;
+	/// Cube samplers always clamp: a face must never wrap into its neighbour.
+	bool	Cube;
+
+	bool operator<(const CSamplerState &o) const
+	{
+		if (WrapS != o.WrapS) return WrapS < o.WrapS;
+		if (WrapT != o.WrapT) return WrapT < o.WrapT;
+		if (MagFilter != o.MagFilter) return MagFilter < o.MagFilter;
+		if (MinFilter != o.MinFilter) return MinFilter < o.MinFilter;
+		if (Aniso != o.Aniso) return Aniso < o.Aniso;
+		return Cube < o.Cube;
+	}
+
+	bool operator==(const CSamplerState &o) const
+	{
+		return WrapS == o.WrapS && WrapT == o.WrapT && MagFilter == o.MagFilter &&
+			MinFilter == o.MinFilter && Aniso == o.Aniso && Cube == o.Cube;
+	}
+};
+
 /// A Vulkan texture created on behalf of a NeL ITexture.
 struct CTextureVulkan
 {
@@ -180,7 +220,13 @@ struct CTextureVulkan
 	/// Bytes allocated for Memory, from VkMemoryRequirements.
 	VkDeviceSize	MemorySize;
 	VkImageView		View;
+	/// Handle into CDriverVulkan::_Samplers, not owned by this texture: any
+	/// texture with the same ITexture sampler state shares it, and the driver
+	/// destroys them all at shutdown.
 	VkSampler		Sampler;
+	/// State Sampler was built from, so a bind can skip the cache lookup when
+	/// the engine has not changed the texture's wrap/filter mode.
+	CSamplerState	SamplerState;
 	/// Created when the texture is used as a render target, so that one image
 	/// is both the colour attachment and the sampled texture. Always built
 	/// with the offscreen render pass. Unused for cube targets, which need one
@@ -1032,6 +1078,14 @@ private:
 	/// Install a freshly uploaded image in `info`, retiring the previous one
 	/// and keeping the texture-memory counter in sync.
 	void					setTextureImage(CTextureDrvInfosVulkan &info, CTextureVulkan &created);
+	/// Sampler state `tex` asks for, with the requested anisotropy clamped to
+	/// the device limit (and dropped when the feature is unavailable).
+	CSamplerState			textureSamplerState(const ITexture &tex) const;
+	/// VkSampler for a state, created on first use and cached.
+	VkSampler				getSampler(const CSamplerState &state);
+	/// Point a texture at the sampler its ITexture asks for and clear the
+	/// engine's "filter/wrap mode touched" flag.
+	void					updateTextureSampler(ITexture &tex, CTextureVulkan &vk);
 	VkImageView				getWhiteTexture();
 	/// 1x1 opaque black, sampled by a stage whose texture exists in the
 	/// material but has no image (a missing texture file). GL samples an
@@ -1069,7 +1123,18 @@ private:
 	/// Simple fragment program for a draw whose stage 0 is a cube (the water
 	/// env map flatten pass): binding 0 is a samplerCube.
 	VkShaderModule				_FragmentShaderCube;
-	VkSampler					_DefaultSampler;
+	/// One immutable VkSampler per distinct ITexture sampler state (wrap,
+	/// filters, anisotropy, cube). Textures keep a handle into this map, so a
+	/// state used by a thousand textures still costs one sampler object.
+	std::map<CSamplerState, VkSampler>	_Samplers;
+	/// Anisotropy the client asked for (already clamped to the device limit;
+	/// 1 = disabled).
+	sint						_AnisotropicFilter;
+	/// VkPhysicalDeviceLimits::maxSamplerAnisotropy, or 1 when the
+	/// samplerAnisotropy feature is not available.
+	uint						_MaxAnisotropy;
+	/// True when the device feature samplerAnisotropy was enabled.
+	bool						_SamplerAnisotropy;
 	CTextureVulkan				_WhiteTexture;
 	CTextureVulkan				_BlackTexture;
 	CTextureVulkan				_WhiteCubeTexture;
@@ -1404,6 +1469,10 @@ private:
 	uint64					_TextureGeneration;
 	uint64					_StatsTexInfoHits;
 	uint64					_StatsTexInfoMisses;
+	/// NLVK_STATS: sampler cache activity, per window. Lookups include the
+	/// hits; creates counts the vkCreateSampler calls since startup.
+	uint64					_StatsSamplerLookups;
+	uint64					_StatsSamplerCreates;
 	CRGBA					_MaterialColor;
 	uint32					_TexEnv[4];
 	uint8					_MappedUV[4];

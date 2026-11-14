@@ -92,20 +92,6 @@ void CDriverVulkan::forceDXTCCompression(bool dxtcComp)
 	_ForceDXTCCompression = dxtcComp;
 }
 
-void CDriverVulkan::setAnisotropicFilter(sint filter)
-{
-}
-
-uint CDriverVulkan::getAnisotropicFilter() const
-{
-	return 1;
-}
-
-uint CDriverVulkan::getAnisotropicFilterMaximum() const
-{
-	return 16;
-}
-
 void CDriverVulkan::forceTextureResize(uint divisor)
 {
 }
