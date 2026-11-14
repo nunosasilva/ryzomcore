@@ -621,6 +621,13 @@ void initMainLoop()
 		if(MainCam.empty())
 			nlerror("initMainLoop: Cannot Create the main camera.");
 
+		// Realtime planar water reflections: each admitted plane costs a
+		// scene render, but planes tile into shared reflection textures.
+		// The force flag is a dev option (ClientCfg.ForceWaterReflections).
+		Scene->setMaxRealtimeWaterReflections(ClientCfg.MaxWaterReflections);
+		Scene->setWaterReflectionMaxTextures(ClientCfg.MaxWaterReflectionTextures);
+		Scene->setForceRealtimeWaterReflections(ClientCfg.ForceWaterReflections);
+
 		// setup load balancing
 		Scene->setPolygonBalancingMode(UScene::PolygonBalancingClamp);
 		Scene->setGroupLoadMaxPolygon("Skin", ClientCfg.SkinNbMaxPoly);

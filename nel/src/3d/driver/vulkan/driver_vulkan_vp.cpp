@@ -382,7 +382,7 @@ static void writeBroadcastAssign(std::stringstream &ss, const CVPOperand &dest,
 /// rebuilds NeL eye-space ecPos from gl_Position so the pixel stage's fog
 /// still works.
 static bool convertNelvpToGLSL(CVertexProgram *program, std::string &outSource, uint32 &outRegisterCount,
-	bool &outSpecular, uint16 &outWrittenTexCoords)
+	bool &outSpecular, uint16 &outWrittenTexCoords, bool writeClip)
 {
 	IProgram::CSource *nelvpSrc = NULL;
 	for (int i = 0; i < (int)program->getSourceNb(); ++i)
@@ -743,6 +743,22 @@ static bool convertNelvpToGLSL(CVertexProgram *program, std::string &outSource, 
 	ss << "  worldPos = vec4(transpose(mat3(viewMatrix)) * (ecPos.xyz - viewMatrix[3].xyz * ecPos.w), ecPos.w);\n";
 	if (inputUsed[SlotNormal])
 		ss << "  normal = vec4(transpose(mat3(viewMatrix)) * normalize(mat3(modelView) * v" << SlotNormal << ".xyz), 0.0);\n";
+	if (writeClip)
+	{
+		// User clip planes (water reflection passes), in NeL eye space: the
+		// planes and mask come from the camera UBO, like the GL3 converted
+		// nelvp epilogue. Fold the mask per plane so one variant is enough.
+		ss << "  if (nlClipPlaneMask == 0) {\n";
+		for (int i = 0; i < 6; ++i)
+			ss << "    gl_ClipDistance[" << i << "] = 1.0;\n";
+		ss << "  } else {\n";
+		for (int i = 0; i < 6; ++i)
+		{
+			ss << "    gl_ClipDistance[" << i << "] = ((nlClipPlaneMask & " << (1 << i)
+			   << ") != 0) ? dot(clipPlane" << i << ", ecPos) : 1.0;\n";
+		}
+		ss << "  }\n";
+	}
 	ss << "  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;\n";
 	ss << "}\n";
 
@@ -942,7 +958,7 @@ static bool sourceHasPlainUniforms(const std::string &src)
 /// Turn an engine GLSL vertex program (written for GL 3.3 SSO) into Vulkan
 /// GLSL: prepend #version 450, the builtin and user UBO blocks, declare the
 /// missing generic outputs and wrap main() for the clip-depth remap.
-static bool buildRawGLSLVertexProgram(IProgram::CSource *src, std::string &outSource)
+static bool buildRawGLSLVertexProgram(IProgram::CSource *src, std::string &outSource, bool writeClip)
 {
 	std::string headers;
 	bool headersOk = true;
@@ -988,6 +1004,22 @@ static bool buildRawGLSLVertexProgram(IProgram::CSource *src, std::string &outSo
 	for (int i = 0; i < 16; ++i)
 		out << "    " << s_Varyings[i].Name << " = " << s_Varyings[i].Init << ";\n";
 	out << "    nlRawUserMain();\n";
+	if (writeClip)
+	{
+		// User clip planes (water reflection passes): rebuild the NeL
+		// eye-space position from the clip-space one (same inversion the fog
+		// epilogue uses) and fold the camera UBO planes on the mask. The z
+		// remap below does not affect this.
+		out << "    vec4 nlClipEyePos = inverseProjectionBasis * gl_Position;\n";
+		out << "    if (nlClipPlaneMask == 0) {\n";
+		for (int i = 0; i < 6; ++i)
+			out << "        gl_ClipDistance[" << i << "] = 1.0;\n";
+		out << "    } else {\n";
+		for (int i = 0; i < 6; ++i)
+			out << "        gl_ClipDistance[" << i << "] = ((nlClipPlaneMask & " << (1 << i)
+				<< ") != 0) ? dot(clipPlane" << i << ", nlClipEyePos) : 1.0;\n";
+		out << "    }\n";
+	}
 	out << "    // NeL's projection writes the OpenGL clip depth range [-w, w];\n";
 	out << "    // the Vulkan viewport expects [0, w].\n";
 	out << "    gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;\n";
@@ -1346,14 +1378,15 @@ bool CDriverVulkan::compileInsertVertexProgram(CVertexProgram *program, IProgram
 	}
 
 	// Variant selection matches the mega path this driver draws with: the
-	// pixel stage is always the fog/PPL variant, and supportVertexProgramClipPlanes()
-	// is false, so (fogOrPpl=1, hwClip=0) is the only selectable variant. The
-	// cache key keeps the GL3 variant bits so the others can be added later.
+	// pixel stage is always the fog/PPL variant, and the clip planes are
+	// folded at draw time from the camera UBO, so (fogOrPpl=1, hwClip=0) is
+	// the only variant ever generated. The cache key keeps the GL3 variant
+	// bits so the others can be added later.
 	const uint fogOrPpl = 1;
 	const uint hwClip = 0;
 
 	std::string body;
-	megavkVPGenerate(body, fogOrPpl != 0, insertSource.c_str());
+	megavkVPGenerate(body, fogOrPpl != 0, insertSource.c_str(), _ShaderClipDistance);
 	std::string source;
 	if (!assembleMegaSource(body, &insertSrc->UniformBufferFormats, source))
 	{
@@ -1437,7 +1470,7 @@ bool CDriverVulkan::compileVertexProgram(CVertexProgram *program)
 
 	if (glslSrc)
 	{
-		if (buildRawGLSLVertexProgram(glslSrc, source))
+		if (buildRawGLSLVertexProgram(glslSrc, source, _ShaderClipDistance))
 		{
 			VkShaderModule module = VK_NULL_HANDLE;
 			if (compileShader(source.c_str(), &module, true))
@@ -1466,7 +1499,7 @@ bool CDriverVulkan::compileVertexProgram(CVertexProgram *program)
 	if (nelvpSrc)
 	{
 		uint16 writtenTexCoords = 0;
-		if (!convertNelvpToGLSL(program, source, registerCount, specular, writtenTexCoords))
+		if (!convertNelvpToGLSL(program, source, registerCount, specular, writtenTexCoords, _ShaderClipDistance))
 		{
 			program->m_CompileFailed = true;
 			return false;

@@ -329,6 +329,9 @@ CDriverVulkan::CDriverVulkan()
 	_OcclusionIssuedFrame[0] = _OcclusionIssuedFrame[1] = (uint64)-1;
 	_OcclusionCompletedFrame[0] = _OcclusionCompletedFrame[1] = (uint64)-1;
 	_OcclusionPrecise = false;
+	_ShaderClipDistance = false;
+	memset(_ClipPlaneEnabled, 0, sizeof(_ClipPlaneEnabled));
+	memset(_ClipPlaneEye, 0, sizeof(_ClipPlaneEye));
 	_VPSpecularOutput = true;
 	_NextUserVPId = 0;
 	_ActiveUserPP = NULL;
@@ -612,6 +615,12 @@ bool CDriverVulkan::createLogicalDevice()
 	// fading, which is what GLES does as well.
 	features.occlusionQueryPrecise = supported.occlusionQueryPrecise;
 	_OcclusionPrecise = supported.occlusionQueryPrecise == VK_TRUE;
+	// Water reflection passes clip the mirrored scene with user clip planes:
+	// the vertex shaders write gl_ClipDistance, which needs this core feature.
+	features.shaderClipDistance = supported.shaderClipDistance;
+	_ShaderClipDistance = supported.shaderClipDistance == VK_TRUE;
+	if (!_ShaderClipDistance)
+		nlwarning("Vulkan: shaderClipDistance is not supported; realtime planar water reflections stay disabled");
 
 	VkDeviceCreateInfo dci;
 	memset(&dci, 0, sizeof(dci));

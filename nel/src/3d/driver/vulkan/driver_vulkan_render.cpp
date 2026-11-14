@@ -104,9 +104,11 @@ static const char *s_UniformBlockGLSL =
 	"    mat4 specularTexMtx;\n"            // 912
 	"    mat4 modelView;\n"                 // 976
 	"    vec4 texEnvConstant[4];\n"         // 1040 (TexEnv stage constant colours)
-	"} nl;\n";                              // 1104
+	"    int  clipPlaneMask;\n"             // 1104 (user clip planes, water reflections)
+	"    vec4 clipPlane[6];\n"              // 1120 (eye space)
+	"} nl;\n";                              // 1216
 
-static std::string buildVertexShader(uint32 flags)
+static std::string buildVertexShader(uint32 flags, bool writeClip)
 {
 	bool hasColor = (flags & CVertexBuffer::PrimaryColorFlag) != 0;
 	bool hasNormal = (flags & CVertexBuffer::NormalFlag) != 0;
@@ -161,7 +163,33 @@ static std::string buildVertexShader(uint32 flags)
 		"    // Eye-space position: fog depth and the eye-linear texgen modes use it\n"
 		"    // exactly like the mega vertex program (NeL eye space is Y = into screen).\n"
 		"    vec4 eyePos = nl.modelView * objPos;\n"
-		"    vFogDepth = abs(eyePos.y / eyePos.w);\n"
+		"    vFogDepth = abs(eyePos.y / eyePos.w);\n";
+	if (writeClip)
+	{
+		// User clip planes (water reflection passes): the planes are in the
+		// same eye space as eyePos and folded on the per-draw mask, like the
+		// mega vertex program's camera UBO planes. Vulkan always consumes a
+		// written clip distance, so disabled planes must write a positive value.
+		src +=
+			"    if (nl.clipPlaneMask == 0) {\n"
+			"        gl_ClipDistance[0] = 1.0;\n"
+			"        gl_ClipDistance[1] = 1.0;\n"
+			"        gl_ClipDistance[2] = 1.0;\n"
+			"        gl_ClipDistance[3] = 1.0;\n"
+			"        gl_ClipDistance[4] = 1.0;\n"
+			"        gl_ClipDistance[5] = 1.0;\n"
+			"    } else {\n";
+		for (uint i = 0; i < 6; ++i)
+		{
+			char line[160];
+			snprintf(line, sizeof(line),
+				"        gl_ClipDistance[%u] = ((nl.clipPlaneMask & %u) != 0) ? dot(nl.clipPlane[%u], eyePos) : 1.0;\n",
+				i, 1u << i, i);
+			src += line;
+		}
+		src += "    }\n";
+	}
+	src +=
 		"    // Lit materials use the diffuse colour (like the mega vertex program),\n"
 		"    // unlit materials use the material colour.\n"
 		"    vec4 vcol;\n"
@@ -624,7 +652,7 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 		{
 			// Water replaces the mega pixel stage as well; it reads the water
 			// vertex program's texture coordinates and the mega descriptor set.
-			fragmentShader = getWaterPixelShader(key.WaterCalcRefl != 0, key.WaterDiffuse != 0);
+			fragmentShader = getWaterPixelShader(key.WaterCalcRefl != 0, key.WaterDiffuse != 0, key.WaterPlanar != 0);
 			if (fragmentShader == VK_NULL_HANDLE)
 			{
 				nlwarning("Vulkan: no water pixel program for this variant");
@@ -654,7 +682,7 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 		vertexShader = _VertexShaderVariants[shaderFlags];
 		if (vertexShader == VK_NULL_HANDLE)
 		{
-			std::string source = buildVertexShader(key.VertexFlags);
+			std::string source = buildVertexShader(key.VertexFlags, _ShaderClipDistance);
 			if (!compileShader(source.c_str(), &vertexShader, true))
 				return VK_NULL_HANDLE;
 			_VertexShaderVariants[shaderFlags] = vertexShader;
@@ -1754,6 +1782,12 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	memcpy(u.ModelView, _ModelViewMatrix.get(), sizeof(u.ModelView));
 	memcpy(u.SpecularTexMtx, stageMegaCameraUBO().specularTexMtx, sizeof(u.SpecularTexMtx));
 
+	// User clip planes for the water reflection pass, in the same eye space
+	// as u.ModelView (see setClipPlane()).
+	u.ClipPlaneMask = clipPlaneMask();
+	for (uint i = 0; i < MaxClipPlanes; ++i)
+		memcpy(u.ClipPlane[i], _ClipPlaneEye[i], 4 * sizeof(float));
+
 	// Texture coordinate generation and user texture matrices. The shadow
 	// receiver is the main user of object-space generation: it draws meshes
 	// with no vertex UVs and projects the shadow map through a user matrix.
@@ -2505,6 +2539,62 @@ void CDriverVulkan::setupModelMatrix(const CMatrix &mtx)
 CMatrix CDriverVulkan::getViewMatrix() const
 {
 	return _ViewMatrix;
+}
+
+// ---------------------------------------------------------------------------
+// User clip planes (water reflection passes, item 6)
+// ---------------------------------------------------------------------------
+
+sint32 CDriverVulkan::clipPlaneMask() const
+{
+	sint32 mask = 0;
+	for (uint i = 0; i < MaxClipPlanes; ++i)
+		if (_ClipPlaneEnabled[i])
+			mask |= (1 << i);
+	return mask;
+}
+
+void CDriverVulkan::enableClipPlane(uint index, bool enable)
+{
+	if (index >= MaxClipPlanes)
+		return;
+	if (_ClipPlaneEnabled[index] == enable)
+		return;
+	_ClipPlaneEnabled[index] = enable;
+	// The camera UBO carries the mask the vertex shaders fold on.
+	_MegaCameraDirty = true;
+}
+
+void CDriverVulkan::setClipPlane(uint index, const NLMISC::CPlane &plane)
+{
+	if (index >= MaxClipPlanes)
+		return;
+
+	// The plane is in NeL world space. The shaders' eye-space position is
+	// _ViewMatrix * world position; unlike GL3 this driver keeps the whole
+	// view matrix (PZB camera position zero), so first move the plane to the
+	// camera origin, then transform its normal by the inverse view rotation
+	// (the same math as CDriverGL3::setClipPlane with _PZBCameraPos folded in).
+	const float pa = plane.a;
+	const float pb = plane.b;
+	const float pc = plane.c;
+	CMatrix invView = _ViewMatrix;
+	CMatrix viewToWorld = _ViewMatrix;
+	viewToWorld.invert();
+	const CVector camPos = viewToWorld.getPos();
+	const float pd = plane.d + pa * camPos.x + pb * camPos.y + pc * camPos.z;
+
+	invView.setPos(CVector::Null);
+	invView.invert();
+	const CVector invI = invView.getI();
+	const CVector invJ = invView.getJ();
+	const CVector invK = invView.getK();
+
+	_ClipPlaneEye[index][0] = invI.x * pa + invI.y * pb + invI.z * pc;
+	_ClipPlaneEye[index][1] = invJ.x * pa + invJ.y * pb + invJ.z * pc;
+	_ClipPlaneEye[index][2] = invK.x * pa + invK.y * pb + invK.z * pc;
+	_ClipPlaneEye[index][3] = pd;
+	_MegaCameraDirty = true;
 }
 
 void CDriverVulkan::setupViewport(const CViewport &viewport)
