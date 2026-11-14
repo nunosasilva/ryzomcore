@@ -316,6 +316,12 @@ CDriverVulkan::CDriverVulkan()
 	_StatsTexInfoMisses = 0;
 	_MegaLightTableValid = false;
 	_MegaLightTableOffset = 0xFFFFFFFF;
+	memset(&_LightMapDynLightEntry, 0, sizeof(_LightMapDynLightEntry));
+	_LightMapDynLightEntry.mode = -1;
+	_LightMapDynamicLightEnabled = false;
+	_MegaLightMapDynTableValid = false;
+	_MegaLightMapDynTableOffset = 0xFFFFFFFF;
+	_LightMapDynLogged = false;
 	_LastPipeline = VK_NULL_HANDLE;
 	_BlendConstantsSet = false;
 	_StatsWindowStartNs = 0;
@@ -2018,6 +2024,7 @@ bool CDriverVulkan::beginFrame()
 	_LastPipeline = VK_NULL_HANDLE;
 	_BlendConstantsSet = false;
 	_MegaLightTableValid = false;
+	_MegaLightMapDynTableValid = false;
 	_RenderTargetTexture = NULL;
 	_RenderTargetInfo = NULL;
 	_IndexRingFrameBase = _FrameIndex * _IndexRingHalf;

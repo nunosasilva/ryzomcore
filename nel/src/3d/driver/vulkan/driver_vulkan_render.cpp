@@ -2444,6 +2444,30 @@ void CDriverVulkan::setPerPixelLightingLight(CRGBA diffuse, CRGBA specular, floa
 
 void CDriverVulkan::setLightMapDynamicLight(bool enable, const CLight &light)
 {
+	// Stored, like GL3, until the next LightMap material draw stages it. The
+	// light is not added to the scene's light table: it only affects the
+	// static lightmapped geometry, through a dedicated 1-entry table.
+	_LightMapDynamicLightEnabled = enable;
+	if (enable)
+	{
+		packLightToEntry(_LightMapDynLightEntry, light);
+		if (!_LightMapDynLogged)
+		{
+			_LightMapDynLogged = true;
+			const CVector pos = light.getPosition();
+			const CRGBA diffuse = light.getDiffuse();
+			nlinfo("Vulkan: dynamic lightmap light enabled (diffuse %u,%u,%u pos %.2f,%.2f,%.2f attn %.2f..%.2f)",
+				(uint)diffuse.R, (uint)diffuse.G, (uint)diffuse.B,
+				pos.x, pos.y, pos.z,
+				light.getConstantAttenuation(), light.getQuadraticAttenuation());
+		}
+	}
+	_MegaLightMapDynTableValid = false;
+}
+
+bool CDriverVulkan::isLightMapDraw() const
+{
+	return _CurrentMaterial && _CurrentMaterial->getShader() == CMaterial::LightMap;
 }
 
 void CDriverVulkan::enableLightTableMode(bool enable)
