@@ -280,6 +280,9 @@ CDriverVulkan::CDriverVulkan()
 	memset(_UserUBStageSize, 0, sizeof(_UserUBStageSize));
 	_StatsEnabled = getenv("NLVK_STATS") != NULL;
 	_StatsDraws = 0;
+	_StatsOcclusionIssued = 0;
+	_StatsOcclusionHarvested = 0;
+	_OcclusionCreatedCount = 0;
 	_StatsDescriptorNs = 0;
 	_StatsIndexNs = 0;
 	_StatsKeyNs = 0;
@@ -320,6 +323,12 @@ CDriverVulkan::CDriverVulkan()
 	_GpuTimeQuery = VK_NULL_HANDLE;
 	_GpuTimeEnabled = false;
 	_GpuTimePeriod = 1.0;
+	_OcclusionPools[0] = VK_NULL_HANDLE;
+	_OcclusionPools[1] = VK_NULL_HANDLE;
+	_OcclusionNextSlot[0] = _OcclusionNextSlot[1] = 0;
+	_OcclusionIssuedFrame[0] = _OcclusionIssuedFrame[1] = (uint64)-1;
+	_OcclusionCompletedFrame[0] = _OcclusionCompletedFrame[1] = (uint64)-1;
+	_OcclusionPrecise = false;
 	_VPSpecularOutput = true;
 	_NextUserVPId = 0;
 	_ActiveUserPP = NULL;
@@ -589,12 +598,20 @@ bool CDriverVulkan::createLogicalDevice()
 
 	const char *extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
+	VkPhysicalDeviceFeatures supported;
+	vkGetPhysicalDeviceFeatures(_PhysicalDevice, &supported);
+
 	VkPhysicalDeviceFeatures features;
 	memset(&features, 0, sizeof(features));
 	features.fillModeNonSolid = VK_TRUE; // wireframe polygon mode
 	features.wideLines = VK_TRUE;
 	// Needed to upload DXTC textures without expanding them on the CPU.
 	features.textureCompressionBC = _SupportsBC ? VK_TRUE : VK_FALSE;
+	// Exact sample counts for the flare visibility ratio. Optional: without
+	// it an occlusion query may return 0/1 and the flare pops instead of
+	// fading, which is what GLES does as well.
+	features.occlusionQueryPrecise = supported.occlusionQueryPrecise;
+	_OcclusionPrecise = supported.occlusionQueryPrecise == VK_TRUE;
 
 	VkDeviceCreateInfo dci;
 	memset(&dci, 0, sizeof(dci));
@@ -1099,6 +1116,30 @@ bool CDriverVulkan::createSyncObjects()
 	// so they need no fence or semaphore of their own.
 	return true;
 }
+
+bool CDriverVulkan::createOcclusionPools()
+{
+	VkQueryPoolCreateInfo qpci;
+	memset(&qpci, 0, sizeof(qpci));
+	qpci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+	qpci.queryType = VK_QUERY_TYPE_OCCLUSION;
+	qpci.queryCount = NL_VK_OCCLUSION_SLOTS;
+	for (uint i = 0; i < 2; ++i)
+	{
+		const VkResult result = vkCreateQueryPool(_Device, &qpci, NULL, &_OcclusionPools[i]);
+		if (result != VK_SUCCESS)
+		{
+			nlwarning("Vulkan: vkCreateQueryPool(occlusion, %u) failed (%d %s); flares disabled",
+				NL_VK_OCCLUSION_SLOTS, (int)result, vkResultName(result));
+			if (_OcclusionPools[0]) { vkDestroyQueryPool(_Device, _OcclusionPools[0], NULL); _OcclusionPools[0] = VK_NULL_HANDLE; }
+			return false;
+		}
+	}
+	nlinfo("Vulkan: occlusion queries enabled (%u slots per frame, precise counts %s)",
+		NL_VK_OCCLUSION_SLOTS, _OcclusionPrecise ? "yes" : "no");
+	return true;
+}
+
 void CDriverVulkan::destroySwapchain()
 {
 	if (!_Device)
@@ -1196,6 +1237,9 @@ bool CDriverVulkan::initVulkan()
 		return false;
 	if (!createSyncObjects())
 		return false;
+	// Occlusion queries for the flares. Not fatal: without the pools the
+	// driver reports no support and the engine skips flares, as before.
+	createOcclusionPools();
 
 	// NLVK_STATS: one GPU timestamp pair per frame slot, written around the
 	// frame command buffer. Timestamps need support from the queue family.
@@ -1424,6 +1468,11 @@ void CDriverVulkan::shutdownVulkan()
 			_DescriptorPools[i].clear();
 		}
 		if (_GpuTimeQuery) { vkDestroyQueryPool(_Device, _GpuTimeQuery, NULL); _GpuTimeQuery = VK_NULL_HANDLE; }
+		for (uint i = 0; i < 2; ++i)
+		{
+			if (_OcclusionPools[i]) { vkDestroyQueryPool(_Device, _OcclusionPools[i], NULL); _OcclusionPools[i] = VK_NULL_HANDLE; }
+			_OcclusionFrameQueries[i].clear();
+		}
 
 		// Shaders.
 		for (map<uint32, VkShaderModule>::iterator it = _VertexShaderVariants.begin(); it != _VertexShaderVariants.end(); ++it)
@@ -1806,6 +1855,14 @@ bool CDriverVulkan::beginFrame()
 	if (_StatsEnabled)
 		_StatsFenceWaitNs += nowNs() - fenceWaitStart;
 
+	// The submission that last used this frame slot is finished, so the
+	// occlusion queries it recorded have results. Cache them into their
+	// query objects now, before the pool is reset for this frame: the engine
+	// may poll a result one frame later than its usual two-frame delay, and
+	// the reset would have overwritten it by then.
+	_OcclusionCompletedFrame[frame] = _OcclusionIssuedFrame[frame];
+	harvestOcclusionQueries(frame);
+
 	// The GPU timestamps of the submission that just completed on this slot are
 	// readable now: the fence wait above is the synchronisation. Done before
 	// the query pool range is reset for the next frame. The first two frames
@@ -1927,6 +1984,15 @@ bool CDriverVulkan::beginFrame()
 	{
 		vkCmdResetQueryPool(cmd, _GpuTimeQuery, frame * 2, 2);
 		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, _GpuTimeQuery, frame * 2);
+	}
+	// Reset this slot's occlusion pool before the render pass opens (the reset
+	// is only legal outside one). The fence waited above proves the previous
+	// submission of this same pool is done, and the other pool belongs to the
+	// frame that is still in flight: neither is disturbed.
+	if (_OcclusionPools[frame])
+	{
+		vkCmdResetQueryPool(cmd, _OcclusionPools[frame], 0, NL_VK_OCCLUSION_SLOTS);
+		_OcclusionNextSlot[frame] = 0;
 	}
 	beginMainPass(cmd, true);
 
@@ -2274,6 +2340,10 @@ bool CDriverVulkan::swapBuffers()
 				_StagingRingSize / 1024);
 			nlinfo("Vulkan stats: per draw: key %.2f us, pipeline %.2f us, bind %.2f us, submit %.2f us",
 				perKey, perPipeline, perBind, perSubmit);
+			nlinfo("Vulkan stats: occlusion queries: %llu issued/frame, %llu harvested/frame, %llu objects",
+				(unsigned long long)(_StatsOcclusionIssued / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				(unsigned long long)(_StatsOcclusionHarvested / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				(unsigned long long)_OcclusionCreatedCount);
 			nlinfo("Vulkan stats: state/frame: %llu draws, %llu pipeline binds (%.2f/draw), %llu descriptor sets (%.2f/draw), %llu texture stage binds (%.2f/draw)",
 				(unsigned long long)(_StatsDraws / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				(unsigned long long)(_StatsPipelineBinds / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
@@ -2309,6 +2379,8 @@ bool CDriverVulkan::swapBuffers()
 			_StatsWindowStartNs = now;
 			_StatsWindowFrames = 0;
 			_StatsDraws = 0;
+			_StatsOcclusionIssued = 0;
+			_StatsOcclusionHarvested = 0;
 			_StatsDescriptorNs = 0;
 			_StatsIndexNs = 0;
 			_StatsKeyNs = 0;
