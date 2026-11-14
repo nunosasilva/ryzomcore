@@ -674,7 +674,15 @@ static bool pipelineCacheOnDisk()
 
 bool CDriverVulkan::createPipelineCache()
 {
-	_PipelineCachePath = CPath::getApplicationDirectory("ryzom") + "vulkan_pipeline_cache.bin";
+	// A shared cache file is fine for a normal player, but concurrent test
+	// clients built from different revisions must not read each other's
+	// pipelines (a stale/mixed blob can produce wrong draws). Test harnesses
+	// set NLVK_PIPELINE_CACHE_PATH to a per-run file.
+	const char *cachePath = getenv("NLVK_PIPELINE_CACHE_PATH");
+	if (cachePath != NULL && cachePath[0] != '\0')
+		_PipelineCachePath = cachePath;
+	else
+		_PipelineCachePath = CPath::getApplicationDirectory("ryzom") + "vulkan_pipeline_cache.bin";
 
 	vector<uint8> initialData;
 	if (pipelineCacheOnDisk())
