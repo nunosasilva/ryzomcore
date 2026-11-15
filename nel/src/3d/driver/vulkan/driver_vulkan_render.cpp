@@ -1268,20 +1268,35 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 		const uint32 offset = driver->allocVertexRing(_Size);
 		if (offset == 0xFFFFFFFFu)
 		{
-			// Ring exhausted: keep the draw working rather than returning NULL
-			// (the engine writes through the returned pointer and would crash).
-			// This is the old write-through path and can tear a frame; it is a
-			// last resort, the cap is high enough for a full zone load.
-			static bool warned = false;
-			if (!warned)
+			// The ring is at its cap or could not grow (VRAM pressure). This is
+			// a dynamic buffer: it has no persistent copy, and the engine writes
+			// through the pointer returned below, so returning NULL would crash
+			// it. Hand out a dedicated host-visible buffer instead; the draw
+			// binds that buffer and the frame stays complete.
+			void *mapped = NULL;
+			VkBuffer buffer = driver->createDedicatedVertexUpload(_Size, mapped);
+			if (buffer == VK_NULL_HANDLE || mapped == NULL)
 			{
-				warned = true;
-				nlwarning("Vulkan: vertex ring exhausted, writing a dynamic vertex buffer through (rendering may tear)");
+				// The dedicated allocation failed too: there is no memory to
+				// write this buffer into. The engine may not survive a NULL
+				// return, but this is not silent null-pointer arithmetic any
+				// more.
+				static bool warned = false;
+				if (!warned)
+				{
+					warned = true;
+					nlwarning("Vulkan: vertex ring exhausted and the %u-byte fallback upload buffer could not be allocated; a dynamic vertex buffer lock() returns NULL",
+						_Size);
+				}
+				_DrawBuffer = VK_NULL_HANDLE;
+				_DrawOffset = 0;
+				_DrawBufferFrame = ~0ull;
+				return NULL;
 			}
-			_DrawBuffer = _VertexBuffer[_Slot];
+			_DrawBuffer = buffer;
 			_DrawOffset = 0;
 			_DrawBufferFrame = driver->getSwapBufferCounter();
-			return (uint8 *)_Mapped[_Slot] + begin;
+			return (uint8 *)mapped + begin;
 		}
 		_DrawBuffer = driver->vertexRingBuffer();
 		_DrawOffset = offset;
@@ -1604,6 +1619,25 @@ uint32 CDriverVulkan::allocVertexRing(uint32 size)
 	const uint32 offset = (_VertexRingOffset + 3) & ~3u;
 	_VertexRingOffset = offset + size;
 	return offset;
+}
+
+/// Last-resort storage for a dynamic vertex buffer whose upload cannot use the
+/// ring (the ring is at NL_VK_VERTEX_RING_MAX, or growing it failed under VRAM
+/// pressure). Dynamic buffers have no persistent copy, so the only alternative
+/// is returning NULL from lock() - and the engine writes through that pointer.
+/// One host-visible vertex buffer per call, retired by the same tag+3 rule as
+/// the ring: the draw that reads it is recorded this frame, and a dynamic
+/// buffer's slices are rewritten next frame anyway.
+VkBuffer CDriverVulkan::createDedicatedVertexUpload(uint32 size, void *&mapped)
+{
+	mapped = NULL;
+	VkDeviceMemory memory = VK_NULL_HANDLE;
+	VkBuffer buffer = createStagingBuffer(size, &memory, &mapped, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+	if (buffer != VK_NULL_HANDLE)
+		deferDestroyBuffer(buffer, memory);
+	// A created but unmapped buffer is useless here (lock() must hand out
+	// writable memory); it is already queued for destruction above.
+	return mapped != NULL ? buffer : VK_NULL_HANDLE;
 }
 
 // ---------------------------------------------------------------------------
