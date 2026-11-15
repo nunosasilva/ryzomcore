@@ -1357,16 +1357,22 @@ bool CDriverVulkan::activeIndexBuffer(CIndexBuffer &ib)
 
 uint32 CDriverVulkan::allocVertexRing(uint32 size)
 {
-	const uint32 required = _VertexRingOffset + size;
+	const uint64 required = (uint64)_VertexRingOffset + size;
 	const bool grow = (_VertexRing == VK_NULL_HANDLE ||
-		required > _VertexRingFrameBase + _VertexRingHalf);
+		required > (uint64)_VertexRingFrameBase + _VertexRingHalf);
 	if (grow)
 	{
 		// Each frame has its own half: a previous frame may still be reading
-		// the vertices it uploaded at the same offsets.
-		uint32 newSize = _VertexRingSize ? _VertexRingSize : 4 * 1024 * 1024u;
-		while (newSize < size * 2 || newSize <= _VertexRingSize)
-			newSize *= 2;
+		// the vertices it uploaded at the same offsets. Never let the ring
+		// grow without bound: a 2 GiB ring used to overflow the old doubling
+		// loop and hang the client (see nextRingSize()).
+		const uint32 newSize = nextRingSize(_VertexRingSize, 4u * 1024u * 1024u, size, NL_VK_VERTEX_RING_MAX);
+		if (newSize == 0)
+		{
+			nlwarning("Vulkan: vertex ring would exceed %u MiB for a %u-byte upload (ring %u MiB)",
+				NL_VK_VERTEX_RING_MAX / (1024u * 1024u), size, _VertexRingSize / (1024u * 1024u));
+			return 0xFFFFFFFFu;
+		}
 		VkBufferCreateInfo bci;
 		memset(&bci, 0, sizeof(bci));
 		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -1423,14 +1429,19 @@ uint32 CDriverVulkan::allocVertexRing(uint32 size)
 VkBuffer CDriverVulkan::getIndexUploadBuffer(const void *data, uint32 size, uint32 stride)
 {
 	(void)stride;
-	const uint32 required = _IndexRingOffset + size;
-	if (_IndexRing == VK_NULL_HANDLE || required > _IndexRingFrameBase + _IndexRingHalf)
+	const uint64 required = (uint64)_IndexRingOffset + size;
+	if (_IndexRing == VK_NULL_HANDLE || required > (uint64)_IndexRingFrameBase + _IndexRingHalf)
 	{
 		// Each frame has its own half: the previous frame may still be reading
-		// the indices it copied at the same offsets.
-		uint32 newSize = _IndexRingSize ? _IndexRingSize : 2 * 1024 * 1024u;
-		while (newSize < size * 2 || newSize <= _IndexRingSize)
-			newSize *= 2;
+		// the indices it copied at the same offsets. Cap it like the vertex
+		// ring (see nextRingSize()).
+		const uint32 newSize = nextRingSize(_IndexRingSize, 2u * 1024u * 1024u, size, NL_VK_INDEX_RING_MAX);
+		if (newSize == 0)
+		{
+			nlwarning("Vulkan: index ring would exceed %u MiB for a %u-byte upload (ring %u MiB)",
+				NL_VK_INDEX_RING_MAX / (1024u * 1024u), size, _IndexRingSize / (1024u * 1024u));
+			return VK_NULL_HANDLE;
+		}
 		VkBufferCreateInfo bci;
 		memset(&bci, 0, sizeof(bci));
 		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
