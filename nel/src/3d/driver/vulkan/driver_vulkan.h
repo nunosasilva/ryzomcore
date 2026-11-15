@@ -627,7 +627,16 @@ public:
 	virtual bool needVertexProgramClipVariant() const override { return false; }
 	virtual bool supportLargeUBOArrays() const override { return true; }
 	virtual bool isTripleBufferPipelined() const override { return false; }
-	virtual uint64 getSwapBufferInFlight() const override { return 0; }
+	/// Last frame that can still be executing, as the engine's deferred-free
+	/// queues expect it (landscape and vegetable vertex buffers free a vertex
+	/// when its stamp is older than this). 0 keeps those queues from ever
+	/// freeing: safe, but the allocators grow instead of reusing vertices.
+	/// NLVK_VB_INFLIGHT=<n> enables it with an n-frame margin for A/B runs.
+	virtual uint64 getSwapBufferInFlight() const override
+	{
+		return (_FrameInFlightMargin != 0 && _SwapBufferCounter > _FrameInFlightMargin)
+			? _SwapBufferCounter - _FrameInFlightMargin : 0;
+	}
 	virtual bool isFrameReady() override { return true; }
 	virtual void setPolygonMode(TPolygonMode mode) override;
 	virtual bool clearDepthStencil(float zval, sint stencilval) override;
@@ -844,6 +853,8 @@ private:
 	uint32					_ImageIndex;
 	bool					_FrameOpen;
 	uint64					_SwapBufferCounter;
+	/// Frames of margin for getSwapBufferInFlight(); 0 = disabled (see there).
+	uint64					_FrameInFlightMargin;
 
 	// Pending clear values for the current frame.
 	NLMISC::CRGBA			_ClearColor;
