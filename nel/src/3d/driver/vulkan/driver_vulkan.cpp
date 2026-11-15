@@ -319,6 +319,13 @@ CDriverVulkan::CDriverVulkan()
 	_StatsPipelineCreateNs = 0;
 	_StatsPipelineCreates = 0;
 	_StatsTextureCreateNs = 0;
+	_StatsTexImageCreateNs = 0;
+	_StatsTexImageMiscNs = 0;
+	_StatsTexImageAllocNs = 0;
+	_StatsTexImageViewNs = 0;
+	_StatsTexClearNs = 0;
+	_StatsTexClearCount = 0;
+	_StatsTexClearBytes = 0;
 	_StatsTextureCreates = 0;
 	_StatsLastSwapNs = 0;
 	_StatsPipelineBinds = 0;
@@ -2556,6 +2563,12 @@ bool CDriverVulkan::swapBuffers()
 			nlinfo("Vulkan stats: samplers: %llu cache lookups/frame, %llu created since startup, %u cached now",
 				(unsigned long long)(_StatsSamplerLookups / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				(unsigned long long)_StatsSamplerCreates, (uint)_Samplers.size());
+			nlinfo("Vulkan stats: image create split: vkCreateImage %.0f ms, requirements %.0f ms, vkAllocateMemory %.0f ms, view %.0f ms",
+				(double)_StatsTexImageCreateNs / 1e6, (double)_StatsTexImageMiscNs / 1e6,
+				(double)_StatsTexImageAllocNs / 1e6, (double)_StatsTexImageViewNs / 1e6);
+			nlinfo("Vulkan stats: zero clear: %.1f ms, %llu images, %.1f MiB (in the texture create cost below)",
+				(double)_StatsTexClearNs / 1e6, (unsigned long long)_StatsTexClearCount,
+				(double)_StatsTexClearBytes / (1024.0 * 1024.0));
 			nlinfo("Vulkan stats: synchronous load: pipeline create %.1f ms (%llu), texture create %.1f ms (%llu)",
 				(double)_StatsPipelineCreateNs / 1e6, (unsigned long long)_StatsPipelineCreates,
 				(double)_StatsTextureCreateNs / 1e6, (unsigned long long)_StatsTextureCreates);
@@ -2565,6 +2578,13 @@ bool CDriverVulkan::swapBuffers()
 			_StatsPipelineCreateNs = 0;
 			_StatsPipelineCreates = 0;
 			_StatsTextureCreateNs = 0;
+			_StatsTexImageCreateNs = 0;
+			_StatsTexImageMiscNs = 0;
+			_StatsTexImageAllocNs = 0;
+			_StatsTexImageViewNs = 0;
+			_StatsTexClearNs = 0;
+			_StatsTexClearCount = 0;
+			_StatsTexClearBytes = 0;
 			_StatsTextureCreates = 0;
 			_StatsWindowStartNs = now;
 			_StatsWindowFrames = 0;
