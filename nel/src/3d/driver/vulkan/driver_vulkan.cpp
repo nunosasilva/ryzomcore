@@ -313,6 +313,10 @@ CDriverVulkan::CDriverVulkan()
 	_FrameCpuStartNs = 0;
 	_StatsTextureCopies = 0;
 	_StatsUploadBytes = 0;
+	_StatsVBSnapshots = 0;
+	_StatsVBSnapshotBytes = 0;
+	_StatsStaleStreamDraws = 0;
+	_StatsRingRebases = 0;
 	_StatsPipelineCreateNs = 0;
 	_StatsPipelineCreates = 0;
 	_StatsTextureCreateNs = 0;
@@ -674,12 +678,38 @@ bool CDriverVulkan::createLogicalDevice()
 // Pipeline cache
 // ---------------------------------------------------------------------------
 
-/// NLVK_PIPELINE_CACHE=0 keeps the in-memory cache but stops reading/writing
-/// the on-disk file (useful when comparing first-run compile costs).
+/// On-disk pipeline persistence is opt-in (NLVK_PIPELINE_CACHE=1).
+///
+/// It saves very little: measured 138 pipelines created in 12.3 ms on this
+/// driver, i.e. a few milliseconds per session. What it costs is a failure mode
+/// nobody can attribute: a blob that the running driver accepts but interprets
+/// differently turns into wrong vertex input or wrong shaders, and the mesh is
+/// drawn garbled for the rest of the session ("checkered" totems, plank-shaped
+/// triangles) while every other resource is provably fine. Until the blob is
+/// validated end to end, off by default.
+/// NLVK_PIPELINE_CACHE=0 keeps the old explicit "no disk" spelling.
 static bool pipelineCacheOnDisk()
 {
 	const char *env = getenv("NLVK_PIPELINE_CACHE");
-	return env == NULL || atoi(env) != 0;
+	return env != NULL && atoi(env) != 0;
+}
+
+// A cache file we write carries our own header, so a truncated file, a blob
+// from another build or another driver is discarded instead of used: magic,
+// format version, payload size and a checksum of the payload.
+static const uint8 s_PipelineCacheMagic[8] = { 'N', 'L', 'V', 'K', 'P', 'C', '0', '1' };
+static const uint32 s_PipelineCacheFormat = 1;
+
+static uint32 pipelineCacheChecksum(const uint8 *data, size_t size)
+{
+	// FNV-1a: only corruption/foreign-blob detection, not security.
+	uint32 hash = 2166136261u;
+	for (size_t i = 0; i < size; ++i)
+	{
+		hash ^= data[i];
+		hash *= 16777619u;
+	}
+	return hash;
 }
 
 bool CDriverVulkan::createPipelineCache()
@@ -745,6 +775,46 @@ bool CDriverVulkan::createPipelineCache()
 				}
 			}
 			fclose(file);
+
+			// Validate our header before handing the blob to the driver.
+			const size_t headerSize = sizeof(s_PipelineCacheMagic) + 2 * sizeof(uint32);
+			if (initialData.size() < headerSize)
+			{
+				nlwarning("Vulkan: pipeline cache '%s' is too small to be one of ours; ignoring it",
+					_PipelineCachePath.c_str());
+				initialData.clear();
+			}
+			else
+			{
+				uint32 format = 0, payloadSize = 0, sum = 0;
+				memcpy(&format, &initialData[sizeof(s_PipelineCacheMagic)], sizeof(uint32));
+				memcpy(&payloadSize, &initialData[sizeof(s_PipelineCacheMagic) + sizeof(uint32)], sizeof(uint32));
+				if (memcmp(&initialData[0], s_PipelineCacheMagic, sizeof(s_PipelineCacheMagic)) != 0 ||
+					format != s_PipelineCacheFormat ||
+					payloadSize != (uint32)(initialData.size() - headerSize))
+				{
+					nlwarning("Vulkan: pipeline cache '%s' is not a valid %s v%u blob; ignoring it",
+						_PipelineCachePath.c_str(), "NLVKPC", (uint)s_PipelineCacheFormat);
+					initialData.clear();
+				}
+				else
+				{
+					sum = pipelineCacheChecksum(&initialData[headerSize], initialData.size() - headerSize);
+					uint32 stored = 0;
+					memcpy(&stored, &initialData[sizeof(s_PipelineCacheMagic) + 2 * sizeof(uint32)], sizeof(uint32));
+					if (stored != sum)
+					{
+						nlwarning("Vulkan: pipeline cache '%s' checksum mismatch (stored 0x%08x, computed 0x%08x); ignoring it",
+							_PipelineCachePath.c_str(), stored, sum);
+						initialData.clear();
+					}
+					else
+					{
+						// Strip the header: the driver gets the raw blob.
+						initialData.erase(initialData.begin(), initialData.begin() + headerSize);
+					}
+				}
+			}
 		}
 	}
 
@@ -792,7 +862,15 @@ void CDriverVulkan::savePipelineCache()
 				FILE *file = nlfopen(tmpPath, "wb");
 				if (file != NULL)
 				{
-					const bool ok = fwrite(&data[0], 1, size, file) == size;
+					// Our header (see createPipelineCache): magic, format,
+					// payload size, payload checksum, then the driver blob.
+					const uint32 payloadSize = (uint32)size;
+					const uint32 sum = pipelineCacheChecksum(&data[0], size);
+					bool ok = fwrite(s_PipelineCacheMagic, 1, sizeof(s_PipelineCacheMagic), file) == sizeof(s_PipelineCacheMagic);
+					ok = ok && fwrite(&s_PipelineCacheFormat, 1, sizeof(uint32), file) == sizeof(uint32);
+					ok = ok && fwrite(&payloadSize, 1, sizeof(uint32), file) == sizeof(uint32);
+					ok = ok && fwrite(&sum, 1, sizeof(uint32), file) == sizeof(uint32);
+					ok = ok && fwrite(&data[0], 1, size, file) == size;
 					fclose(file);
 					// Windows' MoveFile does not replace an existing file.
 					CFile::deleteFile(_PipelineCachePath);
@@ -2099,8 +2177,18 @@ bool CDriverVulkan::beginFrame()
 	if (_StagingRingOffset < _StagingRingFrameBase ||
 		_StagingRingOffset >= _StagingRingFrameBase + _StagingRingHalf)
 		_StagingRingOffset = _StagingRingFrameBase;
+	// The vertex ring can also receive data between two frames: a vertex
+	// buffer the engine locks and writes before the first draw of this frame
+	// (a stream buffer update, or a CpuReadWrite geomorph) already allocated
+	// its slice. Those vertices belong to this frame, so keep the offset; only
+	// move it when it points outside this frame's half (which would overwrite
+	// what the frame still being executed is reading). Same rule as the staging
+	// ring above, and the reason a lock between frames must allocate in this
+	// frame's half (see allocVertexRing()).
 	_VertexRingFrameBase = _FrameIndex * _VertexRingHalf;
-	_VertexRingOffset = _VertexRingFrameBase;
+	if (_VertexRingOffset < _VertexRingFrameBase ||
+		_VertexRingOffset >= _VertexRingFrameBase + _VertexRingHalf)
+		_VertexRingOffset = _VertexRingFrameBase;
 	_UniformRingFrameBase = _FrameIndex * _UniformRingHalf;
 	_UniformRingOffset = _UniformRingFrameBase;
 	// Cached user-block offsets point into this frame's half of the ring.
@@ -2417,6 +2505,12 @@ bool CDriverVulkan::swapBuffers()
 				(double)_StatsUploadBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames,
 				(double)_StatsStagingPeak / (1024.0 * 1024.0),
 				_StagingRingSize / 1024);
+			nlinfo("Vulkan stats: vb snapshots %llu/frame, %.2f MiB/frame, ring %u KiB, stale stream draws %llu, ring rebases %llu",
+				(unsigned long long)(_StatsVBSnapshots / _StatsWindowFrames),
+				(double)_StatsVBSnapshotBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames,
+				_VertexRingSize / 1024,
+				(unsigned long long)_StatsStaleStreamDraws,
+				(unsigned long long)_StatsRingRebases);
 			nlinfo("Vulkan stats: per draw: key %.2f us, pipeline %.2f us, bind %.2f us, submit %.2f us",
 				perKey, perPipeline, perBind, perSubmit);
 			nlinfo("Vulkan stats: occlusion queries: %llu issued/frame, %llu harvested/frame, %llu objects",
@@ -2478,6 +2572,10 @@ bool CDriverVulkan::swapBuffers()
 			_StatsStagingPeak = 0;
 			_StatsTextureCopies = 0;
 			_StatsUploadBytes = 0;
+			_StatsVBSnapshots = 0;
+			_StatsVBSnapshotBytes = 0;
+			_StatsStaleStreamDraws = 0;
+			_StatsRingRebases = 0;
 			_StatsPipelineBinds = 0;
 			_StatsDescriptorSets = 0;
 			_StatsTextureBinds = 0;
