@@ -383,8 +383,18 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 	ici.usage = usage;
 	ici.samples = VK_SAMPLE_COUNT_1_BIT;
 	ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	// NLVK_STATS: split the per-image cost. Loading creates thousands of
+	// images and each one used to cost ~1.6 ms, which is the driver's whole
+	// contribution to a zone load; this says which call owns it.
+	uint64 stepStart = _StatsEnabled ? uploadNowNs() : 0;
 	if (vkCreateImage(_Device, &ici, NULL, &out.Image) != VK_SUCCESS)
 		return false;
+	if (_StatsEnabled)
+	{
+		const uint64 n = uploadNowNs();
+		_StatsTexImageCreateNs += n - stepStart;
+		stepStart = n;
+	}
 
 	VkMemoryRequirements req;
 	vkGetImageMemoryRequirements(_Device, out.Image, &req);
@@ -394,8 +404,20 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	mai.allocationSize = req.size;
 	mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	if (_StatsEnabled)
+	{
+		const uint64 n = uploadNowNs();
+		_StatsTexImageMiscNs += n - stepStart;
+		stepStart = n;
+	}
 	if (vkAllocateMemory(_Device, &mai, NULL, &out.Memory) != VK_SUCCESS)
 		return false;
+	if (_StatsEnabled)
+	{
+		const uint64 n = uploadNowNs();
+		_StatsTexImageAllocNs += n - stepStart;
+		stepStart = n;
+	}
 	if (vkBindImageMemory(_Device, out.Image, out.Memory, 0) != VK_SUCCESS)
 		return false;
 
@@ -410,6 +432,8 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 	vci.subresourceRange.layerCount = layers;
 	if (vkCreateImageView(_Device, &vci, NULL, &out.View) != VK_SUCCESS)
 		return false;
+	if (_StatsEnabled)
+		_StatsTexImageViewNs += uploadNowNs() - stepStart;
 
 	// A texture starts with the engine's default state (repeat wrap, linear
 	// filtering, linear mips); getTextureVulkan() replaces this handle as soon
@@ -1023,6 +1047,12 @@ static bool textureLevelLayout(VkFormat format, uint32 width, uint32 height, VkE
 /// green/magenta garbage on the meshes that are drawn meanwhile.
 bool CDriverVulkan::clearTextureImage(CTextureVulkan &out, uint32 mipCount)
 {
+	// NLVK_NO_TEX_CLEAR=1 A/B switch: fall back to the old layout-only
+	// transition, i.e. the image keeps undefined contents until its streamed
+	// regions arrive. Only for measuring this path; the pixels are garbage.
+	if (getenv("NLVK_NO_TEX_CLEAR"))
+		return false;
+
 	if (out.Image == VK_NULL_HANDLE || mipCount == 0)
 		return false;
 
@@ -1030,6 +1060,10 @@ bool CDriverVulkan::clearTextureImage(CTextureVulkan &out, uint32 mipCount)
 	VkDeviceSize levelBytes = 0;
 	if (!textureLevelLayout(out.Format, out.Width, out.Height, extent, levelBytes) || levelBytes == 0)
 		return false;
+
+	CTextureCreateTimer statsTimer(_StatsEnabled, &_StatsTexClearNs, &_StatsTexClearCount);
+	if (_StatsEnabled)
+		_StatsTexClearBytes += levelBytes;
 
 	STextureStaging staging;
 	if (!allocTextureStaging(levelBytes, staging))
