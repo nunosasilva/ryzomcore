@@ -1982,12 +1982,19 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 	if (!createdInfo && tex.supportSharing() && !bMustRecreateSharedTexture)
 	{
 		// The share-name map already had an entry: another ITexture instance
-		// owns this image. Only skip the upload when that image really holds
-		// its pixels. CShapeBank creates the image first (setupTextureEx with
-		// bUpload=false, contents undefined) and streams the mips in over the
-		// next frames; a mesh that reused the same .dds in that window used to
-		// render the undefined image, which is the green/magenta garbage.
-		if (vk.Uploaded)
+		// owns this image. CShapeBank creates the image first (setupTextureEx
+		// with bUpload=false) and streams the mips in over the next frames.
+		// Skip the upload here: the creator streams the chain and this instance
+		// links immediately, showing the zero-cleared image until the mips
+		// arrive. That is the pre-4dd79583c behaviour and it matters: making
+		// every share hit in the created-but-unstreamed window upload the same
+		// mips again multiplied the shape-bank byte budget and delayed object
+		// linking (the recent pop-in).
+		// NLVK_SHARED_STREAM_DUP=1 restores the duplicate streaming for A/B;
+		// NLVK_NO_SHARED_STREAM=1 is kept as the explicit "skip" switch.
+		static const bool duplicateStream = getenv("NLVK_SHARED_STREAM_DUP") != NULL;
+		static const bool noSharedStream = getenv("NLVK_NO_SHARED_STREAM") != NULL;
+		if (vk.Uploaded || noSharedStream || !duplicateStream)
 		{
 			tex.clearTouched();
 			bAllUploaded = true;
