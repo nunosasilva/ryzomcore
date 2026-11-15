@@ -1034,6 +1034,8 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		writes[writeCount].pImageInfo = &imageInfos[i];
 		++writeCount;
 	}
+	if (_StatsEnabled)
+		_StatsMegaDescWrites += writeCount;
 	vkUpdateDescriptorSets(_Device, writeCount, writes, 0, NULL);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _MegaPipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 

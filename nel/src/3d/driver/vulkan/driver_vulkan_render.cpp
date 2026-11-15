@@ -1340,6 +1340,7 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 	static const bool snapshotEnabled = getenv("NLVK_NO_VB_SNAPSHOT") == NULL;
 	if (_CopyOnWrite && _Size && driver && snapshotEnabled && _Mapped[_Slot])
 	{
+		driver->countVBCoWLock();
 		const uint64 now = driver->getSwapBufferCounter();
 		if (_CoWFrame != now)
 			resetCoW();
@@ -1362,17 +1363,24 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 		const uint32 copyBytes = copyLength();
 		if (inUse && needCopy && copyBytes != 0)
 		{
+			const uint64 statsStart = driver->statsEnabled() ? nowNs() : 0;
 			const uint32 ringOffset = driver->allocVertexRing(copyBytes);
 			ring = driver->vertexRingMapped();
+			const uint64 statsAlloc = statsStart ? nowNs() : 0;
 			if (ringOffset != 0xFFFFFFFFu && ring)
 			{
 				// Source: the existing slice when this frame already wrote into
 				// it (the accumulation F1 is about), the persistent copy
-				// otherwise.
+				// otherwise. The persistent copy is plain mapped memory: on
+				// RADV the memory type findMemoryType() picks for it is
+				// uncached, so reading it back costs ~0.4 ms per 128 KiB,
+				// while reading a ring slice is the same kind of memory.
+				const bool fromPersistent = !haveSlice;
 				const uint8 *src = haveSlice ? (const uint8 *)ring + _CoWOffset
 					: (const uint8 *)_Mapped[_Slot];
 				memcpy((uint8 *)ring + ringOffset, src, copyBytes);
-				driver->countVBSnapshot(copyBytes);
+				if (statsStart)
+					driver->countVBSnapshot(copyBytes, fromPersistent, statsAlloc - statsStart, nowNs() - statsStart);
 				_CoWBuffer = driver->vertexRingBuffer();	// the ring may have grown
 				_CoWOffset = ringOffset;
 				_CoWFrame = now;
@@ -2350,6 +2358,21 @@ void CDriverVulkan::bindPipeline(VkCommandBuffer cmd, VkPipeline pipeline)
 		++_StatsPipelineBinds;
 }
 
+/// vkCmdBindVertexBuffers() for stage 0. Counted so the stats show how much of
+/// the per-draw churn is a repeated bind of the same buffer and offset.
+void CDriverVulkan::bindVertexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset)
+{
+	if (_StatsEnabled)
+	{
+		++_StatsVertexBinds;
+		if (buffer == _LastVertexBuffer && offset == _LastVertexOffset)
+			++_StatsVertexBindRepeats;
+	}
+	vkCmdBindVertexBuffers(cmd, 0, 1, &buffer, &offset);
+	_LastVertexBuffer = buffer;
+	_LastVertexOffset = offset;
+}
+
 bool CDriverVulkan::beginVertexDraw(CVBDrvInfosVulkan &info)
 {
 	const uint64 now = getSwapBufferCounter();
@@ -2421,8 +2444,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	}
 
 	VkDeviceSize offset = info->currentOffset();
-	VkBuffer vb = info->currentBuffer();
-	vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
+	bindVertexBuffer(cmd, info->currentBuffer(), offset);
 	vkCmdDraw(cmd, count, 1, firstVertex, 0);
 	info->_Drawn = true;
 	info->_DrawFrame = getSwapBufferCounter();
@@ -2509,8 +2531,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	const uint64 statsBindEnd = _StatsEnabled ? nowNs() : 0;
 
 	VkDeviceSize offset = info->currentOffset();
-	VkBuffer vb = info->currentBuffer();
-	vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
+	bindVertexBuffer(cmd, info->currentBuffer(), offset);
 	vkCmdBindIndexBuffer(cmd, indexBuffer, _IndexRingDrawOffset,
 		indexStride == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
 	vkCmdDrawIndexed(cmd, count, 1, 0, 0, 0);
@@ -2736,8 +2757,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 				}
 			}
 			VkDeviceSize offset = info->currentOffset();
-			VkBuffer vb = info->currentBuffer();
-			vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
+			bindVertexBuffer(cmd, info->currentBuffer(), offset);
 			vkCmdBindIndexBuffer(cmd, indexBuffer, _IndexRingDrawOffset, VK_INDEX_TYPE_UINT16);
 			info->_Drawn = true;
 			info->_DrawFrame = getSwapBufferCounter();
