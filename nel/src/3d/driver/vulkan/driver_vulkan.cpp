@@ -324,6 +324,9 @@ CDriverVulkan::CDriverVulkan()
 	_StatsUploadBytes = 0;
 	_StatsVBSnapshots = 0;
 	_StatsVBSnapshotBytes = 0;
+	_StatsVBSnapshotFails = 0;
+	_StatsPartialFlushes = 0;
+	_StatsPartialBytes = 0;
 	_StatsStaleStreamDraws = 0;
 	_StatsPipelineCreateNs = 0;
 	_StatsPipelineCreates = 0;
@@ -2535,11 +2538,15 @@ bool CDriverVulkan::swapBuffers()
 				(double)_StatsUploadBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames,
 				(double)_StatsStagingPeak / (1024.0 * 1024.0),
 				_StagingRingSize / 1024);
-			nlinfo("Vulkan stats: vb snapshots %llu/frame, %.2f MiB/frame, ring %u KiB, stale stream draws %llu",
+			nlinfo("Vulkan stats: vb snapshots %llu/frame, %.2f MiB/frame, ring %u KiB, stale stream draws %llu, snapshot fails %llu",
 				(unsigned long long)(_StatsVBSnapshots / _StatsWindowFrames),
 				(double)_StatsVBSnapshotBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames,
 				_VertexRingSize / 1024,
-				(unsigned long long)_StatsStaleStreamDraws);
+				(unsigned long long)_StatsStaleStreamDraws,
+				(unsigned long long)_StatsVBSnapshotFails);
+			nlinfo("Vulkan stats: partial write uploads %llu/frame, %.2f MiB/frame",
+				(unsigned long long)(_StatsPartialFlushes / _StatsWindowFrames),
+				(double)_StatsPartialBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames);
 			nlinfo("Vulkan stats: per draw: key %.2f us, pipeline %.2f us, bind %.2f us, submit %.2f us",
 				perKey, perPipeline, perBind, perSubmit);
 			nlinfo("Vulkan stats: occlusion queries: %llu issued/frame, %llu harvested/frame, %llu objects",
@@ -2616,6 +2623,9 @@ bool CDriverVulkan::swapBuffers()
 			_StatsUploadBytes = 0;
 			_StatsVBSnapshots = 0;
 			_StatsVBSnapshotBytes = 0;
+			_StatsVBSnapshotFails = 0;
+			_StatsPartialFlushes = 0;
+			_StatsPartialBytes = 0;
 			_StatsStaleStreamDraws = 0;
 			_StatsPipelineBinds = 0;
 			_StatsDescriptorSets = 0;
