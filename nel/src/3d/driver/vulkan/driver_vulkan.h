@@ -154,6 +154,21 @@ public:
 	/// True once a draw used the current slot: the next full rewrite must go
 	/// to another copy, or the recorded draw would read the new vertices.
 	bool		_Drawn;
+	/// CpuReadWrite: the engine writes vertices into the buffer between draws
+	/// of the same frame (MRM geomorph) and expects the driver to keep the
+	/// draws it already recorded on their own copy, like GL's shadow buffer +
+	/// orphaning. Such a write therefore snapshots the buffer into the vertex
+	/// ring first (see lock()).
+	bool		_CopyOnWrite;
+	/// Swap counter of the last draw that used this buffer, ~0 if never drawn.
+	uint64		_DrawFrame;
+	/// Swap counter of the frame _DrawBuffer was set in. A ring copy only
+	/// lives for one frame, so a draw that finds an older one (no lock this
+	/// frame: an instance whose LOD needs no geomorph) falls back to the
+	/// persistent buffer.
+	uint64		_DrawBufferFrame;
+	/// Point the draw back at the persistent buffer.
+	void		resetDrawBuffer() { _DrawBuffer = _VertexBuffer[0]; _DrawOffset = 0; _DrawBufferFrame = ~0ull; }
 	VkBuffer	_DrawBuffer;
 	uint32		_DrawOffset;
 	uint32		_Size;

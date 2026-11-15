@@ -1099,6 +1099,9 @@ CVBDrvInfosVulkan::CVBDrvInfosVulkan(CDriverVulkan *drv, ItVBDrvInfoPtrList it, 
 	, _Slot(0)
 	, _LockFrame(~0ull)
 	, _Drawn(false)
+	, _CopyOnWrite(false)
+	, _DrawFrame(~0ull)
+	, _DrawBufferFrame(~0ull)
 	, _DrawBuffer(VK_NULL_HANDLE)
 	, _DrawOffset(0)
 	, _Size(0)
@@ -1126,6 +1129,14 @@ CVBDrvInfosVulkan::CVBDrvInfosVulkan(CDriverVulkan *drv, ItVBDrvInfoPtrList it, 
 	case CVertexBuffer::FullRewrite:
 		_Dynamic = false;
 		_SlotCount = MaxSlots;
+		break;
+	case CVertexBuffer::CpuReadWrite:
+		// The engine rewrites this buffer when it wants (MRM geomorph runs
+		// before every instance's draws), and expects the driver to keep the
+		// already recorded draws on the vertices they were recorded with.
+		_Dynamic = false;
+		_SlotCount = 1;
+		_CopyOnWrite = true;
 		break;
 	default:
 		_Dynamic = false;
@@ -1231,7 +1242,38 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 			return NULL;
 		_DrawBuffer = driver->vertexRingBuffer();
 		_DrawOffset = offset;
+		_DrawBufferFrame = driver->getSwapBufferCounter();
 		return (uint8 *)driver->vertexRingMapped() + offset + begin;
+	}
+
+	// CpuReadWrite buffers are rewritten in place by the engine (MRM geomorph
+	// writes the interpolated wedges of the LOD it is about to draw). This
+	// buffer is the GPU's source, so an in-place write would also change the
+	// vertices of draws already recorded this frame - including the draws of
+	// another instance of the same shape at another LOD, which is how a mesh
+	// turns into spikes. Take a snapshot in the per-frame vertex ring first and
+	// let the write land there; the draw binds that copy. This is the same
+	// contract GL3 implements with its shadow buffer and orphaned uploads.
+	if (!readOnly && _CopyOnWrite && _Size && driver)
+	{
+		const uint64 now = driver->getSwapBufferCounter();
+		// A draw of this frame, or of a frame that can still be executing,
+		// references the current contents.
+		const bool inUse = _Drawn || (_DrawFrame != ~0ull && _DrawFrame + 3 > now);
+		if (inUse && _Mapped[_Slot])
+		{
+			const uint32 ringOffset = driver->allocVertexRing(_Size);
+			void *ring = driver->vertexRingMapped();
+			if (ringOffset != 0xFFFFFFFFu && ring)
+			{
+				memcpy((uint8 *)ring + ringOffset, _Mapped[_Slot], _Size);
+				_DrawBuffer = driver->vertexRingBuffer();
+				_DrawOffset = ringOffset;
+				_DrawBufferFrame = now;
+				_Drawn = false;
+				return (uint8 *)ring + ringOffset + begin;
+			}
+		}
 	}
 
 	// FullRewrite buffers are rewritten now and then. Alternate between the
@@ -1250,6 +1292,7 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 	_Drawn = false;
 	_DrawBuffer = _VertexBuffer[_Slot];
 	_DrawOffset = 0;
+	_DrawBufferFrame = driver ? driver->getSwapBufferCounter() : ~0ull;
 	return (uint8 *)_Mapped[_Slot] + begin;
 }
 
@@ -2040,6 +2083,11 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
 	if (!info || !info->currentBuffer())
 		return false;
+	// A copy-on-write buffer may hold a ring copy from an earlier frame; the
+	// ring is reused every frame, so fall back to the persistent buffer (the
+	// engine did not rewrite this buffer in this frame).
+	if (info->_CopyOnWrite && info->_DrawBufferFrame != getSwapBufferCounter())
+		info->resetDrawBuffer();
 
 	CPipelineKey key;
 	key.VertexFormat = makeVertexLayoutHash(*_CurrentVB);
@@ -2088,6 +2136,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 	vkCmdDraw(cmd, count, 1, firstVertex, 0);
 	info->_Drawn = true;
+	info->_DrawFrame = getSwapBufferCounter();
 	++_ArrayDrawCount;
 	return true;
 }
@@ -2104,6 +2153,11 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
 	if (!info || !info->currentBuffer())
 		return false;
+	// A copy-on-write buffer may hold a ring copy from an earlier frame; the
+	// ring is reused every frame, so fall back to the persistent buffer (the
+	// engine did not rewrite this buffer in this frame).
+	if (info->_CopyOnWrite && info->_DrawBufferFrame != getSwapBufferCounter())
+		info->resetDrawBuffer();
 
 	uint32 bytes = count * indexStride;
 	if (bytes == 0)
@@ -2176,6 +2230,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 		indexStride == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
 	vkCmdDrawIndexed(cmd, count, 1, 0, 0, 0);
 	info->_Drawn = true;
+	info->_DrawFrame = getSwapBufferCounter();
 	++_IndexedDrawCount;
 	if (_StatsEnabled)
 	{
@@ -2332,6 +2387,11 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
 	if (!info || !info->currentBuffer())
 		return false;
+	// A copy-on-write buffer may hold a ring copy from an earlier frame; the
+	// ring is reused every frame, so fall back to the persistent buffer (the
+	// engine did not rewrite this buffer in this frame).
+	if (info->_CopyOnWrite && info->_DrawBufferFrame != getSwapBufferCounter())
+		info->resetDrawBuffer();
 
 	sint passes = beginMaterialMultiPass();
 	bool ok = true;
@@ -2399,6 +2459,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 			vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 			vkCmdBindIndexBuffer(cmd, indexBuffer, _IndexRingDrawOffset, VK_INDEX_TYPE_UINT16);
 			info->_Drawn = true;
+			info->_DrawFrame = getSwapBufferCounter();
 
 			// The quad index pattern addresses vertices relative to the batch start.
 			sint32 firstVertex = (sint32)(startVertex + base);
