@@ -690,12 +690,15 @@ bool CDriverVulkan::createPipelineCache()
 	// set NLVK_PIPELINE_CACHE_PATH to a per-run file; the default file name is
 	// tagged with the build hash so a new binary never reuses an older build's
 	// pipelines. The cache is per build/GPU, not per account or character.
+	const char *cacheTagEnv = getenv("NLVK_PIPELINE_CACHE_TAG");
 #ifdef NL_VK_PIPELINE_CACHE_TAG
-	const std::string cacheFileName =
-		std::string("vulkan_") + NL_VK_PIPELINE_CACHE_TAG + ".cache";
+	const std::string cacheTag = (cacheTagEnv != NULL && cacheTagEnv[0] != '\0')
+		? cacheTagEnv : NL_VK_PIPELINE_CACHE_TAG;
 #else
-	const std::string cacheFileName = "vulkan_pipeline_cache.bin";
+	const std::string cacheTag = (cacheTagEnv != NULL && cacheTagEnv[0] != '\0')
+		? cacheTagEnv : "dev";
 #endif
+	const std::string cacheFileName = "vulkan_" + cacheTag + ".cache";
 
 	const char *cachePath = getenv("NLVK_PIPELINE_CACHE_PATH");
 	if (cachePath != NULL && cachePath[0] != '\0')
