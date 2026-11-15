@@ -1079,9 +1079,8 @@ private:
 	/// has that pipeline / those blend constants.
 	void					bindPipeline(VkCommandBuffer cmd, VkPipeline pipeline);
 	void					setBlendConstants(VkCommandBuffer cmd);
-	/// Bind stage 0's vertex buffer, counting how many binds repeat the one the
-	/// previous draw made (they are cheap, but at 1.7 k draws/frame they are
-	/// most of the remaining per-draw state churn).
+	/// Bind stage 0's vertex buffer, skipping the call when the command buffer
+	/// already has it bound (the stats count how many binds that saves).
 	void					bindVertexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset);
 	/// Forget the cached dynamic state: at every pass boundary and frame start,
 	/// because Vulkan leaves a command buffer's state undefined there.

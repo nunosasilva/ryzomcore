@@ -2379,19 +2379,22 @@ void CDriverVulkan::bindPipeline(VkCommandBuffer cmd, VkPipeline pipeline)
 		++_StatsPipelineBinds;
 }
 
-/// vkCmdBindVertexBuffers() for stage 0. Counted so the stats show how much of
-/// the per-draw churn is a repeated bind of the same buffer and offset.
+/// vkCmdBindVertexBuffers() for stage 0, skipped when the command buffer
+/// already binds that buffer at that offset. A run of draws of the same buffer
+/// (a CoW buffer's slice, a landscape tile's ring slice) re-binds the same
+/// pair; at 1.7 k draws/frame that is worth more than the call it saves.
 void CDriverVulkan::bindVertexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset)
 {
 	if (_StatsEnabled)
-	{
 		++_StatsVertexBinds;
-		if (buffer == _LastVertexBuffer && offset == _LastVertexOffset)
-			++_StatsVertexBindRepeats;
+	if (buffer != _LastVertexBuffer || offset != _LastVertexOffset)
+	{
+		vkCmdBindVertexBuffers(cmd, 0, 1, &buffer, &offset);
+		_LastVertexBuffer = buffer;
+		_LastVertexOffset = offset;
 	}
-	vkCmdBindVertexBuffers(cmd, 0, 1, &buffer, &offset);
-	_LastVertexBuffer = buffer;
-	_LastVertexOffset = offset;
+	else if (_StatsEnabled)
+		++_StatsVertexBindRepeats;
 }
 
 bool CDriverVulkan::beginVertexDraw(CVBDrvInfosVulkan &info)
