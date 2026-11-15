@@ -160,6 +160,15 @@ uint			CLandscapeVBAllocator::allocateVertex()
 		else
 			newResize= NL3D_LANDSCAPE_VERTEX_ALLOCATE_SECURITY;
 		_NumVerticesAllocated+= newResize;
+		// DBG-PERF: a growth means the allocator ran out of free vertices, i.e.
+		// the deferred frees are not running (getSwapBufferInFlight()==0). Each
+		// growth reallocates the vertex buffer and refills it, so this counts
+		// the stall the engine pays for it.
+		if (getenv("NL3D_LANDVBDBG"))
+			nlinfo("LANDVBDBG: %s allocator grew to %u vertices (+%u, free list %u, deferred %u)",
+				_Type == Far0 ? "far0" : (_Type == Far1 ? "far1" : "tile"),
+				_NumVerticesAllocated, newResize, (uint)_VertexFreeMemory.size(),
+				(uint)_DeferredFreeVertices.size());
 		// re-allocate VB.
 		#ifdef NL_LANDSCAPE_INDEX16
 			nlassert(_NumVerticesAllocated <= 65535);
