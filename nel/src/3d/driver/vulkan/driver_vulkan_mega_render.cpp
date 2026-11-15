@@ -787,6 +787,29 @@ uint32 CDriverVulkan::allocUniformBlock(const void *data, uint32 size)
 	return offset;
 }
 
+/// Reserve room in this frame's uniform ring half for `bytes` more, spread over
+/// `blocks` allocations, growing the ring once if it does not fit.
+/// allocUniformBlock() grows on demand, but a growth between two of the mega
+/// path's per-draw blocks would put the first in the old buffer and the rest in
+/// the new one: the four blocks are bound as one group with their own offsets,
+/// so they cannot straddle two rings (the draw would read a zero
+/// camera/light table/object/material). Reserving the whole group first makes
+/// that impossible, and grows at most once per group.
+bool CDriverVulkan::reserveUniformBlock(uint32 bytes, uint32 blocks)
+{
+	// allocUniformBlock() aligns every block start, so the span the group can
+	// occupy is `bytes` plus one alignment gap per block.
+	uint32 align = _DeviceProps.limits.minUniformBufferOffsetAlignment;
+	if (align < 16)
+		align = 16;
+	const uint64 span = (uint64)bytes + (uint64)blocks * align;
+	const uint64 required = (uint64)_UniformRingOffset + span;
+	if (required <= (uint64)_UniformRingFrameBase + _UniformRingHalf)
+		return true;
+	// The new ring's half is at least twice `required` (see nextRingSize()).
+	return growUniformRing((uint32)span);
+}
+
 bool CDriverVulkan::growUniformRing(uint32 required)
 {
 	// Capped and 64-bit, like the vertex/index rings: a 2 GiB ring used to
@@ -868,6 +891,17 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	// LightMap draws with an engine dynamic light bind a dedicated table that
 	// holds only that light: their vertices must not see the scene lights.
 	const bool lightMapDyn = isLightMapDraw() && _LightMapDynamicLightEnabled;
+	const uint32 lightTableBytes = NL_VK_MEGA_MAX_LIGHT_TABLE * sizeof(CLightTableUBOEntry);
+
+	// The four per-draw blocks are bound as one group with their own offsets, so
+	// they must not straddle a ring growth: reserve the whole group (light
+	// table included) before any of them is allocated. A growth here also
+	// clears _MegaLightTableValid, which is why the light table is staged after
+	// this point - it then lands in the ring the offsets refer to.
+	if (!reserveUniformBlock(lightTableBytes + sizeof(CCameraUBOData) +
+		sizeof(CObjectUBOData) + sizeof(CMaterialUBOData), 5))
+		return false;
+	const VkBuffer ring = _UniformRing;
 	if (lightMapDyn)
 	{
 		if (!_MegaLightMapDynTableValid)
@@ -914,18 +948,39 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		return false;
 	}
 
+	// reserveUniformBlock() made room for all of them, so none of these four
+	// allocations could have grown the ring: they are all in `ring`. Check it
+	// rather than assume it - nlassert() is compiled out (types_nl.h defines
+	// NL_NO_ASSERT unconditionally) and a growth here would leave the bindings
+	// pointing at the new ring with offsets from the old one, so the draw would
+	// read a zero camera/light table/object/material.
+	if (_UniformRing != ring)
+	{
+		static bool warned = false;
+		if (!warned)
+		{
+			warned = true;
+			nlwarning("Vulkan: mega uniform ring grew inside the per-draw group; dropping the draw");
+		}
+		return false;
+	}
+
+	// Bindings 0-3 point into `ring`, the buffer the offsets above were
+	// allocated in - not necessarily _UniformRing any more: the water and user
+	// program staging below may grow the ring, and the blocks already written
+	// stay in the old one (which is kept alive until the frame is retired).
 	VkDescriptorBufferInfo bufferInfos[7];
 	memset(bufferInfos, 0, sizeof(bufferInfos));
-	bufferInfos[0].buffer = _UniformRing;
+	bufferInfos[0].buffer = ring;
 	bufferInfos[0].offset = cameraOffset;
 	bufferInfos[0].range = sizeof(cameraData);
-	bufferInfos[1].buffer = _UniformRing;
+	bufferInfos[1].buffer = ring;
 	bufferInfos[1].offset = lightTableOffset;
-	bufferInfos[1].range = NL_VK_MEGA_MAX_LIGHT_TABLE * sizeof(CLightTableUBOEntry);
-	bufferInfos[2].buffer = _UniformRing;
+	bufferInfos[1].range = lightTableBytes;
+	bufferInfos[2].buffer = ring;
 	bufferInfos[2].offset = objectOffset;
 	bufferInfos[2].range = sizeof(objectData);
-	bufferInfos[3].buffer = _UniformRing;
+	bufferInfos[3].buffer = ring;
 	bufferInfos[3].offset = materialOffset;
 	bufferInfos[3].range = sizeof(materialData);
 	for (uint i = 4; i < 7; ++i)

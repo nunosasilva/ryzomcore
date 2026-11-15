@@ -1124,6 +1124,12 @@ private:
 	/// light (or none), so the baked lightmap is never doubled by scene lights.
 	bool					isLightMapDraw() const;
 	uint32					allocUniformBlock(const void *data, uint32 size);
+	/// Make sure this frame's half of the uniform ring has room for `bytes`
+	/// more in `blocks` aligned blocks, growing the ring once if it does not.
+	/// Growing *between* two allocations would leave them in different buffers,
+	/// which the mega path cannot express (bindings 0-3 are bound as one group
+	/// per draw), so it reserves the whole per-draw group up front.
+	bool					reserveUniformBlock(uint32 bytes, uint32 blocks);
 	/// Make room for one more per-draw uniform block, growing the ring without
 	/// invalidating blocks a frame in flight may still reference.
 	bool					growUniformRing(uint32 required);
