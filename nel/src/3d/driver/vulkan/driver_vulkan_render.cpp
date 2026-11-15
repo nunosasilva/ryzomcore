@@ -2216,11 +2216,14 @@ bool CDriverVulkan::commitPushConstants(const CPipelineKey &key, VkCommandBuffer
 	for (uint stage = 0; stage < 4; ++stage)
 	{
 		const ITexture *texture = _CurrentMaterial->getTexture(stage);
-		// Only NeL offscreen textures. CTextureMem render targets (shadow maps
-		// and their blur textures) go through the shadow map manager's copy
-		// pass, which already accounts for the GL bottom-up convention; flipping
-		// them here moves the projected shadow off the receiver.
-		if (texture && texture->getRenderTarget() && texture->isOffscreenTexture())
+		// Every render-target image is stored top-down here, CTextureMem ones
+		// included: the offscreen passes use a GL-like (negative height)
+		// viewport, so image row 0 holds the top of what was rendered. NeL
+		// texture coordinates are bottom-up, so sampling any target without
+		// this flip reads it upside down. That included the shadow maps and
+		// their blur textures: the shadow-map copy pass reads one cell of the
+		// larger blur texture, so a vertical mismatch does not cancel out.
+		if (texture && texture->getRenderTarget())
 			u.RtFlipMask |= (1u << stage);
 	}
 	const ITexture *stage0Tex = _CurrentMaterial->getTexture(0);

@@ -80,6 +80,29 @@ VkExtent2D CDriverVulkan::currentTargetExtent() const
 	return extent;
 }
 
+VkRect2D CDriverVulkan::currentScissorRect(VkExtent2D extent) const
+{
+	// NeL scissors are normalized with the origin at the bottom left, Vulkan
+	// clips with the origin at the top: same conversion as setupScissor().
+	// The engine may also hand out rects that stick out of the target, so
+	// clamp before handing them to a clear.
+	sint32 x0 = (sint32)(_Scissor.X * extent.width);
+	sint32 y0 = (sint32)(extent.height - (_Scissor.Y + _Scissor.Height) * extent.height);
+	sint32 x1 = (sint32)((_Scissor.X + _Scissor.Width) * extent.width);
+	sint32 y1 = (sint32)(extent.height - _Scissor.Y * extent.height);
+	if (x0 < 0) x0 = 0;
+	if (y0 < 0) y0 = 0;
+	if (x1 > (sint32)extent.width) x1 = (sint32)extent.width;
+	if (y1 > (sint32)extent.height) y1 = (sint32)extent.height;
+
+	VkRect2D rect;
+	rect.offset.x = x0;
+	rect.offset.y = y0;
+	rect.extent.width = x1 > x0 ? (uint32)(x1 - x0) : 0;
+	rect.extent.height = y1 > y0 ? (uint32)(y1 - y0) : 0;
+	return rect;
+}
+
 VkViewport CDriverVulkan::computeViewport(VkExtent2D extent) const
 {
 	// NeL viewports are normalized (0..1) relative to the render target, with

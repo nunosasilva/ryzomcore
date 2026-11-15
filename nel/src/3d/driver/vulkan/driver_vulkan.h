@@ -1064,6 +1064,12 @@ private:
 	void					beginMainPass(VkCommandBuffer cmd, bool first);
 	/// Extent of the bound render target, or of the swapchain.
 	VkExtent2D				currentTargetExtent() const;
+	/// The current scissor as an image-space rect clamped to 'extent' (the
+	/// same conversion as setupScissor(), with Vulkan's top-down Y). Clears
+	/// use it because GL's glClear is affected by the scissor test and the
+	/// engine relies on that: the shadow-map pass clears one caster cell at
+	/// a time.
+	VkRect2D				currentScissorRect(VkExtent2D extent) const;
 	/// Bind the cached viewport/scissor, clamped to 'extent'.
 	void					applyViewportScissor(VkCommandBuffer cmd, VkExtent2D extent);
 	/// Viewport from _Viewport, the depth range and the current material zBias.
