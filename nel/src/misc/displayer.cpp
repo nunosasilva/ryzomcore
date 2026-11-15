@@ -559,8 +559,15 @@ void CFileDisplayer::doDisplay ( const CLog::TDisplayInfo& args, const char *mes
 		// the normal lines and flush at most once per second. Errors and
 		// asserts still go out immediately, and the crash report uses the
 		// memory displayer, so a crash loses at most one second of the file.
+		//
+		// NLMISC_LOG_FLUSH is for hunting a crash in that last second: with it
+		// set, every line reaches the file before the next one is written, so
+		// a debug/DBG line that was being emitted when the process died is not
+		// lost. It costs one write() per line, so it stays opt-in.
+		static const bool flushEveryLine = getenv("NLMISC_LOG_FLUSH") != NULL;
 		const double now = NLMISC::CTime::ticksToSecond(NLMISC::CTime::getPerformanceTime());
-		if (args.LogType == CLog::LOG_ERROR || args.LogType == CLog::LOG_ASSERT ||
+		if (flushEveryLine ||
+			args.LogType == CLog::LOG_ERROR || args.LogType == CLog::LOG_ASSERT ||
 			now - _LastFlushTime >= 1.0)
 		{
 			fflush (_FilePointer);
