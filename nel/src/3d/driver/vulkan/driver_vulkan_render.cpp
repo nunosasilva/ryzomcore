@@ -1107,6 +1107,10 @@ CVBDrvInfosVulkan::CVBDrvInfosVulkan(CDriverVulkan *drv, ItVBDrvInfoPtrList it, 
 	, _DirtyEnd(0)
 	, _LockBegin(0)
 	, _LockEnd(0)
+	, _ShadowEnabled(false)
+	, _ShadowBegin(0)
+	, _ShadowEnd(0)
+	, _ShadowDirty(false)
 	, _DrawBuffer(VK_NULL_HANDLE)
 	, _DrawOffset(0)
 	, _Size(0)
@@ -1142,6 +1146,10 @@ CVBDrvInfosVulkan::CVBDrvInfosVulkan(CDriverVulkan *drv, ItVBDrvInfoPtrList it, 
 		_Dynamic = false;
 		_SlotCount = 1;
 		_CopyOnWrite = true;
+		// The engine writes these vertices several times per frame; let it
+		// write cached host memory (the shadow) and copy from there, instead of
+		// writing a write-combined ring slice and reading that back.
+		_ShadowEnabled = drv && drv->vbShadowEnabled();
 		break;
 	case CVertexBuffer::PartialWrite:
 	case CVertexBuffer::UnsynchronizedWrite:
@@ -1195,6 +1203,12 @@ void CVBDrvInfosVulkan::ensureCapacity(uint32 size)
 		_Shadow.resize(size, 0);
 		return;
 	}
+	// CpuReadWrite: the engine's write target is a cached host shadow, mirrored
+	// into the persistent buffer by unlock() (see lock()). Both are cached, so
+	// the mirror is a plain memcpy; the persistent buffer stays the one the GPU
+	// reads when a frame takes no slice.
+	if (_CopyOnWrite && _ShadowEnabled)
+		_WriteShadow.resize(size, 0);
 
 	CDriverVulkan *driver = static_cast<CDriverVulkan *>(_Driver);
 	VkDevice device = driver->getDevice();
@@ -1342,6 +1356,24 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 		return &_Shadow[begin];
 	}
 
+	// CpuReadWrite with the write shadow: the engine writes cached host memory
+	// and unlock() mirrors the span into the persistent buffer. The draws get
+	// their ring slice in beginVertexDraw(), after the write, so a slice always
+	// holds the content the draw was recorded with.
+	if (_CopyOnWrite && _ShadowEnabled && !_WriteShadow.empty())
+	{
+		if (!readOnly)
+		{
+			_ShadowBegin = begin;
+			_ShadowEnd = end ? end : (uint32)_WriteShadow.size();
+			if (_ShadowEnd > _WriteShadow.size())
+				_ShadowEnd = (uint32)_WriteShadow.size();
+			if (_ShadowBegin > _ShadowEnd)
+				_ShadowBegin = _ShadowEnd;
+		}
+		return &_WriteShadow[begin];
+	}
+
 	// CpuReadWrite buffers are rewritten in place by the engine, several times
 	// per frame and before the draws that read them (skinning, morphing, MRM
 	// geomorph). This buffer is the GPU's source, so an in-place write would
@@ -1358,8 +1390,8 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 	// NLVK_NO_VB_SNAPSHOT=1 restores the old write-through behaviour for A/B
 	// runs (the MRM spikes come back when two instances of a shape are at
 	// different LODs; use it to tell a snapshot problem from a shader/ring one).
-	static const bool snapshotEnabled = getenv("NLVK_NO_VB_SNAPSHOT") == NULL;
-	if (_CopyOnWrite && _Size && driver && snapshotEnabled && _Mapped[_Slot])
+	const bool snapshotEnabled = driver && driver->vbSnapshotsEnabled();
+	if (_CopyOnWrite && _Size && driver && snapshotEnabled && !_ShadowEnabled && _Mapped[_Slot])
 	{
 		driver->countVBCoWLock();
 		const uint64 now = driver->getSwapBufferCounter();
@@ -1458,6 +1490,24 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 
 void CVBDrvInfosVulkan::unlock(uint begin, uint end)
 {
+	// CpuReadWrite write shadow: mirror what the engine just wrote into the
+	// persistent buffer, which is the slice source and what a frame without a
+	// slice draws. Cached -> cached (or cached -> write-combined, sequential),
+	// so this is a plain memcpy at memory bandwidth. The next draw then needs a
+	// fresh slice, or its content would change under the recorded one.
+	if (_CopyOnWrite && _ShadowEnabled && !_WriteShadow.empty() && _Mapped[_Slot] &&
+		_ShadowEnd > _ShadowBegin)
+	{
+		const uint32 bytes = _ShadowEnd - _ShadowBegin;
+		memcpy((uint8 *)_Mapped[_Slot] + _ShadowBegin, &_WriteShadow[_ShadowBegin], bytes);
+		CDriverVulkan *driver = static_cast<CDriverVulkan *>(_Driver);
+		if (driver && driver->statsEnabled())
+			driver->countShadowSync(bytes);
+		_ShadowDirty = true;
+		_ShadowBegin = _ShadowEnd = 0;
+		return;
+	}
+
 	if (!_PartialWrite || _Shadow.empty())
 		return;	// host coherent memory: nothing to do
 	// The engine calls unlock(0,0) for "the whole buffer", so the range recorded
@@ -2397,10 +2447,66 @@ void CDriverVulkan::bindVertexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDev
 		++_StatsVertexBindRepeats;
 }
 
+/// CpuReadWrite draws read the write shadow through a ring slice: one slice per
+/// frame and buffer, refreshed whenever the shadow changed after the slice was
+/// filled. The source is the persistent buffer (cached host memory, always the
+/// latest content because unlock() mirrors the shadow into it) and the
+/// destination the write-combined ring, so a refresh is one sequential copy of
+/// the used vertices - it never reads the ring back, and it never lets the
+/// engine write write-combined memory.
+void CDriverVulkan::makeShadowSlice(CVBDrvInfosVulkan &info, uint64 now)
+{
+	const bool haveSlice = (info._CoWFrame == now && info._CoWBuffer != VK_NULL_HANDLE);
+	// A slice that was filled before the last write must not be reused: the draw
+	// would read stale vertices. A slice filled after the last write is shared by
+	// every draw of this frame that does not write in between (the accumulation
+	// F1 is about).
+	if (!haveSlice || info._ShadowDirty)
+	{
+		const uint32 bytes = info.copyLength();
+		const uint64 statsStart = _StatsEnabled ? nowNs() : 0;
+		const uint32 ringOffset = allocVertexRing(bytes);
+		const uint64 statsAlloc = statsStart ? nowNs() : 0;
+		void *ring = vertexRingMapped();
+		if (bytes != 0 && ringOffset != 0xFFFFFFFFu && ring && info._Mapped[info._Slot])
+		{
+			memcpy((uint8 *)ring + ringOffset, info._Mapped[info._Slot], bytes);
+			if (statsStart)
+				countVBSnapshot(bytes, true, statsAlloc - statsStart, nowNs() - statsStart);
+			info._CoWBuffer = vertexRingBuffer();	// the ring may have grown
+			info._CoWOffset = ringOffset;
+			info._CoWFrame = now;
+			info._CoWDrawn = false;
+			info._ShadowDirty = false;
+		}
+		else
+		{
+			// No ring room: fall back to the persistent buffer for this draw
+			// instead of binding a stale slice. Counted like a snapshot failure.
+			countVBSnapshotFail();
+			info.resetCoW();
+		}
+	}
+	if (info._CoWFrame == now && info._CoWBuffer != VK_NULL_HANDLE)
+	{
+		info._DrawBuffer = info._CoWBuffer;
+		info._DrawOffset = info._CoWOffset;
+		info._DrawBufferFrame = now;
+	}
+	else
+	{
+		info._DrawBuffer = info._VertexBuffer[info._Slot];
+		info._DrawOffset = 0;
+		info._DrawBufferFrame = now;
+	}
+}
+
 bool CDriverVulkan::beginVertexDraw(CVBDrvInfosVulkan &info)
 {
 	const uint64 now = getSwapBufferCounter();
 	info.beginFrameState(now);
+	if (info._CopyOnWrite && info._ShadowEnabled && info._Size && _VbSnapshots)
+		makeShadowSlice(info, now);
 	// No buffer after the frame-state reset: a stream buffer drawn without a
 	// lock this frame (it has no persistent copy), or a PartialWrite flush
 	// that could not get ring space. Both are the one-frame flicker
