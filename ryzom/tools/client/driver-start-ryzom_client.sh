@@ -123,9 +123,12 @@ CLIENT_ABS=$(readlink -f "$CLIENT") || die "cannot resolve '$CLIENT'"
 
 HARNESS_DIR=${HARNESS_DIR:-$PWD/tmp/harness}
 mkdir -p "$HARNESS_DIR" || die "cannot create '$HARNESS_DIR'"
-# Isolate the Vulkan pipeline cache per run dir: concurrent test clients built
-# from different revisions must not share (or race on) one blob.
-export NLVK_PIPELINE_CACHE_PATH=${NLVK_PIPELINE_CACHE_PATH:-$HARNESS_DIR/pipeline-cache.bin}
+# Isolate the Vulkan pipeline cache per run dir **and per client build**:
+# concurrent test clients, or a rebuilt binary in the same install, must not
+# share (or race on) one blob. Size+mtime changes on every relink.
+_CLIENT_TAG=$(stat -c '%s-%Y' "$CLIENT_ABS" 2>/dev/null | tr -d ' ' || true)
+[ -n "$_CLIENT_TAG" ] || _CLIENT_TAG=dev
+export NLVK_PIPELINE_CACHE_PATH=${NLVK_PIPELINE_CACHE_PATH:-$HARNESS_DIR/pipeline-cache-$_CLIENT_TAG.bin}
 LOG=${LOG:-$PWD/client.log}
 LOG=$(readlink -m "$LOG")
 
