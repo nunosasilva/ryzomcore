@@ -945,6 +945,137 @@ static bool clampTextureRect(NLMISC::CRect &rect, uint width, uint height)
 	return true;
 }
 
+
+// ---------------------------------------------------------------------------
+// Texture debug hook (NLVK_TEXDBG=<substring>|1)
+//
+// Prints, for the textures whose share name matches the filter, which stage
+// created the image, with which format/mip count and whether the pixels were
+// uploaded, plus every share-name hit and every streaming region. This is what
+// is needed to tell a partially-uploaded shared image from a wrong bind.
+// ---------------------------------------------------------------------------
+static bool texDbgEnabled(const std::string &name)
+{
+	static const char *env = NULL;
+	static bool init = false;
+	if (!init)
+	{
+		env = getenv("NLVK_TEXDBG");
+		init = true;
+	}
+	if (!env || !*env)
+		return false;
+	if (!strcmp(env, "1"))
+		return true;
+	return toLowerAscii(name).find(toLowerAscii(std::string(env))) != std::string::npos;
+}
+
+static void texDbgName(ITexture &tex, std::string &out)
+{
+	out.clear();
+	// CTextureFile's share name is the file name; other textures fall back to
+	// the class name so the log is still usable.
+	out = toLowerAscii(tex.getShareName());
+	if (out.empty())
+		out = "<unshared>";
+}
+
+
+/// Extent (in blocks for compressed formats) and byte size of one mip level.
+static bool textureLevelLayout(VkFormat format, uint32 width, uint32 height, VkExtent3D &extent, VkDeviceSize &bytes)
+{
+	if (width == 0 || height == 0)
+		return false;
+	extent.depth = 1;
+	switch (format)
+	{
+	case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+		extent.width = max(1u, (width + 3) / 4);
+		extent.height = max(1u, (height + 3) / 4);
+		bytes = (VkDeviceSize)extent.width * extent.height * 8;
+		return true;
+	case VK_FORMAT_BC2_UNORM_BLOCK:
+	case VK_FORMAT_BC3_UNORM_BLOCK:
+	case VK_FORMAT_BC4_UNORM_BLOCK:
+	case VK_FORMAT_BC5_UNORM_BLOCK:
+	case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+	case VK_FORMAT_BC7_UNORM_BLOCK:
+		extent.width = max(1u, (width + 3) / 4);
+		extent.height = max(1u, (height + 3) / 4);
+		bytes = (VkDeviceSize)extent.width * extent.height * 16;
+		return true;
+	case VK_FORMAT_R8G8B8A8_UNORM:
+	case VK_FORMAT_R8G8B8A8_SRGB:
+		extent.width = width;
+		extent.height = height;
+		bytes = (VkDeviceSize)width * height * 4;
+		return true;
+	default:
+		return false;
+	}
+}
+
+/// Fill every mip level with zeros (black, or transparent for the BC formats
+/// with alpha). Used when an image is created before its pixels are streamed
+/// in: without it the sampler reads *undefined* device memory in the frames
+/// between the creation and the end of the upload, which shows up as
+/// green/magenta garbage on the meshes that are drawn meanwhile.
+bool CDriverVulkan::clearTextureImage(CTextureVulkan &out, uint32 mipCount)
+{
+	if (out.Image == VK_NULL_HANDLE || mipCount == 0)
+		return false;
+
+	VkExtent3D extent;
+	VkDeviceSize levelBytes = 0;
+	if (!textureLevelLayout(out.Format, out.Width, out.Height, extent, levelBytes) || levelBytes == 0)
+		return false;
+
+	STextureStaging staging;
+	if (!allocTextureStaging(levelBytes, staging))
+		return false;
+	memset(staging.Mapped, 0, (size_t)levelBytes);
+
+	STextureCopy copy;
+	copy.Image = out.Image;
+	copy.OldLayout = out.Layout;
+	copy.BaseLevel = 0;
+	copy.LevelCount = mipCount;
+	copy.BaseLayer = 0;
+	copy.LayerCount = 1;
+	copy.Staging = staging.Buffer;
+	copy.StagingBytes = levelBytes;
+
+	uint32 w = out.Width, h = out.Height;
+	for (uint i = 0; i < mipCount; ++i)
+	{
+		VkExtent3D levelExtent;
+		VkDeviceSize bytes = 0;
+		if (!textureLevelLayout(out.Format, w, h, levelExtent, bytes))
+			break;
+		VkBufferImageCopy &region = copy.Regions[copy.RegionCount];
+		memset(&region, 0, sizeof(region));
+		// Every level reads from the start of the zero buffer: the buffer only
+		// has to hold the biggest level (mip 0).
+		region.bufferOffset = staging.Offset;
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.mipLevel = i;
+		region.imageSubresource.baseArrayLayer = 0;
+		region.imageSubresource.layerCount = 1;
+		region.imageExtent = levelExtent;
+		++copy.RegionCount;
+		if (copy.RegionCount == MaxTextureCopyRegions)
+			break;
+		w = max(1u, w >> 1);
+		h = max(1u, h >> 1);
+	}
+
+	const bool recorded = recordTextureCopy(copy);
+	if (staging.Dedicated != VK_NULL_HANDLE)
+		deferDestroyBuffer(staging.Buffer, staging.Dedicated);
+	return recorded;
+}
+
 bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool upload)
 {
 	destroyTexture(out);
@@ -979,6 +1110,10 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	if (tex.getUploadFormat() == ITexture::Auto)
 		format = compressedTextureFormat(tex.getPixelFormat());
 	bool compressed = (format != VK_FORMAT_UNDEFINED);
+
+	std::string dbgName;
+	texDbgName(tex, dbgName);
+	const bool dbg = texDbgEnabled(dbgName);
 
 	// ForceDXTCCompression: the client asks for runtime DXT compression of
 	// uncompressed RGBA textures (client.cfg ForceDXTC). The engine has no
@@ -1023,6 +1158,10 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 	out.Compressed = compressed;
 	out.CompressFromRGBA = compressFromRGBA;
 	out.SourceFormat = tex.getPixelFormat();
+	if (dbg)
+		nlinfo("VulkanTexDbg: create '%s' image=%p %ux%u srcFmt=%d upFmt=%d compressed=%d vkFmt=%d mips=%u upload=%d",
+			dbgName.c_str(), (void *)out.Image, width, height, (int)out.SourceFormat, (int)tex.getUploadFormat(),
+			(int)compressed, (int)format, mipCount, (int)upload);
 	if (compressFromRGBA)
 		nlinfo("Vulkan: ForceDXTC: compressing RGBA texture %ux%u (%u mips) to BC3", width, height, mipCount);
 
@@ -1037,15 +1176,30 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 		// level and the sampler may read any of them, while a region upload
 		// only ever transitions the level it writes, so put the whole image in
 		// the shader-read layout now. The contents are undefined either way.
-		STextureCopy copy;
-		copy.Image = out.Image;
-		copy.OldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		copy.BaseLevel = 0;
-		copy.LevelCount = mipCount;
-		if (!recordTextureCopy(copy))
-			return false;
+		// Zero the whole chain: the caller streams the real pixels in later
+		// (uploadTexture()/uploadTextureRegion()), and until it does the meshes
+		// that are already drawn sample this image. Leaving it undefined shows
+		// whatever the tiled device memory happened to contain (green/magenta
+		// checkers for a few seconds after a shape is loaded).
+		out.Layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		if (!clearTextureImage(out, mipCount))
+		{
+			// No clear possible for this format: fall back to the layout-only
+			// transition so the image is at least sampleable.
+			STextureCopy copy;
+			copy.Image = out.Image;
+			copy.OldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			copy.BaseLevel = 0;
+			copy.LevelCount = mipCount;
+			if (!recordTextureCopy(copy))
+				return false;
+		}
 		out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		out.Uploaded = true;
+		// NB: not "uploaded": the pixels are still the zero clear, the real
+		// ones are streamed in later through uploadTexture().
+		out.Uploaded = false;
+		if (dbg)
+			nlinfo("VulkanTexDbg: '%s' image created WITHOUT pixels (cleared to zero, %u mips)", dbgName.c_str(), mipCount);
 		return true;
 	}
 
@@ -1676,6 +1830,16 @@ CTextureDrvInfosVulkan *CDriverVulkan::getTextureDrvInfos(ITexture &tex, bool *c
 			CSynchronized<TTexDrvInfoPtrMap>::CAccessor access(&_SyncTexDrvInfos);
 			TTexDrvInfoPtrMap &map = access.value();
 			ItTexDrvInfoPtrMap it = map.find(name);
+			const bool dbgHit = texDbgEnabled(name);
+			if (dbgHit)
+			{
+				const CTextureDrvInfosVulkan *hitInfo = (it == map.end()) ? NULL
+					: static_cast<const CTextureDrvInfosVulkan *>((const ITextureDrvInfos *)it->second);
+				nlinfo("VulkanTexDbg: share lookup '%s' -> %s image=%p uploaded=%d", name.c_str(),
+					(it == map.end()) ? "miss (create)" : "hit (reuse image)",
+					hitInfo ? (void *)hitInfo->Texture.Image : (void *)0,
+					hitInfo ? (int)hitInfo->Texture.Uploaded : -1);
+			}
 			if (it == map.end())
 			{
 				it = map.insert(make_pair(name, (ITextureDrvInfos *)NULL)).first;
@@ -1775,9 +1939,22 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 	// image alone unless the caller explicitly wants it recreated.
 	if (!createdInfo && tex.supportSharing() && !bMustRecreateSharedTexture)
 	{
-		tex.clearTouched();
-		bAllUploaded = true;
-		return true;
+		// The share-name map already had an entry: another ITexture instance
+		// owns this image. Only skip the upload when that image really holds
+		// its pixels. CShapeBank creates the image first (setupTextureEx with
+		// bUpload=false, contents undefined) and streams the mips in over the
+		// next frames; a mesh that reused the same .dds in that window used to
+		// render the undefined image, which is the green/magenta garbage.
+		if (vk.Uploaded)
+		{
+			tex.clearTouched();
+			bAllUploaded = true;
+			return true;
+		}
+		std::string dbgName;
+		texDbgName(tex, dbgName);
+		if (texDbgEnabled(dbgName))
+			nlinfo("VulkanTexDbg: '%s' shared image has no pixels yet, letting the caller stream it", dbgName.c_str());
 	}
 
 	if (vk.Image != VK_NULL_HANDLE && !bMustRecreateSharedTexture && !tex.touched())
@@ -1830,6 +2007,13 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 bool CDriverVulkan::uploadTexture(ITexture &tex, CRect &rect, uint8 nNumMipMap)
 {
 	CTextureDrvInfosVulkan *info = getTextureDrvInfos(tex);
+
+	std::string dbgName;
+	texDbgName(tex, dbgName);
+	if (texDbgEnabled(dbgName))
+		nlinfo("VulkanTexDbg: '%s' region upload mip=%u rect=(%d,%d)-(%d,%d) image=%s",
+			dbgName.c_str(), (uint)nNumMipMap, rect.left(), rect.top(), rect.right(), rect.bottom(),
+			(info->Texture.Image == VK_NULL_HANDLE) ? "new" : "existing");
 
 	// Create the image without pixels if this is the first use: the caller is
 	// streaming one rectangle of a mip level in (shape bank / async texture
