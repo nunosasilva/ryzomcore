@@ -2309,6 +2309,23 @@ void CDriverVulkan::bindPipeline(VkCommandBuffer cmd, VkPipeline pipeline)
 		++_StatsPipelineBinds;
 }
 
+bool CDriverVulkan::beginVertexDraw(CVBDrvInfosVulkan &info)
+{
+	const uint64 now = getSwapBufferCounter();
+	info.beginFrameState(now);
+	// No buffer after the frame-state reset: a stream buffer drawn without a
+	// lock this frame (it has no persistent copy), or a PartialWrite flush
+	// that could not get ring space. Both are the one-frame flicker
+	// countStaleStreamDraw() was added to catch, and binding the null handle
+	// would take the renderer down instead of showing a flicker.
+	if (info.currentBuffer() == VK_NULL_HANDLE)
+	{
+		countStaleStreamDraw(info);
+		return false;
+	}
+	return true;
+}
+
 bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count, VkPrimitiveTopology topo)
 {
 	if (!_CurrentVB || count == 0)
@@ -2317,16 +2334,8 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 		return false;
 
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
-	if (!info || !info->currentBuffer())
+	if (!info || !beginVertexDraw(*info))
 		return false;
-	// Frame boundary for per-frame copies: drop last frame's CoW slice and a
-	// draw pointer that is not from this frame (the ring is reused every frame).
-	info->beginFrameState(getSwapBufferCounter());
-	// DBG-PERF: a stream buffer drawn without a lock in this frame would still
-	// point at last frame's ring slice, which the ring reuses. Count and log it:
-	// this is a candidate for the one-frame flicker.
-	if (info->_Dynamic && info->_DrawBufferFrame != getSwapBufferCounter())
-		countStaleStreamDraw(*info);
 
 	CPipelineKey key;
 	key.VertexFormat = makeVertexLayoutHash(*_CurrentVB);
@@ -2391,16 +2400,8 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	const uint64 statsStart = _StatsEnabled ? nowNs() : 0;
 
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
-	if (!info || !info->currentBuffer())
+	if (!info || !beginVertexDraw(*info))
 		return false;
-	// Frame boundary for per-frame copies: drop last frame's CoW slice and a
-	// draw pointer that is not from this frame (the ring is reused every frame).
-	info->beginFrameState(getSwapBufferCounter());
-	// DBG-PERF: a stream buffer drawn without a lock in this frame would still
-	// point at last frame's ring slice, which the ring reuses. Count and log it:
-	// this is a candidate for the one-frame flicker.
-	if (info->_Dynamic && info->_DrawBufferFrame != getSwapBufferCounter())
-		countStaleStreamDraw(*info);
 
 	uint32 bytes = count * indexStride;
 	if (bytes == 0)
@@ -2629,16 +2630,8 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 	if (!_FrameOpen && !beginFrame())
 		return false;
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
-	if (!info || !info->currentBuffer())
+	if (!info || !beginVertexDraw(*info))
 		return false;
-	// Frame boundary for per-frame copies: drop last frame's CoW slice and a
-	// draw pointer that is not from this frame (the ring is reused every frame).
-	info->beginFrameState(getSwapBufferCounter());
-	// DBG-PERF: a stream buffer drawn without a lock in this frame would still
-	// point at last frame's ring slice, which the ring reuses. Count and log it:
-	// this is a candidate for the one-frame flicker.
-	if (info->_Dynamic && info->_DrawBufferFrame != getSwapBufferCounter())
-		countStaleStreamDraw(*info);
 
 	sint passes = beginMaterialMultiPass();
 	bool ok = true;

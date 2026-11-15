@@ -1684,6 +1684,15 @@ public:
 				_VertexRingSize / 1024);
 		}
 	}
+	/// Draw prologue shared by drawArrays()/drawIndexed()/renderRawQuads():
+	/// advance the vertex buffer's frame state and report whether it has a
+	/// buffer that can be bound. beginFrameState() can reset _DrawBuffer to
+	/// _VertexBuffer[_Slot], which is VK_NULL_HANDLE for _Dynamic (its data is
+	/// in the ring) and _PartialWrite (host shadow only) buffers, so the null
+	/// check has to run after it. A draw that ends up without a buffer is
+	/// counted and dropped: vkCmdBindVertexBuffers() with a null handle is a
+	/// validation error and undefined behaviour.
+	bool					beginVertexDraw(CVBDrvInfosVulkan &info);
 	/// DBG-PERF: draws that used a stream buffer whose ring slice is from an
 	/// earlier frame (should stay 0; a nonzero count is a flicker candidate).
 	void					countStaleStreamDraw(const CVBDrvInfosVulkan &info)
