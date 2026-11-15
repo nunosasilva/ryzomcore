@@ -1120,6 +1120,7 @@ private:
 	/// PartialWrite flushes (count and bytes) in the current NLVK_STATS window.
 	uint64					_StatsPartialFlushes;
 	uint64					_StatsPartialBytes;
+	uint64					_StatsPartialDrops;
 	uint64					_StatsStaleStreamDraws;
 	uint64					_StatsVBSnapshotBytes;
 	uint64					_StatsUploadBytes;

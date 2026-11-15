@@ -1185,11 +1185,16 @@ void CVBDrvInfosVulkan::ensureCapacity(uint32 size)
 	if (_Dynamic)
 		return;
 
-	// A PartialWrite buffer keeps its content in a host shadow; the GPU copy is
-	// only ever filled by flushPartialWrites(). resize() preserves the prefix,
-	// so growth keeps what the engine already wrote.
+	// A PartialWrite buffer keeps its content in a host shadow only: every frame
+	// the shadow is copied into a fresh vertex-ring slice (one per frame) and the
+	// draws bind that slice, exactly like a CpuReadWrite copy. There is no
+	// persistent GPU copy to write into. resize() preserves the prefix, so growth
+	// keeps what the engine already wrote.
 	if (_PartialWrite)
+	{
 		_Shadow.resize(size, 0);
+		return;
+	}
 
 	CDriverVulkan *driver = static_cast<CDriverVulkan *>(_Driver);
 	VkDevice device = driver->getDevice();
@@ -1274,10 +1279,6 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 	// in order by flushPartialWrites().
 	if (_PartialWrite && !_Shadow.empty())
 	{
-		const uint64 now = driver ? driver->getSwapBufferCounter() : 0;
-		_DrawBuffer = _VertexBuffer[_Slot];
-		_DrawOffset = 0;
-		_DrawBufferFrame = now;
 		if (!readOnly)
 		{
 			_LockBegin = begin;
@@ -1447,141 +1448,54 @@ bool CDriverVulkan::activeVertexBuffer(CVertexBuffer &vb)
 	return true;
 }
 
-/// GL3's flush(): the engine wrote into the host shadow, upload the dirty bytes
-/// now, before the draws recorded after this point, so a draw already recorded
-/// in this frame keeps reading the old content. The staging copy goes through
-/// the vertex ring (already host visible and coherency-managed) and a
-/// vkCmdCopyBuffer, because both buffers live in device memory as far as the
-/// command stream is concerned.
+/// GL3's flush(): the engine wrote into the host shadow, and the draws that
+/// follow must read those bytes while draws already recorded keep the old ones.
+///
+/// Vulkan has no glBufferSubData, and a vkCmdCopyBuffer here would be recorded
+/// inside the render pass (validation: VUID-vkCmdCopyBuffer-renderpass), so the
+/// shadow is copied into a fresh slice of the per-frame vertex ring and the
+/// following draws bind that slice - the same mechanism as the CpuReadWrite
+/// snapshot, one slice per frame. The ring's halves keep the previous frame's
+/// slice intact while it is still in flight.
 bool CDriverVulkan::flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &info)
 {
-	if (!info._PartialWrite || info._Shadow.empty() || info._VertexBuffer[info._Slot] == VK_NULL_HANDLE)
+	if (!info._PartialWrite || info._Shadow.empty())
 		return true;
 
-	// Collect the ranges to upload: the engine's invalidateRange() spans (one per
-	// written vertex, so thousands of tiny ones) plus the range recorded by the
-	// lock. Sort, then merge gaps of up to 256 bytes into one region; if what is
-	// left is most of the buffer, upload the whole thing in a single region,
-	// like GL3's flush().
-	std::vector<CVertexBuffer::CDirtyRange> ranges;
-	ranges.reserve(vb.getDirtyRanges().size() + 1);
-	const uint32 size = (uint32)info._Shadow.size();
-	for (size_t i = 0; i < vb.getDirtyRanges().size(); ++i)
+	const uint64 now = getSwapBufferCounter();
+	if (info._DrawBufferFrame == now)
+		return true;	// already copied for this frame's first activation
+
+	// Only the vertices the engine fills; a draw cannot reference more.
+	uint32 bytes = (uint32)info._Shadow.size();
+	if (vb.getNumVertices() != 0 && vb.getVertexSize() != 0)
 	{
-		CVertexBuffer::CDirtyRange r = vb.getDirtyRanges()[i];
-		if (r.Begin < size)
-			ranges.push_back(r);
+		const uint32 used = vb.getNumVertices() * vb.getVertexSize();
+		if (used != 0 && used < bytes)
+			bytes = used;
 	}
-	// The lock range is only a fallback: an allocator that locks the whole
-	// buffer but invalidates individual vertices (landscape, vegetables) would
-	// otherwise upload the whole buffer every frame.
-	if (ranges.empty() && info._DirtyEnd > info._DirtyBegin)
-	{
-		CVertexBuffer::CDirtyRange r;
-		r.Begin = info._DirtyBegin;
-		r.End = std::min(info._DirtyEnd, size);
-		ranges.push_back(r);
-	}
-	info.clearDirty();
-	vb.clearDirtyRanges();
-	if (ranges.empty())
+	if (bytes == 0)
 		return true;
 
-	std::sort(ranges.begin(), ranges.end(),
-		[](const CVertexBuffer::CDirtyRange &a, const CVertexBuffer::CDirtyRange &b) { return a.Begin < b.Begin; });
-	// Merge with a gap threshold, widened when the engine invalidated thousands
-	// of scattered vertices (one invalidateRange per vertex, patch_render.cpp):
-	// a very long copy-region list would cost more than uploading the gaps.
-	std::vector<CVertexBuffer::CDirtyRange> merged;
-	for (uint32 gap = 256; ; gap *= 8)
-	{
-		merged.clear();
-		merged.push_back(ranges[0]);
-		if (merged[0].End > size)
-			merged[0].End = size;
-		for (size_t i = 1; i < ranges.size(); ++i)
-		{
-			CVertexBuffer::CDirtyRange &last = merged.back();
-			if (ranges[i].Begin <= last.End + gap)
-				last.End = std::max(last.End, std::min(ranges[i].End, size));
-			else
-			{
-				CVertexBuffer::CDirtyRange r = ranges[i];
-				if (r.End > size)
-					r.End = size;
-				if (r.Begin < r.End)
-					merged.push_back(r);
-			}
-		}
-		if (merged.size() <= 512 || gap >= 1024 * 1024)
-			break;
-	}
-
-	uint32 total = 0;
-	for (size_t i = 0; i < merged.size(); ++i)
-		total += merged[i].End - merged[i].Begin;
-	if (total == 0)
-		return true;
-	if (total >= size / 2)
-	{
-		// Cheaper than many regions: one full upload (the shadow is current).
-		merged.clear();
-		CVertexBuffer::CDirtyRange all;
-		all.Begin = 0;
-		all.End = size;
-		merged.push_back(all);
-		total = size;
-	}
-
-	if (!_FrameOpen && !beginFrame())
-		return false;
-
-	// Pack the ranges into the ring, then one vkCmdCopyBuffer with one region
-	// per range, so the uploaded byte count is the sum of the dirty bytes.
-	const uint32 ringOffset = allocVertexRing(total);
+	const uint32 ringOffset = allocVertexRing(bytes);
 	void *ring = vertexRingMapped();
 	if (ringOffset == 0xFFFFFFFFu || !ring)
 	{
-		// No staging room: keep the range pending for the next activation
-		// instead of dropping the upload (rebuild the dirty span).
-		info.markDirty(merged[0].Begin, merged[0].End);
+		// No staging room: drop this frame's copy rather than draw stale
+		// vertices. Counted, so a 0 MiB/frame window is visible in NLVK_STATS.
+		++_StatsPartialDrops;
 		return true;
 	}
-	std::vector<VkBufferCopy> regions(merged.size());
-	uint32 packed = 0;
-	for (size_t i = 0; i < merged.size(); ++i)
-	{
-		const uint32 bytes = merged[i].End - merged[i].Begin;
-		memcpy((uint8 *)ring + ringOffset + packed, &info._Shadow[merged[i].Begin], bytes);
-		memset(&regions[i], 0, sizeof(VkBufferCopy));
-		regions[i].srcOffset = ringOffset + packed;
-		regions[i].dstOffset = merged[i].Begin;
-		regions[i].size = bytes;
-		packed += bytes;
-	}
-
-	VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
-	vkCmdCopyBuffer(cmd, vertexRingBuffer(), info._VertexBuffer[info._Slot],
-		(uint32)regions.size(), &regions[0]);
-
-	// The copy writes the buffer, the draws after this read it as vertex input.
-	VkBufferMemoryBarrier barrier;
-	memset(&barrier, 0, sizeof(barrier));
-	barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.buffer = info._VertexBuffer[info._Slot];
-	barrier.offset = 0;
-	barrier.size = VK_WHOLE_SIZE;
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0,
-		0, NULL, 1, &barrier, 0, NULL);
-
+	memcpy((uint8 *)ring + ringOffset, &info._Shadow[0], bytes);
+	info._DrawBuffer = vertexRingBuffer();	// the ring may have grown
+	info._DrawOffset = ringOffset;
+	info._DrawBufferFrame = now;
+	info.clearDirty();
+	vb.clearDirtyRanges();
 	if (_StatsEnabled)
 	{
 		++_StatsPartialFlushes;
-		_StatsPartialBytes += total;
+		_StatsPartialBytes += bytes;
 	}
 	return true;
 }
