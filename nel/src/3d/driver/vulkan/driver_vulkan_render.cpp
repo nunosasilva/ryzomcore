@@ -1803,6 +1803,42 @@ bool CDriverVulkan::setupMaterial(CMaterial &mat)
 	// re-issued for every material because the material zBias changes it.
 	if (_FrameOpen)
 		applyDepthRange(_CommandBuffers[_FrameIndex]);
+	// DBG: NLVK_RT_FEEDBACK_DBG=1 reports a draw that samples the image it is
+	// currently rendering into (feedback loop: undefined values), and a sampled
+	// render target that is not in the shader-read layout the descriptor
+	// assumes. Read-only: nothing is changed, this is how the "1-frame across
+	// the screen" artifact in water (Fairhaven) gets a name.
+	if (_RenderTargetInfo != NULL && getenv("NLVK_RT_FEEDBACK_DBG"))
+	{
+		for (uint stage = 0; stage < IDRV_PROGRAM_MAXSAMPLERS; ++stage)
+		{
+			CTextureVulkan *tex = _StageTextures[stage];
+			if (tex == NULL || tex->Image == VK_NULL_HANDLE)
+				continue;
+			if (tex->Image == _RenderTargetInfo->Image)
+			{
+				static int remain = 20;
+				if (remain > 0)
+				{
+					--remain;
+					nlwarning("Vulkan RT feedback: draw samples stage %u which IS the current render target (%ux%u, layout %d)",
+						stage, tex->Width, tex->Height, (int)_RenderTargetInfo->Layout);
+				}
+			}
+			else if (tex->Layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && tex->Framebuffer != VK_NULL_HANDLE)
+			{
+				// A sampled render target that is not in the layout the
+				// descriptor declares: undefined sampling for this draw.
+				static int remainLayout = 20;
+				if (remainLayout > 0)
+				{
+					--remainLayout;
+					nlwarning("Vulkan RT layout: draw samples stage %u render target %ux%u in layout %d, expected SHADER_READ_ONLY_OPTIMAL",
+						stage, tex->Width, tex->Height, (int)tex->Layout);
+				}
+			}
+		}
+	}
 	return true;
 }
 
