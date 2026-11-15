@@ -1001,6 +1001,15 @@ private:
 	void					*_ScreenshotMapped;
 	VkDeviceSize			_ScreenshotSize;
 	bool					_ScreenshotPending;
+	/// Debug switches on the frame path, read once at construction so a frame
+	/// never walks environ: NLVK_TESTTRI, NLVK_TEXTEST, NLVK_FORCECLEAR and
+	/// the NLVK_SCREENSHOT* group (_ScreenshotEvery is 0 for a single dump at
+	/// NLVK_SCREENSHOT_FRAME, or the NLVK_SCREENSHOT_EVERY/_SEQ period).
+	bool					_TestTriangle;
+	bool					_TextureBlitTest;
+	bool					_ForceClear;
+	std::string				_ScreenshotPath;
+	uint64					_ScreenshotEvery;
 	uint32					_ArrayDrawCount;
 	uint32					_IndexedDrawCount;
 

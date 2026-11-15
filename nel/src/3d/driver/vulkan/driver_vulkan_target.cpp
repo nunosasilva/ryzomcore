@@ -163,7 +163,7 @@ void CDriverVulkan::beginMainPass(VkCommandBuffer cmd, bool first)
 
 	VkClearValue clears[2];
 	memset(clears, 0, sizeof(clears));
-	if (getenv("NLVK_FORCECLEAR"))
+	if (_ForceClear)
 	{
 		clears[0].color.float32[0] = 1.f;
 		clears[0].color.float32[1] = 0.f;

@@ -302,6 +302,27 @@ CDriverVulkan::CDriverVulkan()
 	_NoClip = getenv("NLVK_NOCLIP") != NULL;
 	_NoQueries = getenv("NLVK_NOQUERIES") != NULL;
 	_RTFeedbackDbg = getenv("NLVK_RT_FEEDBACK_DBG") != NULL;
+	// Frame-path debug switches: read once, the frame code must not call
+	// getenv(). 0 = a single dump at NLVK_SCREENSHOT_FRAME; a nonzero
+	// _ScreenshotEvery dumps every N frames (each frame named after its
+	// number), which is how NLVK_SCREENSHOT_SEQ is expressed.
+	_TestTriangle = getenv("NLVK_TESTTRI") != NULL;
+	_TextureBlitTest = getenv("NLVK_TEXTEST") != NULL;
+	_ForceClear = getenv("NLVK_FORCECLEAR") != NULL;
+	const char *screenshotEnv = getenv("NLVK_SCREENSHOT");
+	if (screenshotEnv)
+		_ScreenshotPath = screenshotEnv;
+	_ScreenshotEvery = 0;
+	if (!_ScreenshotPath.empty())
+	{
+		if (getenv("NLVK_SCREENSHOT_SEQ"))
+			_ScreenshotEvery = 600;
+		const char *everyEnv = getenv("NLVK_SCREENSHOT_EVERY");
+		if (everyEnv && atoi(everyEnv) > 0)
+			_ScreenshotEvery = (uint64)atoi(everyEnv);
+	}
+	const char *dumpFrame = getenv("NLVK_SCREENSHOT_FRAME");
+	_ScreenshotFrame = dumpFrame ? atoi(dumpFrame) : 120;
 	_StatsEnabled = getenv("NLVK_STATS") != NULL;
 	{
 		const char *inFlight = getenv("NLVK_VB_INFLIGHT");
@@ -2236,17 +2257,11 @@ bool CDriverVulkan::beginFrame()
 	// Cached user-block offsets point into this frame's half of the ring.
 	memset(_UserUBStageCache, 0, sizeof(_UserUBStageCache));
 	memset(_UserUBStageSize, 0, sizeof(_UserUBStageSize));
-	if (_SwapBufferCounter == 0)
-	{
-		const char *dumpFrame = getenv("NLVK_SCREENSHOT_FRAME");
-		_ScreenshotFrame = dumpFrame ? atoi(dumpFrame) : 120;
-	}
-
-	if (getenv("NLVK_TESTTRI"))
+	if (_TestTriangle)
 		drawTestTriangle(cmd);
 	// NLVK_TEXTEST=1: one-shot compressed stretchRect check (see
 	// driver_vulkan_target.cpp). Inert unless the variable is set.
-	if (getenv("NLVK_TEXTEST"))
+	if (_TextureBlitTest)
 		runTextureBlitTest();
 	checkTextureBlitTest();
 	// Everything from here to swapBuffers() is the engine recording the frame.
@@ -2372,21 +2387,10 @@ bool CDriverVulkan::swapBuffers()
 		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _GpuTimeQuery, frame * 2 + 1);
 
 	bool wantScreenshot = false;
-	// 0 = a single dump at NLVK_SCREENSHOT_FRAME; otherwise dump every N frames
-	// (each burst frame is named after its frame number, like NLVK_SCREENSHOT_SEQ).
-	uint64 screenshotEvery = 0;
-	const char *screenshotPath = getenv("NLVK_SCREENSHOT");
-	if (screenshotPath)
+	if (!_ScreenshotPath.empty())
 	{
-		const char *everyEnv = getenv("NLVK_SCREENSHOT_EVERY");
-		if (getenv("NLVK_SCREENSHOT_SEQ"))
-			screenshotEvery = 600;
-		// Consecutive-frame dumps, for short glitches (flicker) that a
-		// 600-frame sequence would miss.
-		if (everyEnv && atoi(everyEnv) > 0)
-			screenshotEvery = (uint64)atoi(everyEnv);
-		if (screenshotEvery)
-			wantScreenshot = _SwapBufferCounter >= (uint64)_ScreenshotFrame && (_SwapBufferCounter % screenshotEvery) == 0;
+		if (_ScreenshotEvery)
+			wantScreenshot = _SwapBufferCounter >= (uint64)_ScreenshotFrame && (_SwapBufferCounter % _ScreenshotEvery) == 0;
 		else
 			wantScreenshot = _SwapBufferCounter == (uint64)_ScreenshotFrame;
 	}
@@ -2450,15 +2454,15 @@ bool CDriverVulkan::swapBuffers()
 	if (wantScreenshot)
 	{
 		vkWaitForFences(_Device, 1, &_Fences[frame], VK_TRUE, UINT64_MAX);
-		if (screenshotEvery)
+		if (_ScreenshotEvery)
 		{
 			char path[512];
-			snprintf(path, sizeof(path), "%s.%llu.ppm", screenshotPath, (unsigned long long)_SwapBufferCounter);
+			snprintf(path, sizeof(path), "%s.%llu.ppm", _ScreenshotPath.c_str(), (unsigned long long)_SwapBufferCounter);
 			writeScreenshot(path);
 		}
 		else
 		{
-			writeScreenshot(screenshotPath);
+			writeScreenshot(_ScreenshotPath.c_str());
 		}
 	}
 
