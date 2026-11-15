@@ -1357,36 +1357,6 @@ bool CDriverVulkan::activeIndexBuffer(CIndexBuffer &ib)
 
 uint32 CDriverVulkan::allocVertexRing(uint32 size)
 {
-	// lock() runs outside the frame boundaries too: the engine fills a stream
-	// vertex buffer, or geomorphs a CpuReadWrite one, before the frame's first
-	// draw - and beginFrame() is only entered by that first draw. Allocate in
-	// the half of the frame being built, never in the one the GPU may still be
-	// reading for the frame in flight, and never past the end of it.
-	if (_VertexRingHalf)
-	{
-		// Keep the base in step with the slot being built: beginFrame() has not
-		// necessarily run yet, and the growth test below compares against it.
-		const uint32 frameBase = _FrameIndex * _VertexRingHalf;
-		_VertexRingFrameBase = frameBase;
-		if (_VertexRingOffset < frameBase || _VertexRingOffset >= frameBase + _VertexRingHalf)
-		{
-			// DBG-PERF: this is the case that used to put a vertex-buffer
-			// snapshot in the other frame's half, overwriting vertices still
-			// in flight (garbled meshes for one frame). Log it when asked.
-			++_StatsRingRebases;
-			if (getenv("NLVK_RINGDBG"))
-			{
-				static int remain = 20;
-				if (remain > 0)
-				{
-					--remain;
-					nlinfo("Vulkan ring: vertex ring offset %u was outside frame %u half [%u,%u), rebased",
-						_VertexRingOffset, _FrameIndex, frameBase, frameBase + _VertexRingHalf);
-				}
-			}
-			_VertexRingOffset = frameBase;
-		}
-	}
 	const uint32 required = _VertexRingOffset + size;
 	const bool grow = (_VertexRing == VK_NULL_HANDLE ||
 		required > _VertexRingFrameBase + _VertexRingHalf);
