@@ -1338,6 +1338,8 @@ private:
 	bool					recordTextureCopy(const STextureCopy &copy);
 	/// Reserve upload staging for `size` bytes in the current frame.
 	bool					allocTextureStaging(VkDeviceSize size, STextureStaging &out);
+	/// Zero every mip level of a freshly created image (see the .cpp).
+	bool					clearTextureImage(CTextureVulkan &out, uint32 mipCount);
 	/// Host visible buffer for texture traffic that does not go through the
 	/// staging ring: uploads too large for it (TRANSFER_SRC) and the one-shot
 	/// BC self-test readback (TRANSFER_DST).
