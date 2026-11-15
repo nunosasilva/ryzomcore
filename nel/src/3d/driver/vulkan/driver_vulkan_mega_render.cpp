@@ -773,7 +773,7 @@ uint32 CDriverVulkan::allocUniformBlock(const void *data, uint32 size)
 	if (align < 16)
 		align = 16;
 	uint32 offset = (_UniformRingOffset + align - 1) & ~(align - 1);
-	if (offset + size > _UniformRingFrameBase + _UniformRingHalf)
+	if ((uint64)offset + size > (uint64)_UniformRingFrameBase + _UniformRingHalf)
 	{
 		// Wrapping would overwrite blocks already referenced by the command
 		// buffer being recorded. Grow instead; the old buffer stays alive until
@@ -789,9 +789,15 @@ uint32 CDriverVulkan::allocUniformBlock(const void *data, uint32 size)
 
 bool CDriverVulkan::growUniformRing(uint32 required)
 {
-	uint32 newSize = _UniformRingSize ? _UniformRingSize : 4 * 1024 * 1024;
-	while (newSize < required * 2 || newSize <= _UniformRingSize)
-		newSize *= 2;
+	// Capped and 64-bit, like the vertex/index rings: a 2 GiB ring used to
+	// overflow the doubling loop and hang the client (see nextRingSize()).
+	const uint32 newSize = nextRingSize(_UniformRingSize, 4u * 1024u * 1024u, required, NL_VK_UNIFORM_RING_MAX);
+	if (newSize == 0)
+	{
+		nlwarning("Vulkan: uniform ring would exceed %u MiB for a %u-byte upload (ring %u MiB)",
+			NL_VK_UNIFORM_RING_MAX / (1024u * 1024u), required, _UniformRingSize / (1024u * 1024u));
+		return false;
+	}
 
 	VkBufferCreateInfo bci;
 	memset(&bci, 0, sizeof(bci));
