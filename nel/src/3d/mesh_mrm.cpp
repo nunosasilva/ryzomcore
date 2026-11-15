@@ -3899,7 +3899,9 @@ void			CMeshMRMGeom::renderShadowSkinPrimitives(CMeshMRMInstance	*mi, CMaterial 
 
 	// Render with the Materials of the MeshInstance.
 	drv->activeIndexBuffer(shiftedTris);
-	drv->renderTriangles(castMat, 0, numTris);
+	const bool dbgOk= drv->renderTriangles(castMat, 0, numTris);
+	if (shadowMapDebugEnabled())
+		nlinfo("SHADOWDBG mrm skinned caster: tris=%u baseVertex=%u ok=%d", numTris, baseVertex, (int)dbgOk);
 }
 
 

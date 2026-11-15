@@ -306,6 +306,20 @@ CDriverVulkan::CDriverVulkan()
 	_VbSnapshots = getenv("NLVK_NO_VB_SNAPSHOT") == NULL;
 	_NoQueries = getenv("NLVK_NOQUERIES") != NULL;
 	_RTFeedbackDbg = getenv("NLVK_RT_FEEDBACK_DBG") != NULL;
+	// Shadow-map diagnosis (read-only): trace the offscreen passes and read the
+	// small targets back. NLVK_SHADOWDBG_FRAMES sets how many frames are traced
+	// (default 3: enough for the first generated shadow map).
+	_ShadowDbg = getenv("NLVK_SHADOWDBG") != NULL;
+	_ShadowDbgFrames = 3;
+	_ShadowDbgSerial = 0;
+	_ShadowDbgMega = -1;
+	if (_ShadowDbg)
+	{
+		const char *frames = getenv("NLVK_SHADOWDBG_FRAMES");
+		if (frames && atoi(frames) > 0)
+			_ShadowDbgFrames = (uint32)atoi(frames);
+		nlinfo("Vulkan: NLVK_SHADOWDBG on, tracing %u frame(s)", _ShadowDbgFrames);
+	}
 	// Frame-path debug switches: read once, the frame code must not call
 	// getenv(). 0 = a single dump at NLVK_SCREENSHOT_FRAME; a nonzero
 	// _ScreenshotEvery dumps every N frames (each frame named after its
@@ -2105,6 +2119,8 @@ bool CDriverVulkan::beginFrame()
 	// the reset would have overwritten it by then.
 	_OcclusionCompletedFrame[frame] = _OcclusionIssuedFrame[frame];
 	harvestOcclusionQueries(frame);
+	if (_ShadowDbg)
+		shadowDbgHarvest(frame);
 
 	// The GPU timestamps of the submission that just completed on this slot are
 	// readable now: the fence wait above is the synchronisation. Done before
@@ -2233,6 +2249,11 @@ bool CDriverVulkan::beginFrame()
 		vkCmdResetQueryPool(cmd, _OcclusionPools[frame], 0, NL_VK_OCCLUSION_SLOTS);
 		_OcclusionNextSlot[frame] = 0;
 	}
+	// Clears honour the scissor, like GL's (see clear2D()), and the engine keeps
+	// the scissor from the previous frame: the frame's first clear would be
+	// clipped to whatever region the last draw of the previous frame used.
+	// Every pass starts with a full-screen scissor, so each frame does too.
+	_Scissor.initFullScreen();
 	beginMainPass(cmd, true);
 
 	// The fence waited above proves that the submission which used the upload
@@ -2295,19 +2316,28 @@ bool CDriverVulkan::clear2D(CRGBA rgba)
 	if (_FrameOpen)
 	{
 		// The pass has already started (the first clear of the frame sets it up).
-		VkClearAttachment attachment;
-		memset(&attachment, 0, sizeof(attachment));
-		attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		attachment.colorAttachment = 0;
-		attachment.clearValue.color.float32[0] = rgba.R / 255.f;
-		attachment.clearValue.color.float32[1] = rgba.G / 255.f;
-		attachment.clearValue.color.float32[2] = rgba.B / 255.f;
-		attachment.clearValue.color.float32[3] = rgba.A / 255.f;
-		VkClearRect rect;
-		memset(&rect, 0, sizeof(rect));
-		rect.rect.extent = currentTargetExtent();
-		rect.layerCount = 1;
-		vkCmdClearAttachments(_CommandBuffers[_FrameIndex], 1, &attachment, 1, &rect);
+		// GL's glClear is affected by the scissor test (glClearBufferfv explicitly
+		// is) and the engine relies on that: the shadow-map pass clears one
+		// caster cell per clear2D() call, with the scissor set to that cell.
+		// Clearing the whole attachment here erased every caster rendered
+		// earlier in the pass and left only the last one's shadow map non-empty.
+		const VkRect2D rect = currentScissorRect(currentTargetExtent());
+		if (rect.extent.width != 0 && rect.extent.height != 0)
+		{
+			VkClearAttachment attachment;
+			memset(&attachment, 0, sizeof(attachment));
+			attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			attachment.colorAttachment = 0;
+			attachment.clearValue.color.float32[0] = rgba.R / 255.f;
+			attachment.clearValue.color.float32[1] = rgba.G / 255.f;
+			attachment.clearValue.color.float32[2] = rgba.B / 255.f;
+			attachment.clearValue.color.float32[3] = rgba.A / 255.f;
+			VkClearRect clearRect;
+			memset(&clearRect, 0, sizeof(clearRect));
+			clearRect.rect = rect;
+			clearRect.layerCount = 1;
+			vkCmdClearAttachments(_CommandBuffers[_FrameIndex], 1, &attachment, 1, &clearRect);
+		}
 		return true;
 	}
 	return beginFrame();
@@ -2321,15 +2351,20 @@ bool CDriverVulkan::clearZBuffer(float zval)
 	_ClearDepthPending = true;
 	if (_FrameOpen)
 	{
-		VkClearAttachment attachment;
-		memset(&attachment, 0, sizeof(attachment));
-		attachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-		attachment.clearValue.depthStencil.depth = zval;
-		VkClearRect rect;
-		memset(&rect, 0, sizeof(rect));
-		rect.rect.extent = currentTargetExtent();
-		rect.layerCount = 1;
-		vkCmdClearAttachments(_CommandBuffers[_FrameIndex], 1, &attachment, 1, &rect);
+		// Scissored like clear2D(): GL's depth clear obeys the scissor test too.
+		const VkRect2D rect = currentScissorRect(currentTargetExtent());
+		if (rect.extent.width != 0 && rect.extent.height != 0)
+		{
+			VkClearAttachment attachment;
+			memset(&attachment, 0, sizeof(attachment));
+			attachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			attachment.clearValue.depthStencil.depth = zval;
+			VkClearRect clearRect;
+			memset(&clearRect, 0, sizeof(clearRect));
+			clearRect.rect = rect;
+			clearRect.layerCount = 1;
+			vkCmdClearAttachments(_CommandBuffers[_FrameIndex], 1, &attachment, 1, &clearRect);
+		}
 	}
 	return true;
 }
