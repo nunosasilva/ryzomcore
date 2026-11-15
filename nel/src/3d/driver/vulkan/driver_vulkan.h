@@ -1043,6 +1043,15 @@ private:
 	uint64					_StatsPipelineCreateNs;
 	uint64					_StatsPipelineCreates;
 	uint64					_StatsTextureCreateNs;
+	/// Textures created without pixels and zero-cleared instead (4dd79583c),
+	/// per NLVK_STATS window: part of the "texture create" cost above.
+	uint64					_StatsTexImageCreateNs;
+	uint64					_StatsTexImageMiscNs;
+	uint64					_StatsTexImageAllocNs;
+	uint64					_StatsTexImageViewNs;
+	uint64					_StatsTexClearNs;
+	uint64					_StatsTexClearCount;
+	uint64					_StatsTexClearBytes;
 	uint64					_StatsTextureCreates;
 	/// Time of the previous swapBuffers, for the >100 ms frame stall log.
 	uint64					_StatsLastSwapNs;
