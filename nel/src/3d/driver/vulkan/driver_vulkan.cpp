@@ -300,6 +300,10 @@ CDriverVulkan::CDriverVulkan()
 	_GpuSkin = getenv("NLVK_GPUSKIN") != NULL;
 	_NoUBO = getenv("NLVK_NOUBO") != NULL;
 	_NoClip = getenv("NLVK_NOCLIP") != NULL;
+	// F1 follow-up: CpuReadWrite buffers write cached host memory (the shadow)
+	// instead of a write-combined ring slice. NLVK_VB_SHADOW=0 is the A/B.
+	_VbShadow = getenv("NLVK_VB_SHADOW") == NULL;
+	_VbSnapshots = getenv("NLVK_NO_VB_SNAPSHOT") == NULL;
 	_NoQueries = getenv("NLVK_NOQUERIES") != NULL;
 	_RTFeedbackDbg = getenv("NLVK_RT_FEEDBACK_DBG") != NULL;
 	// Frame-path debug switches: read once, the frame code must not call
@@ -359,6 +363,8 @@ CDriverVulkan::CDriverVulkan()
 	_StatsVBSnapshotFromPersistent = 0;
 	_StatsVBSnapshotFromSlice = 0;
 	_StatsVBCoWLocks = 0;
+	_StatsShadowSyncs = 0;
+	_StatsShadowSyncBytes = 0;
 	_StatsPartialFlushes = 0;
 	_StatsPartialBytes = 0;
 	_StatsPartialDrops = 0;
@@ -2574,6 +2580,10 @@ bool CDriverVulkan::swapBuffers()
 				(unsigned long long)_StatsVBSnapshotFromPersistent,
 				(unsigned long long)_StatsVBSnapshotFromSlice,
 				(double)_StatsVBCoWLocks / (double)_StatsWindowFrames);
+			nlinfo("Vulkan stats: vb write shadow: %llu syncs/frame, %.2f MiB/frame mirrored, %.1f MiB/frame copied to slices",
+				(unsigned long long)(_StatsShadowSyncs / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				(double)_StatsShadowSyncBytes / (1024.0 * 1024.0) / (double)(_StatsWindowFrames ? _StatsWindowFrames : 1),
+				(double)_StatsVBSnapshotBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames);
 			nlinfo("Vulkan stats: partial write copies %llu/frame, %.2f MiB/frame, %llu dropped",
 				(unsigned long long)(_StatsPartialFlushes / _StatsWindowFrames),
 				(double)_StatsPartialBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames,
@@ -2665,6 +2675,8 @@ bool CDriverVulkan::swapBuffers()
 			_StatsVBSnapshotFromPersistent = 0;
 			_StatsVBSnapshotFromSlice = 0;
 			_StatsVBCoWLocks = 0;
+			_StatsShadowSyncs = 0;
+			_StatsShadowSyncBytes = 0;
 			_StatsPartialFlushes = 0;
 			_StatsPartialBytes = 0;
 			_StatsPartialDrops = 0;

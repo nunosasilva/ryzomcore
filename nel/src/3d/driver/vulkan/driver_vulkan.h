@@ -209,6 +209,20 @@ public:
 	VkBuffer	_CoWBuffer;
 	uint32		_CoWOffset;
 	bool		_CoWDrawn;
+	/// CpuReadWrite write shadow (F1). The engine writes vertices here - cached
+	/// host memory, so its per-vertex MRM geomorph writes cost memory bandwidth
+	/// instead of the ~0.1-0.3 GB/s of a write-combined mapping - and unlock()
+	/// mirrors the written span into the persistent buffer. The persistent
+	/// buffer is what a frame without a slice draws, and what the per-frame ring
+	/// slice is copied from (cached -> write-combined, sequential). NLVK_VB_SHADOW=0
+	/// restores the old "hand the engine the ring slice" behaviour for A/B runs.
+	bool		_ShadowEnabled;
+	std::vector<uint8>	_WriteShadow;
+	uint32		_ShadowBegin;
+	uint32		_ShadowEnd;
+	/// True when the shadow changed after the current slice was filled: the
+	/// next draw needs a fresh slice (the recorded one must keep its vertices).
+	bool		_ShadowDirty;
 	/// Point the draw back at the persistent buffer (F9: the slot that was
 	/// actually written, not always slot 0).
 	void		resetDrawBuffer() { _DrawBuffer = _VertexBuffer[_Slot]; _DrawOffset = 0; _DrawBufferFrame = ~0ull; }
@@ -1190,6 +1204,10 @@ private:
 	/// lock() calls that went through the CpuReadWrite copy-on-write block,
 	/// with and without taking a copy: the copies are the ones counted above.
 	uint64					_StatsVBCoWLocks;
+	/// CpuReadWrite write-shadow: engine writes mirrored into the persistent
+	/// buffer per NLVK_STATS window (count and bytes).
+	uint64					_StatsShadowSyncs;
+	uint64					_StatsShadowSyncBytes;
 	/// PartialWrite flushes (count and bytes) in the current NLVK_STATS window.
 	uint64					_StatsPartialFlushes;
 	uint64					_StatsPartialBytes;
@@ -1356,6 +1374,9 @@ private:
 	bool						_NoUBO;
 	bool						_NoClip;
 	bool						_NoQueries;
+	/// NLVK_VB_SHADOW=0 / NLVK_NO_VB_SNAPSHOT=1 (read once, see the ctor).
+	bool						_VbShadow;
+	bool						_VbSnapshots;
 	/// NLVK_RT_FEEDBACK_DBG=1: setupMaterial() inspects the bound stages for a
 	/// draw that samples the render target it is drawing into. setupMaterial()
 	/// runs on every material change, so the switch is read once here.
@@ -1757,6 +1778,19 @@ public:
 	bool					statsEnabled() const { return _StatsEnabled; }
 	/// Account one lock() through the CpuReadWrite copy-on-write block.
 	void					countVBCoWLock() { ++_StatsVBCoWLocks; }
+	/// NLVK_VB_SHADOW: false restores writing into the ring slice (A/B only).
+	bool					vbShadowEnabled() const { return _VbShadow; }
+	/// NLVK_NO_VB_SNAPSHOT: false makes CoW draws bind the persistent buffer.
+	bool					vbSnapshotsEnabled() const { return _VbSnapshots; }
+	/// Account an unlock() that mirrored the engine's write-shadow span into the
+	/// persistent buffer (bytes), when the stats window is open.
+	void					countShadowSync(uint32 bytes)
+	{
+		++_StatsShadowSyncs;
+		_StatsShadowSyncBytes += bytes;
+	}
+	/// Give a CpuReadWrite draw its own copy of the shadow in the vertex ring.
+	void					makeShadowSlice(CVBDrvInfosVulkan &info, uint64 now);
 	/// CoW snapshot could not be allocated (ring exhausted): the build fell back
 	/// to write-through, which is exactly the corruption the snapshot prevents.
 	/// Rate-limited warning; counted in the NLVK_STATS window.
