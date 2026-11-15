@@ -690,6 +690,13 @@ bool CDriverVulkan::createPipelineCache()
 	// set NLVK_PIPELINE_CACHE_PATH to a per-run file; the default file name is
 	// tagged with the build hash so a new binary never reuses an older build's
 	// pipelines. The cache is per build/GPU, not per account or character.
+#ifdef NL_VK_PIPELINE_CACHE_TAG
+	const std::string cacheFileName =
+		std::string("vulkan_") + NL_VK_PIPELINE_CACHE_TAG + ".cache";
+#else
+	const std::string cacheFileName = "vulkan_pipeline_cache.bin";
+#endif
+
 	const char *cachePath = getenv("NLVK_PIPELINE_CACHE_PATH");
 	if (cachePath != NULL && cachePath[0] != '\0')
 	{
@@ -697,12 +704,23 @@ bool CDriverVulkan::createPipelineCache()
 	}
 	else
 	{
-#ifdef NL_VK_PIPELINE_CACHE_TAG
-		_PipelineCachePath = CPath::getApplicationDirectory("ryzom")
-			+ std::string("vulkan_") + NL_VK_PIPELINE_CACHE_TAG + ".cache";
-#else
-		_PipelineCachePath = CPath::getApplicationDirectory("ryzom") + "vulkan_pipeline_cache.bin";
-#endif
+		// The client points this at the cache/ directory next to its active
+		// client.cfg, so the pipeline cache lives with that installation (and
+		// its profile) instead of in a central per-user directory. The build
+		// tag keeps a rebuilt binary from reading an older build's pipelines.
+		const char *cacheDir = getenv("NLVK_PIPELINE_CACHE_DIR");
+		if (cacheDir != NULL && cacheDir[0] != '\0')
+		{
+			std::string dir = cacheDir;
+			if (dir[dir.size() - 1] != '/' && dir[dir.size() - 1] != '\\')
+				dir += '/';
+			CFile::createDirectoryTree(dir);
+			_PipelineCachePath = dir + cacheFileName;
+		}
+		else
+		{
+			_PipelineCachePath = CPath::getApplicationDirectory("ryzom") + cacheFileName;
+		}
 	}
 
 	vector<uint8> initialData;

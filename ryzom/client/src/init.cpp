@@ -1035,6 +1035,24 @@ void prelogInit()
 		ClientCfg.init(ConfigFileName);
 		CLoginProgressPostThread::getInstance().init(ClientCfg.ConfigFile);
 
+		// Put the Vulkan pipeline cache next to the active client.cfg (its
+		// installation/profile cache/ directory), not in a central per-user
+		// directory; the driver appends its build tag. An explicit
+		// NLVK_PIPELINE_CACHE_PATH/_DIR still wins (test harnesses use that).
+		if (getenv("NLVK_PIPELINE_CACHE_PATH") == NULL && getenv("NLVK_PIPELINE_CACHE_DIR") == NULL)
+		{
+			const std::string configPath = ClientCfg.ConfigFile.getFilename();
+			if (!configPath.empty())
+			{
+				const std::string cacheDir = CPath::getFullPath(CFile::getPath(configPath) + "cache/");
+#ifdef NL_OS_WINDOWS
+				_putenv_s("NLVK_PIPELINE_CACHE_DIR", cacheDir.c_str());
+#else
+				setenv("NLVK_PIPELINE_CACHE_DIR", cacheDir.c_str(), 1);
+#endif
+			}
+		}
+
 		sint cpuMask;
 
 		if (ClientCfg.CPUMask < 1)
