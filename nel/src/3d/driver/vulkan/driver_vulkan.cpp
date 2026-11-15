@@ -316,7 +316,6 @@ CDriverVulkan::CDriverVulkan()
 	_StatsVBSnapshots = 0;
 	_StatsVBSnapshotBytes = 0;
 	_StatsStaleStreamDraws = 0;
-	_StatsRingRebases = 0;
 	_StatsPipelineCreateNs = 0;
 	_StatsPipelineCreates = 0;
 	_StatsTextureCreateNs = 0;
@@ -2177,18 +2176,15 @@ bool CDriverVulkan::beginFrame()
 	if (_StagingRingOffset < _StagingRingFrameBase ||
 		_StagingRingOffset >= _StagingRingFrameBase + _StagingRingHalf)
 		_StagingRingOffset = _StagingRingFrameBase;
-	// The vertex ring can also receive data between two frames: a vertex
-	// buffer the engine locks and writes before the first draw of this frame
-	// (a stream buffer update, or a CpuReadWrite geomorph) already allocated
-	// its slice. Those vertices belong to this frame, so keep the offset; only
-	// move it when it points outside this frame's half (which would overwrite
-	// what the frame still being executed is reading). Same rule as the staging
-	// ring above, and the reason a lock between frames must allocate in this
-	// frame's half (see allocVertexRing()).
+	// The vertex ring restarts at this frame's half. NB: a vertex buffer the
+	// engine locks before the first draw of the frame (a stream fill, or a
+	// CpuReadWrite geomorph) allocates its slice before this runs, so that slice
+	// is dropped here; keep any change to this ordering behind a test that
+	// exercises a full zone load and a long session (a "keep between-frame
+	// allocations" variant was reverted after a freeze report, see
+	// AGENTS_todo).
 	_VertexRingFrameBase = _FrameIndex * _VertexRingHalf;
-	if (_VertexRingOffset < _VertexRingFrameBase ||
-		_VertexRingOffset >= _VertexRingFrameBase + _VertexRingHalf)
-		_VertexRingOffset = _VertexRingFrameBase;
+	_VertexRingOffset = _VertexRingFrameBase;
 	_UniformRingFrameBase = _FrameIndex * _UniformRingHalf;
 	_UniformRingOffset = _UniformRingFrameBase;
 	// Cached user-block offsets point into this frame's half of the ring.
@@ -2505,12 +2501,11 @@ bool CDriverVulkan::swapBuffers()
 				(double)_StatsUploadBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames,
 				(double)_StatsStagingPeak / (1024.0 * 1024.0),
 				_StagingRingSize / 1024);
-			nlinfo("Vulkan stats: vb snapshots %llu/frame, %.2f MiB/frame, ring %u KiB, stale stream draws %llu, ring rebases %llu",
+			nlinfo("Vulkan stats: vb snapshots %llu/frame, %.2f MiB/frame, ring %u KiB, stale stream draws %llu",
 				(unsigned long long)(_StatsVBSnapshots / _StatsWindowFrames),
 				(double)_StatsVBSnapshotBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames,
 				_VertexRingSize / 1024,
-				(unsigned long long)_StatsStaleStreamDraws,
-				(unsigned long long)_StatsRingRebases);
+				(unsigned long long)_StatsStaleStreamDraws);
 			nlinfo("Vulkan stats: per draw: key %.2f us, pipeline %.2f us, bind %.2f us, submit %.2f us",
 				perKey, perPipeline, perBind, perSubmit);
 			nlinfo("Vulkan stats: occlusion queries: %llu issued/frame, %llu harvested/frame, %llu objects",
@@ -2575,7 +2570,6 @@ bool CDriverVulkan::swapBuffers()
 			_StatsVBSnapshots = 0;
 			_StatsVBSnapshotBytes = 0;
 			_StatsStaleStreamDraws = 0;
-			_StatsRingRebases = 0;
 			_StatsPipelineBinds = 0;
 			_StatsDescriptorSets = 0;
 			_StatsTextureBinds = 0;
