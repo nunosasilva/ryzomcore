@@ -25,6 +25,8 @@
 #include "nel/3d/material.h"
 #include "nel/3d/texture.h"
 
+#include <cstdlib>
+
 
 namespace NL3D {
 
@@ -39,6 +41,17 @@ class CScene;
 #define	NL3D_SMM_MAX_TEXTDEST_SIZE	256
 #define	NL3D_SMM_MAX_FREETEXT		20
 #define	NL3D_SMM_FADE_SPEED			0.5f
+
+// ***************************************************************************
+/// True when NLVK_SHADOWDBG=1 was set at startup. It gates the temporary
+/// caster traces in the shadow-map paths (CMeshInstance, CMeshMRM*); the
+/// Vulkan driver reads the same variable for its render-target traces. The
+/// value is read once: these call sites run per caster per frame.
+inline bool	shadowMapDebugEnabled()
+{
+	static const bool on = getenv("NLVK_SHADOWDBG") != NULL;
+	return on;
+}
 
 // ***************************************************************************
 /**

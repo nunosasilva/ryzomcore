@@ -2533,8 +2533,57 @@ bool CDriverVulkan::beginVertexDraw(CVBDrvInfosVulkan &info)
 	return true;
 }
 
+/// NLVK_SHADOWDBG: one line per draw issued into a shadow-map-sized offscreen
+/// target. The material, blend, colour-write mask and stage count are what
+/// decide whether a caster pass can leave anything in the target at all, and
+/// the returned flag says whether the draw was actually recorded.
+void CDriverVulkan::shadowDbgDraw(const char *kind, CMaterial &mat, uint32 count, bool ok)
+{
+	if (!shadowDbgTracing())
+		return;
+	const CTextureVulkan *target = _RenderTargetInfo;
+	uint stages = 0;
+	for (uint s = 0; s < 4; ++s)
+		if (_StageTextures[s])
+			++stages;
+	const CRGBA diffuse = mat.getDiffuse();
+	const uint32 targetW = target ? target->Width : 0;
+	const uint32 targetH = target ? target->Height : 0;
+	uint32 flipMask = 0;
+	for (uint stage = 0; stage < 4; ++stage)
+	{
+		const ITexture *tex = mat.getTexture(stage);
+		if (tex && tex->getRenderTarget())
+			flipMask |= (1u << stage);
+	}
+	nlinfo("Vulkan SHADOWDBG draw %s into %ux%u: count=%u tris=%u vb='%s' stride=%u shader=%d color=%u/%u/%u/%u diffuse=%u/%u/%u/%u blend=%d(%d,%d) cmask=0x%x zwrite=%d atest=%.3f depth=%d zbias=%.3f stages=%u texenv=0x%x,0x%x,0x%x,0x%x texgen=%d,%d usermat=%d,%d flip=0x%x mega=%d ok=%d",
+		kind, targetW, targetH, count,
+		kind[0] == 'q' ? count * 2 : count / 3,
+		_CurrentVB ? _CurrentVB->getName().c_str() : "?",
+		_CurrentVB ? _CurrentVB->getVertexSize() : 0,
+		(int)mat.getShader(),
+		mat.getColor().R, mat.getColor().G, mat.getColor().B, mat.getColor().A,
+		diffuse.R, diffuse.G, diffuse.B, diffuse.A,
+		(int)_BlendEnabled, (int)_SrcBlend, (int)_DstBlend,
+		_ClearColorMask, (int)_DepthWriteEnabled, _MaterialAlphaRef,
+		(int)_DepthFunc, _MaterialZBias,
+		stages, _TexEnv[0], _TexEnv[1], _TexEnv[2], _TexEnv[3],
+		(int)mat.getTexCoordGen(0), (int)mat.getTexCoordGen(1),
+		(int)mat.isUserTexMatEnabled(0), (int)mat.isUserTexMatEnabled(1),
+		flipMask, (int)_ShadowDbgMega, (int)ok);
+}
+
 bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count, VkPrimitiveTopology topo)
 {
+	const bool ok = drawArraysImpl(mat, firstVertex, count, topo);
+	if (_ShadowDbg)
+		shadowDbgDraw("arrays", mat, count, ok);
+	return ok;
+}
+
+bool CDriverVulkan::drawArraysImpl(CMaterial &mat, uint32 firstVertex, uint32 count, VkPrimitiveTopology topo)
+{
+	_ShadowDbgMega = -1;
 	if (!_CurrentVB || count == 0)
 		return false;
 	if (!_FrameOpen && !beginFrame())
@@ -2561,6 +2610,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 	key.HasTexture0 = _StageTextures[0] ? 1 : 0;
 	fillMegaPipelineKey(key);
+	_ShadowDbgMega = key.Mega ? 1 : 0;
 
 	VkPipeline pipeline = getPipeline(key);
 	if (pipeline == VK_NULL_HANDLE)
@@ -2598,6 +2648,15 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 
 bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count, VkPrimitiveTopology topo, uint32 indexStride)
 {
+	const bool ok = drawIndexedImpl(mat, firstIndex, count, topo, indexStride);
+	if (_ShadowDbg)
+		shadowDbgDraw("indexed", mat, count, ok);
+	return ok;
+}
+
+bool CDriverVulkan::drawIndexedImpl(CMaterial &mat, uint32 firstIndex, uint32 count, VkPrimitiveTopology topo, uint32 indexStride)
+{
+	_ShadowDbgMega = -1;
 	if (!_CurrentVB || !_IndexValues || count == 0)
 		return false;
 	if (!_FrameOpen && !beginFrame())
@@ -2635,6 +2694,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 	key.HasTexture0 = _StageTextures[0] ? 1 : 0;
 	fillMegaPipelineKey(key);
+	_ShadowDbgMega = key.Mega ? 1 : 0;
 	const uint64 statsKeyEnd = _StatsEnabled ? nowNs() : 0;
 
 	if (_IndexedDrawCount == 0)
@@ -2807,6 +2867,15 @@ bool CDriverVulkan::renderRawPoints(CMaterial &mat, uint32 startIndex, uint32 nu
 
 bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 numQuads)
 {
+	const bool ok = renderRawQuadsImpl(mat, startVertex, numQuads);
+	if (_ShadowDbg)
+		shadowDbgDraw("quads", mat, numQuads, ok);
+	return ok;
+}
+
+bool CDriverVulkan::renderRawQuadsImpl(CMaterial &mat, uint32 startVertex, uint32 numQuads)
+{
+	_ShadowDbgMega = -1;
 	if (numQuads == 0)
 		return true;
 	if (!setupMaterial(mat))
@@ -2873,6 +2942,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 			key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
 			key.HasTexture0 = _StageTextures[0] ? 1 : 0;
 			fillMegaPipelineKey(key);
+			_ShadowDbgMega = key.Mega ? 1 : 0;
 
 			VkPipeline pipeline = getPipeline(key);
 			if (pipeline == VK_NULL_HANDLE)

@@ -259,6 +259,7 @@ void		CMeshInstance::generateShadowMap(const CVector &lightDir)
 	CMaterial	&castMat= renderTrav.getShadowMapManager().getCasterShadowMaterial();
 	CMesh		*mesh= (CMesh*)(IShape*)Shape;
 	driver->activeVertexBuffer( const_cast<CVertexBuffer&>(mesh->getVertexBuffer()) );
+	uint	dbgTris= 0;
 	for(uint mb=0;mb<mesh->getNbMatrixBlock();mb++)
 	{
 		for(uint rp=0;rp<mesh->getNbRdrPass(mb);rp++)
@@ -266,7 +267,14 @@ void		CMeshInstance::generateShadowMap(const CVector &lightDir)
 			const CIndexBuffer	&pb= mesh->getRdrPassPrimitiveBlock(mb, rp);
 			driver->activeIndexBuffer(const_cast<CIndexBuffer&>(pb));
 			driver->renderTriangles(castMat, 0, pb.getNumIndexes()/3);
+			dbgTris+= pb.getNumIndexes()/3;
 		}
+	}
+	if (shadowMapDebugEnabled())
+	{
+		nlinfo("SHADOWDBG mesh caster: shape %p blocks=%u tris=%u texSize=%u",
+			(void *)mesh, (unsigned)mesh->getNbMatrixBlock(), dbgTris,
+			(unsigned)_ShadowMap->getTextureSize());
 	}
 
 	// Infos.

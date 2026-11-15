@@ -39,6 +39,8 @@
 #include "stdvulkan.h"
 #include "driver_vulkan.h"
 
+#include <cstdio>
+
 using namespace std;
 using namespace NLMISC;
 using namespace NL3D;
@@ -501,6 +503,191 @@ void CDriverVulkan::endOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target
 		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 		0, 0, NULL, 0, NULL, 1, &barrier);
 	target.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+	// NLVK_SHADOWDBG: dump the shadow-sized targets once they are complete.
+	shadowDbgCapture(cmd, target);
+}
+
+// ---------------------------------------------------------------------------
+// NLVK_SHADOWDBG: read-back of the small offscreen targets
+// ---------------------------------------------------------------------------
+
+/// Record a copy of `target` into a host-visible buffer that shadowDbgHarvest()
+/// reads once the frame's fence signalled. Called from endOffscreenPass(), so
+/// the target is already in SHADER_READ_ONLY_OPTIMAL and the image is not being
+/// rendered into: the copy needs a detour through TRANSFER_SRC and back.
+void CDriverVulkan::shadowDbgCapture(VkCommandBuffer cmd, CTextureVulkan &target)
+{
+	if (!_ShadowDbg || _ShadowDbgFrames == 0)
+		return;
+	if (target.Width == 0 || target.Height == 0 ||
+		target.Width > NL_VK_SHADOWDBG_MAX_TARGET || target.Height > NL_VK_SHADOWDBG_MAX_TARGET)
+		return;
+	// Colour targets created by this driver are RGBA8 (see ensureRenderTarget),
+	// which is what the statistics and the dumps below assume.
+	if (target.Format != VK_FORMAT_R8G8B8A8_UNORM && target.Format != VK_FORMAT_R8G8B8A8_SRGB)
+		return;
+	// Bound the debug cost: the first captures are what matters (they show the
+	// blur target before and after the copy), and the draw trace keeps running
+	// afterwards. 40 captures is a few frames of evidence, ~2.5 MiB of buffers.
+	if (_ShadowDbgSerial >= 40 || _ShadowDbgCaptures.size() >= 40)
+		return;
+
+	const VkDeviceSize size = (VkDeviceSize)target.Width * target.Height * 4;
+
+	VkBufferCreateInfo bci;
+	memset(&bci, 0, sizeof(bci));
+	bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bci.size = size;
+	bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	VkBuffer buffer = VK_NULL_HANDLE;
+	if (vkCreateBuffer(_Device, &bci, NULL, &buffer) != VK_SUCCESS)
+	{
+		nlwarning("Vulkan SHADOWDBG: vkCreateBuffer(%u bytes) failed", (unsigned)size);
+		return;
+	}
+
+	VkMemoryRequirements req;
+	vkGetBufferMemoryRequirements(_Device, buffer, &req);
+	VkMemoryAllocateInfo mai;
+	memset(&mai, 0, sizeof(mai));
+	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	mai.allocationSize = req.size;
+	mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	VkDeviceMemory memory = VK_NULL_HANDLE;
+	if (mai.memoryTypeIndex == 0xFFFFFFFFu || vkAllocateMemory(_Device, &mai, NULL, &memory) != VK_SUCCESS)
+	{
+		nlwarning("Vulkan SHADOWDBG: no host-visible memory for the read-back buffer");
+		vkDestroyBuffer(_Device, buffer, NULL);
+		return;
+	}
+	vkBindBufferMemory(_Device, buffer, memory, 0);
+
+	VkImageMemoryBarrier barrier;
+	memset(&barrier, 0, sizeof(barrier));
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = target.Image;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.layerCount = 1;
+
+	barrier.oldLayout = target.Layout;
+	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		0, 0, NULL, 0, NULL, 1, &barrier);
+
+	VkBufferImageCopy region;
+	memset(&region, 0, sizeof(region));
+	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.imageSubresource.layerCount = 1;
+	region.imageExtent.width = target.Width;
+	region.imageExtent.height = target.Height;
+	region.imageExtent.depth = 1;
+	vkCmdCopyImageToBuffer(cmd, target.Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		0, 0, NULL, 0, NULL, 1, &barrier);
+	target.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+	CShadowDbgCapture capture;
+	capture.Buffer = buffer;
+	capture.Memory = memory;
+	capture.FrameIndex = _FrameIndex;
+	capture.Width = target.Width;
+	capture.Height = target.Height;
+	capture.Serial = _ShadowDbgSerial++;
+	_ShadowDbgCaptures.push_back(capture);
+}
+
+/// Report the captured targets of the frame slot whose fence just signalled:
+/// per-channel min/max and alpha coverage (the numbers that tell an empty
+/// shadow map from a full one), plus a PGM of the alpha channel and a PPM of
+/// the colour, written to the current directory so the map can be looked at.
+void CDriverVulkan::shadowDbgHarvest(uint32 frame)
+{
+	bool readAny = false;
+	for (size_t i = 0; i < _ShadowDbgCaptures.size();)
+	{
+		CShadowDbgCapture &capture = _ShadowDbgCaptures[i];
+		if (capture.FrameIndex != frame)
+		{
+			++i;
+			continue;
+		}
+		readAny = true;
+
+		const uint32 pixels = capture.Width * capture.Height;
+		void *mapped = NULL;
+		if (vkMapMemory(_Device, capture.Memory, 0, (VkDeviceSize)pixels * 4, 0, &mapped) == VK_SUCCESS)
+		{
+			const uint8 *rgba = (const uint8 *)mapped;
+			uint8 rmin = 255, rmax = 0, gmin = 255, gmax = 0, bmin = 255, bmax = 0, amin = 255, amax = 0;
+			uint64 asum = 0;
+			uint32 aNonZero = 0, aPartial = 0, aFull = 0;
+			for (uint32 p = 0; p < pixels; ++p)
+			{
+				const uint8 r = rgba[p * 4 + 0], g = rgba[p * 4 + 1], b = rgba[p * 4 + 2], a = rgba[p * 4 + 3];
+				rmin = min(rmin, r); rmax = max(rmax, r);
+				gmin = min(gmin, g); gmax = max(gmax, g);
+				bmin = min(bmin, b); bmax = max(bmax, b);
+				amin = min(amin, a); amax = max(amax, a);
+				asum += a;
+				if (a != 0) ++aNonZero;
+				if (a != 0 && a != 255) ++aPartial;
+				if (a == 255) ++aFull;
+			}
+			nlinfo("Vulkan SHADOWDBG readback #%u target %ux%u: rgb %u..%u/%u..%u/%u..%u alpha %u..%u mean %.2f | a>0 %u (%.2f%%) partial %u full %u",
+				capture.Serial, capture.Width, capture.Height,
+				rmin, rmax, gmin, gmax, bmin, bmax, amin, amax,
+				pixels ? (double)asum / (double)pixels : 0.0,
+				aNonZero, pixels ? 100.0 * (double)aNonZero / (double)pixels : 0.0,
+				aPartial, aFull);
+
+			if (capture.Serial < 24)
+			{
+				char name[64];
+				FILE *f = NULL;
+				snprintf(name, sizeof(name), "shadowdbg-%02u-%ux%u.pgm", capture.Serial, capture.Width, capture.Height);
+				f = fopen(name, "wb");
+				if (f != NULL)
+				{
+					fprintf(f, "P5\n%u %u\n255\n", capture.Width, capture.Height);
+					for (uint32 p = 0; p < pixels; ++p)
+						fputc(rgba[p * 4 + 3], f);
+					fclose(f);
+				}
+				snprintf(name, sizeof(name), "shadowdbg-%02u-%ux%u.ppm", capture.Serial, capture.Width, capture.Height);
+				f = fopen(name, "wb");
+				if (f != NULL)
+				{
+					fprintf(f, "P6\n%u %u\n255\n", capture.Width, capture.Height);
+					for (uint32 p = 0; p < pixels; ++p)
+						fwrite(rgba + p * 4, 1, 3, f);
+					fclose(f);
+				}
+			}
+			vkUnmapMemory(_Device, capture.Memory);
+		}
+		vkDestroyBuffer(_Device, capture.Buffer, NULL);
+		vkFreeMemory(_Device, capture.Memory, NULL);
+		_ShadowDbgCaptures.erase(_ShadowDbgCaptures.begin() + i);
+	}
+	// The trace budget counts frames that actually contained a small offscreen
+	// target (a shadow map), not frames since the driver started: the client
+	// spends its first thousands of frames on the login screen and loading.
+	if (readAny && _ShadowDbgFrames != 0)
+		--_ShadowDbgFrames;
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +695,24 @@ void CDriverVulkan::endOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target
 // ---------------------------------------------------------------------------
 
 bool CDriverVulkan::setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel, uint32 cubeFace)
+{
+	const bool ok = setRenderTargetImpl(tex, x, y, width, height, mipmapLevel, cubeFace);
+	if (_ShadowDbg && _ShadowDbgFrames != 0)
+	{
+		// The shadow-map manager checks nothing: a failed bind silently leaves
+		// the draws going to the previous target, so log the result for every
+		// bind, not only the shadow-sized ones.
+		nlinfo("Vulkan SHADOWDBG setRenderTarget %s%s (%ux%u) rect %u,%u %ux%u mip %u face %u; open pass %ux%u",
+			tex ? "target" : "window", ok ? "" : " FAILED",
+			tex ? tex->getWidth() : 0, tex ? tex->getHeight() : 0,
+			x, y, width, height, mipmapLevel, cubeFace,
+			_RenderTargetInfo ? _RenderTargetInfo->Width : 0,
+			_RenderTargetInfo ? _RenderTargetInfo->Height : 0);
+	}
+	return ok;
+}
+
+bool CDriverVulkan::setRenderTargetImpl(ITexture *tex, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel, uint32 cubeFace)
 {
 	if (!_Device)
 		return false;

@@ -310,6 +310,20 @@ CDriverVulkan::CDriverVulkan()
 	_TextureClearEnabled = getenv("NLVK_NO_TEX_CLEAR") == NULL;
 	_NoQueries = getenv("NLVK_NOQUERIES") != NULL;
 	_RTFeedbackDbg = getenv("NLVK_RT_FEEDBACK_DBG") != NULL;
+	// Shadow-map diagnosis (read-only): trace the offscreen passes and read the
+	// small targets back. NLVK_SHADOWDBG_FRAMES sets how many frames are traced
+	// (default 3: enough for the first generated shadow map).
+	_ShadowDbg = getenv("NLVK_SHADOWDBG") != NULL;
+	_ShadowDbgFrames = 3;
+	_ShadowDbgSerial = 0;
+	_ShadowDbgMega = -1;
+	if (_ShadowDbg)
+	{
+		const char *frames = getenv("NLVK_SHADOWDBG_FRAMES");
+		if (frames && atoi(frames) > 0)
+			_ShadowDbgFrames = (uint32)atoi(frames);
+		nlinfo("Vulkan: NLVK_SHADOWDBG on, tracing %u frame(s)", _ShadowDbgFrames);
+	}
 	// Frame-path debug switches: read once, the frame code must not call
 	// getenv(). 0 = a single dump at NLVK_SCREENSHOT_FRAME; a nonzero
 	// _ScreenshotEvery dumps every N frames (each frame named after its
@@ -2109,6 +2123,8 @@ bool CDriverVulkan::beginFrame()
 	// the reset would have overwritten it by then.
 	_OcclusionCompletedFrame[frame] = _OcclusionIssuedFrame[frame];
 	harvestOcclusionQueries(frame);
+	if (_ShadowDbg)
+		shadowDbgHarvest(frame);
 
 	// The GPU timestamps of the submission that just completed on this slot are
 	// readable now: the fence wait above is the synchronisation. Done before

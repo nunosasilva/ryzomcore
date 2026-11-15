@@ -294,6 +294,14 @@ void			CShadowMapManager::renderGenerate(CScene *scene)
 	// the max shadow casters we can do in 1 screen pass.
 	uint	maxSCPerPass= numTextW * numTextH;
 
+	if (shadowMapDebugEnabled())
+	{
+		nlinfo("SHADOWDBG renderGenerate: casters=%u selected=%u baseSize=%u window=%ux%u textDest=%ux%u grid=%ux%u maxPerPass=%u blur=%u blurTexture=%ux%u",
+			(unsigned)_ShadowCasters.size(), (unsigned)_GenerateShadowCasters.size(),
+			baseTextureSize, wndW, wndH, textDestW, textDestH, numTextW, numTextH,
+			maxSCPerPass, scene->getShadowMapBlurSize(), _BlurTextureW, _BlurTextureH);
+	}
+
 	// compute vp float size.
 	float	vpWidth= (float)baseTextureSize / (float)(numTextW*baseTextureSize);
 	float	vpHeight= (float)baseTextureSize / (float)(numTextH*baseTextureSize);
@@ -354,6 +362,14 @@ void			CShadowMapManager::renderGenerate(CScene *scene)
 			CViewport	vp;
 			vp.init(textX*baseTextureSize/(float)_BlurTextureW, textY*baseTextureSize/(float)_BlurTextureH, vpWidth, vpHeight);
 			driverForShadowGeneration->setupViewport(vp);
+
+			if (shadowMapDebugEnabled())
+			{
+				float vx, vy, vw, vh;
+				vp.getValues(vx, vy, vw, vh);
+				nlinfo("SHADOWDBG caster %u cell %u,%u vp %.4f,%.4f %.4fx%.4f",
+					baseSC+i, textX, textY, vx, vy, vw, vh);
+			}
 
 			// TODO_SHADOW: optim: one big erase per pass, but just bbox needed (according to number of SC to render)
 			// do a siccor or prefer do a polygon clear?
@@ -469,6 +485,13 @@ void			CShadowMapManager::renderGenerate(CScene *scene)
 						// Render the shadow in the final shadow texture
 						vp.init (0, 0, 1, 1);
 						driverForShadowGeneration->setupViewport(vp);
+						if (shadowMapDebugEnabled())
+						{
+							nlinfo("SHADOWDBG copy cell %u,%u -> shadowmap %p %ux%u uv %.5f,%.5f %.5fx%.5f blurTarget=%u",
+								textX, textY, (void *)text, bts, bts,
+								(float)(textX*bts)*_BlurTextureOOW, (float)(textY*bts)*_BlurTextureOOH,
+								(float)bts*_BlurTextureOOW, (float)bts*_BlurTextureOOH, blurTarget);
+						}
 						driverForShadowGeneration->renderRawQuads (_CopyMaterial, 0, 1);
 
 						// Set default render target
@@ -523,6 +546,30 @@ void			CShadowMapManager::renderProject(CScene *scene)
 	if( _ShadowCasters.empty() )
 	{
 		return;
+	}
+
+	// NLVK_SHADOWDBG_RECEIVER=1 (NLVK_SHADOWDBG must be on): draw the projected
+	// shadow map as red where its alpha is 1, so the projection's position and
+	// orientation on the receivers are visible directly instead of through the
+	// shadow colour maths.
+	static const bool dbgProjection = shadowMapDebugEnabled() && getenv("NLVK_SHADOWDBG_RECEIVER") != NULL;
+	if (dbgProjection)
+	{
+		_ReceiveShadowMaterial.initUnlit();
+		_ReceiveShadowMaterial.setBlend(true);
+		_ReceiveShadowMaterial.setBlendFunc(CMaterial::srcalpha, CMaterial::invsrcalpha);
+		_ReceiveShadowMaterial.setColor(CRGBA(255, 0, 0, 255));
+		_ReceiveShadowMaterial.setZWrite(false);
+		_ReceiveShadowMaterial.setAlphaTest(false);
+		_ReceiveShadowMaterial.setDoubleSided(true);
+		_ReceiveShadowMaterial.setTexture(1, nullptr);
+		_ReceiveShadowMaterial.enableUserTexMat(0, true);
+		_ReceiveShadowMaterial.setTexCoordGen(0, true);
+		_ReceiveShadowMaterial.setTexCoordGenMode(0, CMaterial::TexCoordGenObjectSpace);
+		_ReceiveShadowMaterial.texEnvOpRGB(0, CMaterial::Replace);
+		_ReceiveShadowMaterial.texEnvArg0RGB(0, CMaterial::Texture, CMaterial::SrcAlpha);
+		_ReceiveShadowMaterial.texEnvOpAlpha(0, CMaterial::Replace);
+		_ReceiveShadowMaterial.texEnvArg0Alpha(0, CMaterial::Texture, CMaterial::SrcAlpha);
 	}
 
 
@@ -617,6 +664,7 @@ void			CShadowMapManager::renderProject(CScene *scene)
 
 			// select receivers.
 			_ShadowReceiverGrid.select(worldBB.getMin(), worldBB.getMax());
+			uint	dbgReceivers= 0;
 			// For all receivers
 			TShadowReceiverGrid::CIterator	it;
 			for(it= _ShadowReceiverGrid.begin();it!=_ShadowReceiverGrid.end();it++)
@@ -625,6 +673,7 @@ void			CShadowMapManager::renderProject(CScene *scene)
 				// Avoid Auto-Casting.
 				if(receiver==caster)
 					continue;
+				++dbgReceivers;
 
 				// update the material texture projection
 				// see getReceiverRenderWorldMatrix() Doc for why using this instead of getWorldMatrix()
@@ -632,6 +681,12 @@ void			CShadowMapManager::renderProject(CScene *scene)
 
 				// cast the shadow on them
 				receiver->receiveShadowMap(sm, casterPos, _ReceiveShadowMaterial);
+			}
+
+			if (shadowMapDebugEnabled())
+			{
+				nlinfo("SHADOWDBG renderProject: caster receivers=%u fade=%.2f mapSize=%u",
+					dbgReceivers, sm->getFinalFade(), sm->getTextureSize());
 			}
 
 			// Additionaly, the VisualCollisionManager may manage some shadow receiving

@@ -83,6 +83,13 @@ const uint32 NL_VK_VERTEX_RING_MAX = 1024u * 1024u * 1024u;
 const uint32 NL_VK_INDEX_RING_MAX = 64u * 1024u * 1024u;
 const uint32 NL_VK_UNIFORM_RING_MAX = 64u * 1024u * 1024u;
 
+/// NLVK_SHADOWDBG targets anything up to this size as a shadow-map target. The
+/// shadow-map manager renders its casters into a 256x256 blur texture
+/// (NL3D_SMM_MAX_TEXTDEST_SIZE) and copies each caster's cell into a 64x64 (or
+/// per-scene-size) CTextureMem render target, so both are covered while the
+/// bloom/FXAA targets of a normal window are not.
+const uint32 NL_VK_SHADOWDBG_MAX_TARGET = 512u;
+
 /// Size a ring buffer has to grow to for a `required`-byte upload: at least
 /// twice the request (the ring is split in per-frame halves), at least twice
 /// the current size, and never above `maxSize`. Returns 0 when that cannot be
@@ -1138,6 +1145,12 @@ private:
 	bool					setupVertexBuffer(CVertexBuffer &vb);
 	bool					drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count, VkPrimitiveTopology topo, uint32 indexStride);
 	bool					drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count, VkPrimitiveTopology topo);
+	/// setRenderTarget() body, behind the NLVK_SHADOWDBG logging wrapper.
+	bool					setRenderTargetImpl(ITexture *tex, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel, uint32 cubeFace);
+	/// The real draw bodies, behind the NLVK_SHADOWDBG logging wrappers.
+	bool					drawIndexedImpl(CMaterial &mat, uint32 firstIndex, uint32 count, VkPrimitiveTopology topo, uint32 indexStride);
+	bool					drawArraysImpl(CMaterial &mat, uint32 firstVertex, uint32 count, VkPrimitiveTopology topo);
+	bool					renderRawQuadsImpl(CMaterial &mat, uint32 startVertex, uint32 numQuads);
 	VkBuffer				getIndexUploadBuffer(const void *data, uint32 size, uint32 stride);
 	void					drawTestTriangle(VkCommandBuffer cmd);
 	bool					commitPushConstants(const CPipelineKey &key, VkCommandBuffer cmd, CVertexBuffer &vb);
@@ -1410,6 +1423,66 @@ private:
 	/// draw that samples the render target it is drawing into. setupMaterial()
 	/// runs on every material change, so the switch is read once here.
 	bool						_RTFeedbackDbg;
+
+	// --- NLVK_SHADOWDBG (shadow-map diagnosis, read-only) ---
+	/// NLVK_SHADOWDBG=1 traces the shadow-map pass: every offscreen render-target
+	/// bind with its result, every draw issued into a small (shadow-sized)
+	/// target, and a one-shot read-back of each small target with alpha
+	/// statistics and a PGM/PPM dump. It answers "is the shadow map empty, and
+	/// which pass emptied it" from evidence instead of inference. No behaviour
+	/// change: the only added commands are the debug copies, and only while
+	/// _ShadowDbg is set.
+	bool						_ShadowDbg;
+	/// Frames that still log target binds and draws (counted down per frame).
+	uint32						_ShadowDbgFrames;
+	uint32						_ShadowDbgSerial;
+	/// Mega-pipeline choice of the last draw recorded (0 simple, 1 mega, -1
+	/// none): the shadow receiver must take the mega path to use the mega
+	/// shader's texgen, so the trace distinguishes them.
+	sint32						_ShadowDbgMega;
+	/// A read-back copy recorded in one frame and read after that frame's fence.
+	struct CShadowDbgCapture
+	{
+		VkBuffer		Buffer;
+		VkDeviceMemory	Memory;
+		uint32			FrameIndex;
+		uint32			Width;
+		uint32			Height;
+		uint32			Serial;
+	};
+	std::vector<CShadowDbgCapture>	_ShadowDbgCaptures;
+	/// Record a copy of a small offscreen target into a host-visible buffer.
+	void						shadowDbgCapture(VkCommandBuffer cmd, CTextureVulkan &target);
+	/// Map and report the captures recorded for the frame slot whose fence just
+	/// signalled, then free their buffers.
+	void						shadowDbgHarvest(uint32 frame);
+	/// Log one draw issued into a small offscreen target ("indexed"/"arrays"/
+	/// "quads", with the material and pipeline state that decided its result).
+	void						shadowDbgDraw(const char *kind, CMaterial &mat, uint32 count, bool ok);
+	/// True while draws must be traced: the debug switch is on and either the
+	/// current target is shadow-map sized, or the draw samples a shadow-map
+	/// sized render target (the receiver runs on the main target).
+	bool						shadowDbgTracing() const
+	{
+		if (!_ShadowDbg || _ShadowDbgFrames == 0)
+			return false;
+		if (_RenderTargetInfo != NULL &&
+			_RenderTargetInfo->Width <= NL_VK_SHADOWDBG_MAX_TARGET &&
+			_RenderTargetInfo->Height <= NL_VK_SHADOWDBG_MAX_TARGET)
+			return true;
+		if (_CurrentMaterial != NULL)
+		{
+			for (uint stage = 0; stage < 4; ++stage)
+			{
+				const ITexture *tex = _CurrentMaterial->getTexture(stage);
+				if (tex != NULL && tex->getRenderTarget() &&
+					tex->getWidth() <= NL_VK_SHADOWDBG_MAX_TARGET &&
+					tex->getHeight() <= NL_VK_SHADOWDBG_MAX_TARGET)
+					return true;
+			}
+		}
+		return false;
+	}
 
 	// --- Mega shader resources ---
 	/// Select the mega (GL3-equivalent) shader for the draws it supports. On by

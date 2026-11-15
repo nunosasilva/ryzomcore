@@ -20,6 +20,7 @@
 #include "nel/misc/polygon.h"
 #include "nel/3d/shadow_poly_receiver.h"
 #include "nel/3d/shadow_map.h"
+#include "nel/3d/shadow_map_manager.h"
 #include "nel/3d/decal.h"
 #include "nel/3d/driver.h"
 #include "nel/3d/camera_col.h"
@@ -226,6 +227,7 @@ inline void	CShadowPolyReceiver::renderSelection(IDriver *drv, CMaterial &shadow
 	}
 
 	uint	currentTriIdx= 0;
+	uint	currentVbIdx= 0;
 	{
 		// Volatile: must resize before lock
 		_VB.setNumVertices((uint32)_Vertices.size());
@@ -239,7 +241,6 @@ inline void	CShadowPolyReceiver::renderSelection(IDriver *drv, CMaterial &shadow
 		TIndexType *triPtr = (TIndexType *) iba.getPtr();
 
 		// For All triangles, clip them.
-		uint	currentVbIdx= 0;
 		for(it=_TriangleGrid.begin();it!=_TriangleGrid.end();it++)
 		{
 			CTriangleId		&triId= *it;
@@ -304,7 +305,38 @@ inline void	CShadowPolyReceiver::renderSelection(IDriver *drv, CMaterial &shadow
 	// **** Render
 	drv->activeVertexBuffer(_VB);
 	drv->activeIndexBuffer(_RenderTriangles);
-	drv->renderTriangles(shadowMat, 0, currentTriIdx/3);
+	const bool dbgOk= drv->renderTriangles(shadowMat, 0, currentTriIdx/3);
+	if (shadowMapDebugEnabled())
+	{
+		// Project the selected triangles' vertices through the shadow stage's
+		// texture matrix and report the UV range: a receiver can only show a
+		// shadow where this range overlaps the [0,1] map.
+		float smin = 1e30f, smax = -1e30f, tmin = 1e30f, tmax = -1e30f;
+		const CMatrix &uvMat = shadowMat.getUserTexMat(0);
+		uint dbgVerts = 0;
+		for (it = _TriangleGrid.begin(); it != _TriangleGrid.end(); ++it)
+		{
+			const CTriangleId &triId = *it;
+			for (i = 0; i < 3; ++i)
+			{
+				CVector p = _Vertices[triId.Vertex[i]] + vertDelta;
+				CVectorH uv = uvMat * CVectorH(p.x, p.y, p.z, 1.f);
+				if (uv.w != 0.f)
+				{
+					uv.x /= uv.w;
+					uv.y /= uv.w;
+				}
+				smin = std::min(smin, (float)uv.x); smax = std::max(smax, (float)uv.x);
+				tmin = std::min(tmin, (float)uv.y); tmax = std::max(tmax, (float)uv.y);
+				++dbgVerts;
+			}
+		}
+		nlinfo("SHADOWDBG receiver draw: tris=%u rverts=%u map=%ux%u ok=%d zfunc=%d blend=%d zbias=%.3f uv s %.3f..%.3f t %.3f..%.3f",
+			currentTriIdx/3, dbgVerts, shadowMap->getTextureSize(), shadowMap->getTextureSize(),
+			(int)dbgOk, (int)shadowMat.getZFunc(), (int)shadowMat.getBlend(), shadowMat.getZBias(),
+			dbgVerts ? smin : -1.f, dbgVerts ? smax : -1.f,
+			dbgVerts ? tmin : -1.f, dbgVerts ? tmax : -1.f);
+	}
 	// TestYoyo. Show in Red triangles selected
 	/*static	CMaterial	tam;
 	tam.initUnlit();
