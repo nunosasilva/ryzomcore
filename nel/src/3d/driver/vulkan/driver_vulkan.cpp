@@ -1757,10 +1757,15 @@ void CDriverVulkan::shutdownVulkan()
 	}
 }
 
-uint32 CDriverVulkan::findMemoryType(uint32 typeBits, VkMemoryPropertyFlags props) const
+uint32 CDriverVulkan::findMemoryType(uint32 typeBits, VkMemoryPropertyFlags props,
+	VkMemoryPropertyFlags preferred) const
 {
 	VkPhysicalDeviceMemoryProperties mp;
 	vkGetPhysicalDeviceMemoryProperties(_PhysicalDevice, &mp);
+	if (preferred)
+		for (uint32 i = 0; i < mp.memoryTypeCount; ++i)
+			if ((typeBits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & (props | preferred)) == (props | preferred))
+				return i;
 	for (uint32 i = 0; i < mp.memoryTypeCount; ++i)
 		if ((typeBits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props)
 			return i;

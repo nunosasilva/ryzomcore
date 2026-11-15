@@ -1233,8 +1233,29 @@ void CVBDrvInfosVulkan::ensureCapacity(uint32 size)
 		memset(&mai, 0, sizeof(mai));
 		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		mai.allocationSize = req.size;
-		mai.memoryTypeIndex = driver->findMemoryType(req.memoryTypeBits,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		// A CpuReadWrite buffer is read back by the CPU: lock() snapshots it into
+		// the vertex ring on every frame the engine rewrites it. The memory type
+		// findMemoryType() picks by default (the first host-visible coherent one)
+		// is uncached on RADV, and an uncached read runs at ~0.33 GB/s there,
+		// i.e. ~0.4 ms per 128 KiB snapshot - which is the whole F1 regression.
+		// Ask for cached host memory when the device has it: the GPU reads it
+		// just as well and the engine's writes get cheaper too. NLVK_VB_UNCACHED=1
+		// keeps the old memory type for A/B runs.
+		static const bool cachedHostMemory = getenv("NLVK_VB_UNCACHED") == NULL;
+		static bool loggedCoWMemory = false;
+		const VkMemoryPropertyFlags memProps = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		const VkMemoryPropertyFlags wantCached = (_CopyOnWrite && cachedHostMemory) ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0;
+		mai.memoryTypeIndex = driver->findMemoryType(req.memoryTypeBits, memProps, wantCached);
+		if (_CopyOnWrite && !loggedCoWMemory)
+		{
+			// One line, once: the measurement run must be able to tell which
+			// memory these buffers got.
+			loggedCoWMemory = true;
+			nlinfo("Vulkan: CpuReadWrite vertex buffers use memory type %u (%s), %u bytes",
+				mai.memoryTypeIndex,
+				wantCached ? "host cached" : "host uncached (NLVK_VB_UNCACHED or no cached type)",
+				size);
+		}
 		if (vkAllocateMemory(device, &mai, NULL, &_Memory[slot]) != VK_SUCCESS)
 		{
 			nlwarning("Vulkan: vertex buffer memory allocation failed (%u bytes)", size);

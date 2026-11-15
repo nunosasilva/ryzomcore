@@ -1717,7 +1717,11 @@ public:
 	/// Destroy the Vulkan objects of a texture whose last ITexture is gone.
 	void					releaseTextureDrvInfo(CTextureDrvInfosVulkan &info);
 
-	uint32					findMemoryType(uint32 typeBits, VkMemoryPropertyFlags props) const;
+	/// First memory type that has `props`. `preferred` (optional) is asked for
+	/// on top of `props` and silently dropped when the device has no such type,
+	/// which is how the CpuReadWrite vertex buffers ask for cached host memory.
+	uint32					findMemoryType(uint32 typeBits, VkMemoryPropertyFlags props,
+								VkMemoryPropertyFlags preferred = 0) const;
 	/// Reserve `size` bytes in the current frame's vertex ring (4-byte aligned)
 	/// and return the offset, or 0xFFFFFFFF when the ring could not grow.
 	uint32					allocVertexRing(uint32 size);
