@@ -40,6 +40,7 @@
 #include "unix_event_emitter.h"
 #endif
 
+#include <mutex>
 #include <cstring>
 #include <cstdlib>
 #include <set>
@@ -321,7 +322,7 @@ struct CSamplerState
 struct CTextureVulkan
 {
 	CTextureVulkan()
-		: Image(VK_NULL_HANDLE), Memory(VK_NULL_HANDLE), MemorySize(0), View(VK_NULL_HANDLE), Sampler(VK_NULL_HANDLE)
+		: Image(VK_NULL_HANDLE), Memory(VK_NULL_HANDLE), MemoryOffset(0), MemoryBlock(NULL), MemorySize(0), View(VK_NULL_HANDLE), Sampler(VK_NULL_HANDLE)
 		, Framebuffer(VK_NULL_HANDLE), Width(0), Height(0), MipLevels(1), Layers(1), Cube(false), HasAlpha(false), Uploaded(false)
 		, Compressed(false), CompressFromRGBA(false), SourceFormat(CBitmap::DonTKnow), Format(VK_FORMAT_UNDEFINED), Usage(0)
 		, Layout(VK_IMAGE_LAYOUT_UNDEFINED), DepthTarget(-1)
@@ -335,6 +336,11 @@ struct CTextureVulkan
 
 	VkImage			Image;
 	VkDeviceMemory	Memory;
+	/// Offset of Image inside Memory. Images below the dedicated threshold are
+	/// suballocated from a shared block (MemoryBlock != NULL); a very large
+	/// image keeps a dedicated allocation (MemoryBlock == NULL).
+	VkDeviceSize	MemoryOffset;
+	void			*MemoryBlock;
 	/// Bytes allocated for Memory, from VkMemoryRequirements.
 	VkDeviceSize	MemorySize;
 	VkImageView		View;
@@ -1473,6 +1479,43 @@ private:
 	bool					allocTextureStaging(VkDeviceSize size, STextureStaging &out);
 	/// Zero every mip level of a freshly created image (see the .cpp).
 	bool					clearTextureImage(CTextureVulkan &out, uint32 mipCount);
+
+	/// A block of device memory suballocated to texture images, one allocator
+	/// per memory type. Vulkan otherwise charges a full vkAllocateMemory per
+	/// image, which on RADV costs ~1.6 ms and dominated both the zone load and
+	/// the shape-streaming burst (streamable IGs pop in one at a time).
+	struct CImageMemoryBlock
+	{
+		VkDeviceMemory	Memory;
+		uint32			TypeIndex;
+		VkDeviceSize	Size;
+		VkDeviceSize	Used;		///< bytes currently bound to images
+		VkDeviceSize	Bump;		///< never-used tail offset
+		std::vector<std::pair<VkDeviceSize, VkDeviceSize> >	Free;	///< (offset,size), sorted+coalesced
+		/// NLVK_TEX_SUBALLOC_CHECK=1: every live [offset,size) in this block,
+		/// the shadow list the overlap/audit checker walks.
+		std::vector<std::pair<VkDeviceSize, VkDeviceSize> >	Live;
+	};
+	std::vector<CImageMemoryBlock *>	_ImageMemoryBlocks;
+	/// Guards _ImageMemoryBlocks: texture setup runs on the main thread today,
+	/// but the async shape/texture paths are one call away from uploading from a
+	/// worker, and a corrupted free list aliases two images.
+	std::mutex							_ImageMemoryMutex;
+	VkDeviceSize			_ImageMemoryAllocated;	///< sum of block sizes
+	VkDeviceSize			_ImageMemoryUsed;		///< sum of bound image ranges
+	VkDeviceSize			_ImageMemoryDedicated;	///< sum of dedicated allocations
+	uint64					_ImageMemoryDedicatedCount;
+	uint64					_ImageMemoryBlockCount;
+	/// VkPhysicalDeviceLimits::bufferImageGranularity: every suballocated image
+	/// is also aligned to this, so two images never share a granularity page
+	/// (the spec's rule for mixed resource classes, and what the driver's
+	/// internal page compression expects in practice).
+	VkDeviceSize			_ImageMemoryGranularity;
+	bool					allocImageMemory(const VkMemoryRequirements &req, uint32 typeIndex, CTextureVulkan &out,
+								bool requiresDedicated);
+	void					freeImageMemory(CTextureVulkan &tex);
+	void					shutdownImageMemory();
+	void					reportImageMemoryStats();
 	/// Host visible buffer for texture traffic that does not go through the
 	/// staging ring: uploads too large for it (TRANSFER_SRC) and the one-shot
 	/// BC self-test readback (TRANSFER_DST).

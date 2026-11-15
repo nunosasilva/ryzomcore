@@ -130,6 +130,17 @@ void CShapeBank::release(IShape* pShp)
 
 void CShapeBank::processWaitingShapes ()
 {
+	// NLVK_SHAPEBANK_STATS: how much main-thread time the shape bank spends
+	// streaming textures, and how many shapes are still waiting. Streamable IGs
+	// link one by one when this burst is slow, which is the pop-in players see.
+	static bool statsEnabled = getenv("NLVK_SHAPEBANK_STATS") != NULL;
+	static double statsWindowStart = 0.0;
+	static double statsWindowMs = 0.0;
+	static uint32 statsFrames = 0;
+	static uint32 statsShapesLinked = 0;
+	static uint32 statsMaxWaiting = 0;
+	const NLMISC::TTicks statsStart = statsEnabled ? NLMISC::CTime::getPerformanceTime() : 0;
+
 	uint32 nTotalUploaded = 0;
 	TWaitingShapesMap::iterator wsmmIt = WaitingShapes.begin();
 	while( wsmmIt != WaitingShapes.end() )
@@ -264,6 +275,8 @@ void CShapeBank::processWaitingShapes ()
 			case AsyncLoad_Ready:
 				add (wsmmIt->first, pShp);
 				rWS.State = AsyncLoad_Delete;
+				if (statsEnabled)
+					++statsShapesLinked;
 			break;
 
 			// The delete operation can take several frames to complete but this is not a problem
@@ -322,6 +335,29 @@ void CShapeBank::processWaitingShapes ()
 		}
 
 		wsmmIt = wsmmItNext;
+	}
+
+	if (statsEnabled)
+	{
+		if (WaitingShapes.size() > statsMaxWaiting)
+			statsMaxWaiting = (uint32)WaitingShapes.size();
+		const NLMISC::TTicks nowTicks = NLMISC::CTime::getPerformanceTime();
+		const double nowS = NLMISC::CTime::ticksToSecond(nowTicks);
+		statsWindowMs += NLMISC::CTime::ticksToSecond(nowTicks - statsStart) * 1000.0;
+		++statsFrames;
+		if (statsWindowStart == 0.0)
+			statsWindowStart = nowS;
+		if (nowS - statsWindowStart >= 1.0)
+		{
+			nlinfo("ShapeBank: %.2f ms/frame in texture streaming, %u shapes linked, %u waiting (max %u), %u frames",
+				statsWindowMs / (double)std::max(1u, statsFrames),
+				statsShapesLinked, (uint)WaitingShapes.size(), statsMaxWaiting, statsFrames);
+			statsWindowStart = nowS;
+			statsWindowMs = 0.0;
+			statsFrames = 0;
+			statsShapesLinked = 0;
+			statsMaxWaiting = 0;
+		}
 	}
 }
 

@@ -446,6 +446,7 @@ bool CDriverVulkan::release()
 	if (!_ShuttingDown)
 	{
 		_ShuttingDown = true;
+		reportImageMemoryStats();
 		// Finish all submitted work while the window is still mapped: a present
 		// that is pending on a window that no longer exists must not stall the
 		// teardown. Then unmap, like the GL3 driver, so the compositor has
@@ -555,6 +556,7 @@ bool CDriverVulkan::pickPhysicalDevice()
 			_PhysicalDevice = devices[i];
 			_GraphicsFamily = q;
 			_DeviceProps = props;
+			_ImageMemoryGranularity = props.limits.bufferImageGranularity ? props.limits.bufferImageGranularity : 1;
 			VkPhysicalDeviceFeatures features;
 			vkGetPhysicalDeviceFeatures(devices[i], &features);
 			_SupportsBC = (features.textureCompressionBC == VK_TRUE);
@@ -1677,6 +1679,7 @@ void CDriverVulkan::shutdownVulkan()
 		if (_RenderPass) { vkDestroyRenderPass(_Device, _RenderPass, NULL); _RenderPass = VK_NULL_HANDLE; }
 		destroyDepthTargets();
 
+		shutdownImageMemory();
 		vkDestroyDevice(_Device, NULL);
 		_Device = VK_NULL_HANDLE;
 	}
@@ -2584,6 +2587,9 @@ bool CDriverVulkan::swapBuffers()
 			nlinfo("Vulkan stats: image create split: vkCreateImage %.0f ms, requirements %.0f ms, vkAllocateMemory %.0f ms, view %.0f ms",
 				(double)_StatsTexImageCreateNs / 1e6, (double)_StatsTexImageMiscNs / 1e6,
 				(double)_StatsTexImageAllocNs / 1e6, (double)_StatsTexImageViewNs / 1e6);
+			// Per-window image-memory table: the merge gate tracks blocks and
+			// bound MiB across zone changes, which only an in-session line shows.
+			reportImageMemoryStats();
 			nlinfo("Vulkan stats: zero clear: %.1f ms, %llu images, %.1f MiB (in the texture create cost below)",
 				(double)_StatsTexClearNs / 1e6, (unsigned long long)_StatsTexClearCount,
 				(double)_StatsTexClearBytes / (1024.0 * 1024.0));

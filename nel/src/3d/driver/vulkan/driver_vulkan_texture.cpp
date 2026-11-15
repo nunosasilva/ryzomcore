@@ -299,7 +299,7 @@ void CDriverVulkan::freeTextureObjects(CTextureVulkan &tex)
 	// every texture that has the same state: it is not destroyed here.
 	if (tex.View) vkDestroyImageView(_Device, tex.View, NULL);
 	if (tex.Image) vkDestroyImage(_Device, tex.Image, NULL);
-	if (tex.Memory) vkFreeMemory(_Device, tex.Memory, NULL);
+	freeImageMemory(tex);
 	tex = CTextureVulkan();
 }
 
@@ -362,6 +362,351 @@ CTextureDrvInfosVulkan::~CTextureDrvInfosVulkan()
 /// uploaded textures and render targets: the only difference is the usage
 /// flags (render targets add COLOR_ATTACHMENT) and the format (compressed
 /// textures keep their BC format, everything else is RGBA8).
+// ---------------------------------------------------------------------------
+// Image memory suballocator
+// ---------------------------------------------------------------------------
+
+/// Blocks are big enough that a zone's few thousand images fit in a handful of
+/// vkAllocateMemory calls; anything this large keeps a dedicated allocation.
+static const VkDeviceSize s_ImageBlockSize = 64ull * 1024 * 1024;
+static const VkDeviceSize s_ImageDedicatedThreshold = 16ull * 1024 * 1024;
+
+static VkDeviceSize alignUpTo(VkDeviceSize value, VkDeviceSize alignment)
+{
+	if (alignment <= 1)
+		return value;
+	return (value + alignment - 1) / alignment * alignment;
+}
+
+/// NLVK_TEX_SUBALLOC_CHECK=1 keeps a shadow list per block and reports (once,
+/// then a summary at release) any allocation that overlaps a live range, any
+/// free of a range that is not live, and any range that is not block-aligned.
+/// Off by default: one static bool plus a branch per allocation.
+static bool imageSuballocCheckEnabled()
+{
+	static const char *env = NULL;
+	static bool init = false;
+	if (!init)
+	{
+		env = getenv("NLVK_TEX_SUBALLOC_CHECK");
+		init = true;
+	}
+	return env != NULL && strcmp(env, "0") != 0;
+}
+
+static uint64 s_imageCheckFailures = 0;
+static char s_imageCheckFirst[256] = { 0 };
+
+static void imageCheckFail(const char *what, VkDeviceSize offset, VkDeviceSize size,
+	const void *blockPtr, unsigned long long blockUsed)
+{
+	++s_imageCheckFailures;
+	if (s_imageCheckFirst[0] == 0)
+		smprintf(s_imageCheckFirst, sizeof(s_imageCheckFirst), "%s offset=%llu size=%llu block=%p used=%llu",
+			what, (unsigned long long)offset, (unsigned long long)size, blockPtr, blockUsed);
+	if (s_imageCheckFailures == 1)
+		nlwarning("Vulkan image memory CHECK: %s", s_imageCheckFirst);
+}
+
+/// NLVK_TEX_SUBALLOC=0 disables the suballocator (one vkAllocateMemory per
+/// image, the behaviour before it): used to measure the load cost.
+static bool imageSuballocEnabled()
+{
+	static const char *env = NULL;
+	static bool init = false;
+	if (!init)
+	{
+		env = getenv("NLVK_TEX_SUBALLOC");
+		init = true;
+	}
+	return !(env && !strcmp(env, "0"));
+}
+
+bool CDriverVulkan::allocImageMemory(const VkMemoryRequirements &req, uint32 typeIndex, CTextureVulkan &out,
+	bool requiresDedicated)
+{
+	std::lock_guard<std::mutex> lock(_ImageMemoryMutex);
+	if (imageSuballocCheckEnabled() && req.alignment > 1 && (req.size % req.alignment) != 0)
+	{
+		// Not an error by itself (size need not be a multiple of alignment),
+		// but a range that does not cover req.size would be.
+	}
+	out.Memory = VK_NULL_HANDLE;
+	out.MemoryOffset = 0;
+	out.MemoryBlock = NULL;
+
+	// Very large images get their own allocation: suballocating them would
+	// waste most of a block and force it to grow for a single texture. Images
+	// that *require* a dedicated allocation (VkMemoryDedicatedRequirements,
+	// e.g. the big landscape/lightmap images with driver-private metadata) must
+	// never be bound into shared memory: the driver does not define what
+	// happens, and the landscape came out as rainbow garbage when they were.
+	if (requiresDedicated || req.size >= s_ImageDedicatedThreshold || !imageSuballocEnabled())
+	{
+		VkMemoryAllocateInfo mai;
+		memset(&mai, 0, sizeof(mai));
+		mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		mai.allocationSize = req.size;
+		mai.memoryTypeIndex = typeIndex;
+		if (vkAllocateMemory(_Device, &mai, NULL, &out.Memory) != VK_SUCCESS)
+			return false;
+		_ImageMemoryDedicated += req.size;
+		++_ImageMemoryDedicatedCount;
+		_ImageMemoryUsed += req.size;
+		return true;
+	}
+
+	// First fit in the free list of a block of the same memory type.
+	for (uint i = 0; i < _ImageMemoryBlocks.size(); ++i)
+	{
+		CImageMemoryBlock *block = _ImageMemoryBlocks[i];
+		if (block->TypeIndex != typeIndex)
+			continue;
+		for (uint j = 0; j < block->Free.size(); ++j)
+		{
+			const VkDeviceSize rangeStart = block->Free[j].first;
+			const VkDeviceSize rangeSize = block->Free[j].second;
+			const VkDeviceSize align = std::max(req.alignment, _ImageMemoryGranularity);
+			const VkDeviceSize offset = alignUpTo(rangeStart, align);
+			if (offset + req.size > rangeStart + rangeSize)
+				continue;
+			const VkDeviceSize end = rangeStart + rangeSize;
+			const VkDeviceSize newEnd = offset + req.size;
+			if (newEnd == end)
+				block->Free.erase(block->Free.begin() + j);
+			else if (offset == rangeStart)
+				block->Free[j] = std::make_pair(newEnd, end - newEnd);
+			else
+			{
+				block->Free[j] = std::make_pair(rangeStart, offset - rangeStart);
+				block->Free.insert(block->Free.begin() + j + 1, std::make_pair(newEnd, end - newEnd));
+			}
+			out.Memory = block->Memory;
+			out.MemoryOffset = offset;
+			out.MemoryBlock = block;
+			block->Used += req.size;
+			_ImageMemoryUsed += req.size;
+			if (imageSuballocCheckEnabled())
+			{
+				for (uint k = 0; k < block->Live.size(); ++k)
+					if (offset < block->Live[k].first + block->Live[k].second && block->Live[k].first < offset + req.size)
+						imageCheckFail("alloc overlaps a live range (free list)", offset, req.size, block, (unsigned long long)block->Used);
+				block->Live.push_back(std::make_pair(offset, req.size));
+			}
+			return true;
+		}
+		// Never-used tail of the block.
+		const VkDeviceSize align = std::max(req.alignment, _ImageMemoryGranularity);
+		const VkDeviceSize offset = alignUpTo(block->Bump, align);
+		if (offset + req.size <= block->Size)
+		{
+			block->Bump = offset + req.size;
+			out.Memory = block->Memory;
+			out.MemoryOffset = offset;
+			out.MemoryBlock = block;
+			block->Used += req.size;
+			_ImageMemoryUsed += req.size;
+			if (imageSuballocCheckEnabled())
+			{
+				for (uint k = 0; k < block->Live.size(); ++k)
+					if (offset < block->Live[k].first + block->Live[k].second && block->Live[k].first < offset + req.size)
+						imageCheckFail("alloc overlaps a live range (bump)", offset, req.size, block, (unsigned long long)block->Used);
+				for (uint k = 0; k < block->Free.size(); ++k)
+					if (offset < block->Free[k].first + block->Free[k].second && block->Free[k].first < offset + req.size)
+						imageCheckFail("bump alloc inside the free list", offset, req.size, block, (unsigned long long)block->Used);
+				block->Live.push_back(std::make_pair(offset, req.size));
+			}
+			return true;
+		}
+	}
+
+	// New block for this memory type.
+	VkDeviceSize blockSize = s_ImageBlockSize;
+	const VkDeviceSize blockAlign = std::max(req.alignment, _ImageMemoryGranularity);
+	if (blockSize < req.size + blockAlign)
+		blockSize = req.size + blockAlign;
+	VkMemoryAllocateInfo mai;
+	memset(&mai, 0, sizeof(mai));
+	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	mai.allocationSize = blockSize;
+	mai.memoryTypeIndex = typeIndex;
+	VkDeviceMemory memory = VK_NULL_HANDLE;
+	if (vkAllocateMemory(_Device, &mai, NULL, &memory) != VK_SUCCESS)
+	{
+		// Device out of block-sized memory: fall back to just what we need.
+		mai.allocationSize = req.size;
+		if (vkAllocateMemory(_Device, &mai, NULL, &memory) != VK_SUCCESS)
+			return false;
+		_ImageMemoryDedicated += req.size;
+		++_ImageMemoryDedicatedCount;
+		_ImageMemoryUsed += req.size;
+		out.Memory = memory;
+		return true;
+	}
+
+	CImageMemoryBlock *block = new CImageMemoryBlock();
+	block->Memory = memory;
+	block->TypeIndex = typeIndex;
+	block->Size = blockSize;
+	block->Used = 0;
+	const VkDeviceSize offset = alignUpTo(0, blockAlign);
+	block->Bump = offset + req.size;
+	_ImageMemoryBlocks.push_back(block);
+	++_ImageMemoryBlockCount;
+	_ImageMemoryAllocated += blockSize;
+
+	out.Memory = memory;
+	out.MemoryOffset = offset;
+	out.MemoryBlock = block;
+	block->Used += req.size;
+	_ImageMemoryUsed += req.size;
+	if (imageSuballocCheckEnabled())
+		block->Live.push_back(std::make_pair(offset, req.size));
+	return true;
+}
+
+void CDriverVulkan::freeImageMemory(CTextureVulkan &tex)
+{
+	std::lock_guard<std::mutex> lock(_ImageMemoryMutex);
+	if (tex.Memory == VK_NULL_HANDLE)
+		return;
+
+	if (tex.MemoryBlock == NULL)
+	{
+		// Dedicated allocation.
+		_ImageMemoryUsed -= std::min(_ImageMemoryUsed, tex.MemorySize);
+		_ImageMemoryDedicated -= std::min(_ImageMemoryDedicated, tex.MemorySize);
+		if (_ImageMemoryDedicatedCount)
+			--_ImageMemoryDedicatedCount;
+		vkFreeMemory(_Device, tex.Memory, NULL);
+		tex.Memory = VK_NULL_HANDLE;
+		return;
+	}
+
+	CImageMemoryBlock *block = static_cast<CImageMemoryBlock *>(tex.MemoryBlock);
+	if (imageSuballocCheckEnabled())
+	{
+		bool found = false;
+		for (uint k = 0; k < block->Live.size(); ++k)
+		{
+			if (block->Live[k].first == tex.MemoryOffset && block->Live[k].second == tex.MemorySize)
+			{
+				block->Live.erase(block->Live.begin() + k);
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+			imageCheckFail("free of a range that is not live", tex.MemoryOffset, tex.MemorySize, block, (unsigned long long)block->Used);
+		if (tex.MemoryOffset + tex.MemorySize > block->Size)
+			imageCheckFail("free range beyond the block", tex.MemoryOffset, tex.MemorySize, block, (unsigned long long)block->Used);
+	}
+	block->Used -= std::min(block->Used, tex.MemorySize);
+	_ImageMemoryUsed -= std::min(_ImageMemoryUsed, tex.MemorySize);
+
+	// Return the range, keeping Free sorted and coalescing both neighbours.
+	std::vector<std::pair<VkDeviceSize, VkDeviceSize> > &freeList = block->Free;
+	uint insertAt = 0;
+	while (insertAt < freeList.size() && freeList[insertAt].first < tex.MemoryOffset)
+		++insertAt;
+	freeList.insert(freeList.begin() + insertAt, std::make_pair(tex.MemoryOffset, tex.MemorySize));
+	uint i = insertAt;
+	while (i + 1 < freeList.size() && freeList[i].first + freeList[i].second == freeList[i + 1].first)
+	{
+		freeList[i].second += freeList[i + 1].second;
+		freeList.erase(freeList.begin() + i + 1);
+	}
+	if (i > 0 && freeList[i - 1].first + freeList[i - 1].second == freeList[i].first)
+	{
+		freeList[i - 1].second += freeList[i].second;
+		freeList.erase(freeList.begin() + i);
+	}
+
+	// Reuse of a freed range is OFF by default: with it, a range handed to a new
+	// image is still referenced by draws that sampled the old image of that
+	// range, which showed up as rainbow/checkered landscape after a few zone
+	// changes (the dedicated path hid it because the driver rarely hands the
+	// same allocation back). Bump allocation inside a block still removes almost
+	// all vkAllocateMemory calls; ranges are reclaimed when the block empties.
+	// NLVK_TEX_SUBALLOC_REUSE=1 turns the free list back on for experiments.
+	static const bool reuseFreedRanges = getenv("NLVK_TEX_SUBALLOC_REUSE") != NULL;
+	if (!reuseFreedRanges)
+	{
+		if (block->Used == 0)
+		{
+			vkFreeMemory(_Device, block->Memory, NULL);
+			_ImageMemoryAllocated -= std::min(_ImageMemoryAllocated, block->Size);
+			for (uint k = 0; k < _ImageMemoryBlocks.size(); ++k)
+			{
+				if (_ImageMemoryBlocks[k] == block)
+				{
+					_ImageMemoryBlocks.erase(_ImageMemoryBlocks.begin() + k);
+					break;
+				}
+			}
+			delete block;
+		}
+		return;
+	}
+
+	// An empty block goes back to the driver: that keeps the peak at a few
+	// blocks and returns the memory when a zone unloads.
+	if (block->Used == 0)
+	{
+		vkFreeMemory(_Device, block->Memory, NULL);
+		_ImageMemoryAllocated -= std::min(_ImageMemoryAllocated, block->Size);
+		for (uint k = 0; k < _ImageMemoryBlocks.size(); ++k)
+		{
+			if (_ImageMemoryBlocks[k] == block)
+			{
+				_ImageMemoryBlocks.erase(_ImageMemoryBlocks.begin() + k);
+				break;
+			}
+		}
+		delete block;
+	}
+}
+
+void CDriverVulkan::shutdownImageMemory()
+{
+	std::lock_guard<std::mutex> lock(_ImageMemoryMutex);
+	// Every block should have been returned by freeTextureObjects by now; keep
+	// the summary so a leak shows up after the last frame instead of silently.
+	if (imageSuballocCheckEnabled())
+	{
+		for (uint i = 0; i < _ImageMemoryBlocks.size(); ++i)
+			if (!_ImageMemoryBlocks[i]->Live.empty())
+				nlinfo("Vulkan image memory CHECK: block %p still holds %u live ranges at shutdown",
+					(const void *)_ImageMemoryBlocks[i], (uint)_ImageMemoryBlocks[i]->Live.size());
+	}
+	for (uint i = 0; i < _ImageMemoryBlocks.size(); ++i)
+	{
+		if (_ImageMemoryBlocks[i]->Memory != VK_NULL_HANDLE)
+			vkFreeMemory(_Device, _ImageMemoryBlocks[i]->Memory, NULL);
+		delete _ImageMemoryBlocks[i];
+	}
+	_ImageMemoryBlocks.clear();
+	_ImageMemoryAllocated = 0;
+	_ImageMemoryUsed = 0;
+	_ImageMemoryDedicated = 0;
+	_ImageMemoryDedicatedCount = 0;
+}
+
+void CDriverVulkan::reportImageMemoryStats()
+{
+	if (s_imageCheckFailures)
+		nlwarning("Vulkan image memory CHECK: %llu failures, first: %s",
+			(unsigned long long)s_imageCheckFailures, s_imageCheckFirst);
+	if (_ImageMemoryBlockCount == 0 && _ImageMemoryDedicatedCount == 0)
+		return;
+	nlinfo("Vulkan: image memory: %u blocks, %.1f MiB in blocks, %.1f MiB bound (%u dedicated, %.1f MiB)",
+		(uint)_ImageMemoryBlocks.size(),
+		(double)_ImageMemoryAllocated / (1024.0 * 1024.0),
+		(double)_ImageMemoryUsed / (1024.0 * 1024.0),
+		(uint)_ImageMemoryDedicatedCount,
+		(double)_ImageMemoryDedicated / (1024.0 * 1024.0));
+}
+
 bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCount,
 	VkImageUsageFlags usage, VkFormat format, CTextureVulkan &out, uint32 layers, bool cube)
 {
@@ -397,20 +742,38 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 	}
 
 	VkMemoryRequirements req;
-	vkGetImageMemoryRequirements(_Device, out.Image, &req);
+	bool requiresDedicated = false;
+	{
+		// vkGetImageMemoryRequirements() does not say whether the driver needs a
+		// dedicated allocation; the 1.1 structure does, and binding such an
+		// image into shared memory is undefined.
+		VkImageMemoryRequirementsInfo2 info2;
+		memset(&info2, 0, sizeof(info2));
+		info2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
+		info2.image = out.Image;
+		VkMemoryDedicatedRequirements dedicated;
+		memset(&dedicated, 0, sizeof(dedicated));
+		dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
+		VkMemoryRequirements2 req2;
+		memset(&req2, 0, sizeof(req2));
+		req2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+		req2.pNext = &dedicated;
+		// Vulkan 1.1 core (the driver refuses older devices at init).
+		vkGetImageMemoryRequirements2(_Device, &info2, &req2);
+		req = req2.memoryRequirements;
+		requiresDedicated = dedicated.requiresDedicatedAllocation != VK_FALSE;
+	}
 	out.MemorySize = req.size;
-	VkMemoryAllocateInfo mai;
-	memset(&mai, 0, sizeof(mai));
-	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	mai.allocationSize = req.size;
-	mai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	const uint32 typeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 	if (_StatsEnabled)
 	{
 		const uint64 n = uploadNowNs();
 		_StatsTexImageMiscNs += n - stepStart;
 		stepStart = n;
 	}
-	if (vkAllocateMemory(_Device, &mai, NULL, &out.Memory) != VK_SUCCESS)
+	// Suballocated from a device-local block (NLVK_TEX_SUBALLOC=0 falls back to
+	// one vkAllocateMemory per image, the pre-allocator behaviour).
+	if (!allocImageMemory(req, typeIndex, out, requiresDedicated))
 		return false;
 	if (_StatsEnabled)
 	{
@@ -418,8 +781,11 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 		_StatsTexImageAllocNs += n - stepStart;
 		stepStart = n;
 	}
-	if (vkBindImageMemory(_Device, out.Image, out.Memory, 0) != VK_SUCCESS)
+	if (vkBindImageMemory(_Device, out.Image, out.Memory, out.MemoryOffset) != VK_SUCCESS)
+	{
+		freeImageMemory(out);
 		return false;
+	}
 
 	VkImageViewCreateInfo vci;
 	memset(&vci, 0, sizeof(vci));
