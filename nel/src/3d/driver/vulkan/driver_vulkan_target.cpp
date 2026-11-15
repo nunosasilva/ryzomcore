@@ -158,8 +158,7 @@ void CDriverVulkan::beginMainPass(VkCommandBuffer cmd, bool first)
 	// the first draw after every switch re-binds its pipeline and blend
 	// constants instead of trusting the previous pass's hardware state. One
 	// extra bind per pass switch, not per draw.
-	_LastPipeline = VK_NULL_HANDLE;
-	_BlendConstantsSet = false;
+	forgetDrawState();
 
 	VkClearValue clears[2];
 	memset(clears, 0, sizeof(clears));
@@ -385,8 +384,7 @@ void CDriverVulkan::beginOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &targ
 {
 	// Same as beginMainPass(): the dynamic state cache describes the previous
 	// render pass instance, and Vulkan does not carry it across.
-	_LastPipeline = VK_NULL_HANDLE;
-	_BlendConstantsSet = false;
+	forgetDrawState();
 
 	// Make the colour image a render target again. It was left in
 	// SHADER_READ_ONLY layout by endOffscreenPass() so that it could be sampled
