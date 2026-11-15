@@ -1463,8 +1463,13 @@ bool CDriverVulkan::flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &inf
 		return true;
 
 	const uint64 now = getSwapBufferCounter();
-	if (info._DrawBufferFrame == now)
-		return true;	// already copied for this frame's first activation
+	// A copy is needed for the first activation of the frame, and again after any
+	// new write: the engine writes vertices for a patch and then draws it, so a
+	// stale slice would show the previous content of that patch.
+	const bool firstThisFrame = (info._DrawBufferFrame != now);
+	const bool dirty = !vb.getDirtyRanges().empty() || info.hasDirty();
+	if (!firstThisFrame && !dirty)
+		return true;
 
 	// Only the vertices the engine fills; a draw cannot reference more.
 	uint32 bytes = (uint32)info._Shadow.size();
