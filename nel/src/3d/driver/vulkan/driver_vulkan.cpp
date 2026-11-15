@@ -2002,7 +2002,25 @@ bool CDriverVulkan::beginFrame()
 
 	uint32 frame = _FrameIndex;
 	const uint64 fenceWaitStart = _StatsEnabled ? nowNs() : 0;
-	VkResult fence = vkWaitForFences(_Device, 1, &_Fences[frame], VK_TRUE, UINT64_MAX);
+	// Bounded wait, with a log line while it blocks: a client that "freezes"
+	// with no further output is either stuck here (the GPU never signalled a
+	// fence: device lost, a hung shader or a command that never completes) or
+	// stuck somewhere the log cannot see. The timeout does not change the
+	// behaviour - the wait is repeated - it only leaves evidence behind, at most
+	// one line per 5 s of stall.
+	VkResult fence;
+	{
+		uint32 stalled = 0;
+		for (;;)
+		{
+			fence = vkWaitForFences(_Device, 1, &_Fences[frame], VK_TRUE, 5000000000ull);
+			if (fence != VK_TIMEOUT)
+				break;
+			++stalled;
+			nlwarning("Vulkan: frame %u fence still unsignalled after %u s (frame open=%d, %u draws, %u indexed, ring %u KiB) - the GPU is not making progress",
+				frame, stalled * 5, (int)_FrameOpen, _ArrayDrawCount, _IndexedDrawCount, _VertexRingSize / 1024);
+		}
+	}
 	_LastFenceResult = fence;
 	if (fence != VK_SUCCESS)
 	{
