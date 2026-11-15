@@ -1518,7 +1518,13 @@ bool CDriverVulkan::flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &inf
 	{
 		// No staging room: drop this frame's copy rather than draw stale
 		// vertices. Counted, so a 0 MiB/frame window is visible in NLVK_STATS.
+		// Forget the previous slice too: otherwise a later failed flush in the
+		// same frame would leave _DrawBufferFrame == now and the draw paths
+		// would still bind the old slice.
 		++_StatsPartialDrops;
+		info._DrawBuffer = VK_NULL_HANDLE;
+		info._DrawOffset = 0;
+		info._DrawBufferFrame = ~0ull;
 		return true;
 	}
 	memcpy((uint8 *)ring + ringOffset, &info._Shadow[0], bytes);
