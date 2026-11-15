@@ -1254,7 +1254,11 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 	// turns into spikes. Take a snapshot in the per-frame vertex ring first and
 	// let the write land there; the draw binds that copy. This is the same
 	// contract GL3 implements with its shadow buffer and orphaned uploads.
-	if (!readOnly && _CopyOnWrite && _Size && driver)
+	// NLVK_NO_VB_SNAPSHOT=1 restores the old write-through behaviour for
+	// A/B runs (the MRM spikes come back when two instances of a shape are at
+	// different LODs; use it to tell a snapshot problem from a shader/ring one).
+	static const bool snapshotEnabled = getenv("NLVK_NO_VB_SNAPSHOT") == NULL;
+	if (!readOnly && _CopyOnWrite && _Size && driver && snapshotEnabled)
 	{
 		const uint64 now = driver->getSwapBufferCounter();
 		// A draw of this frame, or of a frame that can still be executing,
@@ -1267,6 +1271,7 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 			if (ringOffset != 0xFFFFFFFFu && ring)
 			{
 				memcpy((uint8 *)ring + ringOffset, _Mapped[_Slot], _Size);
+				driver->countVBSnapshot(_Size);
 				_DrawBuffer = driver->vertexRingBuffer();
 				_DrawOffset = ringOffset;
 				_DrawBufferFrame = now;
@@ -1352,6 +1357,36 @@ bool CDriverVulkan::activeIndexBuffer(CIndexBuffer &ib)
 
 uint32 CDriverVulkan::allocVertexRing(uint32 size)
 {
+	// lock() runs outside the frame boundaries too: the engine fills a stream
+	// vertex buffer, or geomorphs a CpuReadWrite one, before the frame's first
+	// draw - and beginFrame() is only entered by that first draw. Allocate in
+	// the half of the frame being built, never in the one the GPU may still be
+	// reading for the frame in flight, and never past the end of it.
+	if (_VertexRingHalf)
+	{
+		// Keep the base in step with the slot being built: beginFrame() has not
+		// necessarily run yet, and the growth test below compares against it.
+		const uint32 frameBase = _FrameIndex * _VertexRingHalf;
+		_VertexRingFrameBase = frameBase;
+		if (_VertexRingOffset < frameBase || _VertexRingOffset >= frameBase + _VertexRingHalf)
+		{
+			// DBG-PERF: this is the case that used to put a vertex-buffer
+			// snapshot in the other frame's half, overwriting vertices still
+			// in flight (garbled meshes for one frame). Log it when asked.
+			++_StatsRingRebases;
+			if (getenv("NLVK_RINGDBG"))
+			{
+				static int remain = 20;
+				if (remain > 0)
+				{
+					--remain;
+					nlinfo("Vulkan ring: vertex ring offset %u was outside frame %u half [%u,%u), rebased",
+						_VertexRingOffset, _FrameIndex, frameBase, frameBase + _VertexRingHalf);
+				}
+			}
+			_VertexRingOffset = frameBase;
+		}
+	}
 	const uint32 required = _VertexRingOffset + size;
 	const bool grow = (_VertexRing == VK_NULL_HANDLE ||
 		required > _VertexRingFrameBase + _VertexRingHalf);
@@ -2088,6 +2123,11 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	// engine did not rewrite this buffer in this frame).
 	if (info->_CopyOnWrite && info->_DrawBufferFrame != getSwapBufferCounter())
 		info->resetDrawBuffer();
+	// DBG-PERF: a stream buffer drawn without a lock in this frame would still
+	// point at last frame's ring slice, which the ring reuses. Count and log it:
+	// this is a candidate for the one-frame flicker.
+	if (info->_Dynamic && info->_DrawBufferFrame != getSwapBufferCounter())
+		countStaleStreamDraw(*info);
 
 	CPipelineKey key;
 	key.VertexFormat = makeVertexLayoutHash(*_CurrentVB);
@@ -2158,6 +2198,11 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	// engine did not rewrite this buffer in this frame).
 	if (info->_CopyOnWrite && info->_DrawBufferFrame != getSwapBufferCounter())
 		info->resetDrawBuffer();
+	// DBG-PERF: a stream buffer drawn without a lock in this frame would still
+	// point at last frame's ring slice, which the ring reuses. Count and log it:
+	// this is a candidate for the one-frame flicker.
+	if (info->_Dynamic && info->_DrawBufferFrame != getSwapBufferCounter())
+		countStaleStreamDraw(*info);
 
 	uint32 bytes = count * indexStride;
 	if (bytes == 0)
@@ -2392,6 +2437,11 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 	// engine did not rewrite this buffer in this frame).
 	if (info->_CopyOnWrite && info->_DrawBufferFrame != getSwapBufferCounter())
 		info->resetDrawBuffer();
+	// DBG-PERF: a stream buffer drawn without a lock in this frame would still
+	// point at last frame's ring slice, which the ring reuses. Count and log it:
+	// this is a candidate for the one-frame flicker.
+	if (info->_Dynamic && info->_DrawBufferFrame != getSwapBufferCounter())
+		countStaleStreamDraw(*info);
 
 	sint passes = beginMaterialMultiPass();
 	bool ok = true;

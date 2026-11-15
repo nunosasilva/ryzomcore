@@ -1032,6 +1032,14 @@ private:
 	uint64					_FrameCpuStartNs;
 	/// Texture copies recorded and bytes staged, per NLVK_STATS window.
 	uint64					_StatsTextureCopies;
+	/// CpuReadWrite vertex-buffer snapshots taken by CVBDrvInfosVulkan::lock()
+	/// (bytes and count) in the current stat window.
+	uint64					_StatsVBSnapshots;
+	uint64					_StatsStaleStreamDraws;
+	/// Times a vertex-ring allocation found the offset outside the current
+	/// frame's half (a between-frames lock, or a stale offset).
+	uint64					_StatsRingRebases;
+	uint64					_StatsVBSnapshotBytes;
 	uint64					_StatsUploadBytes;
 	/// Time spent in vkCreateGraphicsPipelines and in texture image creation,
 	/// per NLVK_STATS window: the two synchronous costs of a zone load.
@@ -1532,6 +1540,22 @@ public:
 	/// Reserve `size` bytes in the current frame's vertex ring (4-byte aligned)
 	/// and return the offset, or 0xFFFFFFFF when the ring could not grow.
 	uint32					allocVertexRing(uint32 size);
+	/// Account one CpuReadWrite vertex-buffer snapshot (NLVK_STATS windows).
+	void					countVBSnapshot(uint32 bytes) { ++_StatsVBSnapshots; _StatsVBSnapshotBytes += bytes; }
+	/// DBG-PERF: draws that used a stream buffer whose ring slice is from an
+	/// earlier frame (should stay 0; a nonzero count is a flicker candidate).
+	void					countStaleStreamDraw(const CVBDrvInfosVulkan &info)
+	{
+		++_StatsStaleStreamDraws;
+		static int remain = 20;
+		if (remain > 0)
+		{
+			--remain;
+			nlwarning("Vulkan: stream vertex buffer drawn with a ring slice from an earlier frame (off=%u frame=%llu now=%llu)",
+				info._DrawOffset, (unsigned long long)info._DrawBufferFrame,
+				(unsigned long long)_SwapBufferCounter);
+		}
+	}
 	VkBuffer				vertexRingBuffer() const { return _VertexRing; }
 	void					*vertexRingMapped() const { return _VertexRingMapped; }
 };
