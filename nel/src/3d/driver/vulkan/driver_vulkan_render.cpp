@@ -1458,63 +1458,111 @@ bool CDriverVulkan::flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &inf
 	if (!info._PartialWrite || info._Shadow.empty() || info._VertexBuffer[info._Slot] == VK_NULL_HANDLE)
 		return true;
 
-	// The engine's per-vertex invalidations are the precise ranges; merge them
-	// into one span (the landscape writes contiguous runs, the DUV rewrite is a
-	// single run). Fall back to the lock range when nothing was invalidated.
-	uint32 begin = info._DirtyBegin;
-	uint32 end = info._DirtyEnd;
-	if (!vb.getDirtyRanges().empty())
+	// Collect the ranges to upload: the engine's invalidateRange() spans (one per
+	// written vertex, so thousands of tiny ones) plus the range recorded by the
+	// lock. Sort, then merge gaps of up to 256 bytes into one region; if what is
+	// left is most of the buffer, upload the whole thing in a single region,
+	// like GL3's flush().
+	std::vector<CVertexBuffer::CDirtyRange> ranges;
+	ranges.reserve(vb.getDirtyRanges().size() + 1);
+	const uint32 size = (uint32)info._Shadow.size();
+	for (size_t i = 0; i < vb.getDirtyRanges().size(); ++i)
 	{
-		const std::vector<CVertexBuffer::CDirtyRange> &ranges = vb.getDirtyRanges();
-		uint32 b = ranges[0].Begin;
-		uint32 e = ranges[0].End;
+		CVertexBuffer::CDirtyRange r = vb.getDirtyRanges()[i];
+		if (r.Begin < size)
+			ranges.push_back(r);
+	}
+	// The lock range is only a fallback: an allocator that locks the whole
+	// buffer but invalidates individual vertices (landscape, vegetables) would
+	// otherwise upload the whole buffer every frame.
+	if (ranges.empty() && info._DirtyEnd > info._DirtyBegin)
+	{
+		CVertexBuffer::CDirtyRange r;
+		r.Begin = info._DirtyBegin;
+		r.End = std::min(info._DirtyEnd, size);
+		ranges.push_back(r);
+	}
+	info.clearDirty();
+	vb.clearDirtyRanges();
+	if (ranges.empty())
+		return true;
+
+	std::sort(ranges.begin(), ranges.end(),
+		[](const CVertexBuffer::CDirtyRange &a, const CVertexBuffer::CDirtyRange &b) { return a.Begin < b.Begin; });
+	// Merge with a gap threshold, widened when the engine invalidated thousands
+	// of scattered vertices (one invalidateRange per vertex, patch_render.cpp):
+	// a very long copy-region list would cost more than uploading the gaps.
+	std::vector<CVertexBuffer::CDirtyRange> merged;
+	for (uint32 gap = 256; ; gap *= 8)
+	{
+		merged.clear();
+		merged.push_back(ranges[0]);
+		if (merged[0].End > size)
+			merged[0].End = size;
 		for (size_t i = 1; i < ranges.size(); ++i)
 		{
-			b = std::min(b, ranges[i].Begin);
-			e = std::max(e, ranges[i].End);
+			CVertexBuffer::CDirtyRange &last = merged.back();
+			if (ranges[i].Begin <= last.End + gap)
+				last.End = std::max(last.End, std::min(ranges[i].End, size));
+			else
+			{
+				CVertexBuffer::CDirtyRange r = ranges[i];
+				if (r.End > size)
+					r.End = size;
+				if (r.Begin < r.End)
+					merged.push_back(r);
+			}
 		}
-		if (end > begin)
-		{
-			b = std::min(b, begin);
-			e = std::max(e, end);
-		}
-		begin = b;
-		end = e;
+		if (merged.size() <= 512 || gap >= 1024 * 1024)
+			break;
 	}
-	const uint32 size = (uint32)info._Shadow.size();
-	if (begin >= size)
-		begin = 0;
-	if (end > size)
-		end = size;
-	const uint32 bytes = end - begin;
-	if (bytes == 0)
-	{
-		info.clearDirty();
-		vb.clearDirtyRanges();
+
+	uint32 total = 0;
+	for (size_t i = 0; i < merged.size(); ++i)
+		total += merged[i].End - merged[i].Begin;
+	if (total == 0)
 		return true;
+	if (total >= size / 2)
+	{
+		// Cheaper than many regions: one full upload (the shadow is current).
+		merged.clear();
+		CVertexBuffer::CDirtyRange all;
+		all.Begin = 0;
+		all.End = size;
+		merged.push_back(all);
+		total = size;
 	}
 
 	if (!_FrameOpen && !beginFrame())
 		return false;
 
-	// Copy the dirty span into the ring, then the ring into the GPU copy.
-	const uint32 ringOffset = allocVertexRing(bytes);
+	// Pack the ranges into the ring, then one vkCmdCopyBuffer with one region
+	// per range, so the uploaded byte count is the sum of the dirty bytes.
+	const uint32 ringOffset = allocVertexRing(total);
 	void *ring = vertexRingMapped();
 	if (ringOffset == 0xFFFFFFFFu || !ring)
 	{
 		// No staging room: keep the range pending for the next activation
-		// rather than dropping the upload.
+		// instead of dropping the upload (rebuild the dirty span).
+		info.markDirty(merged[0].Begin, merged[0].End);
 		return true;
 	}
-	memcpy((uint8 *)ring + ringOffset, &info._Shadow[begin], bytes);
+	std::vector<VkBufferCopy> regions(merged.size());
+	uint32 packed = 0;
+	for (size_t i = 0; i < merged.size(); ++i)
+	{
+		const uint32 bytes = merged[i].End - merged[i].Begin;
+		memcpy((uint8 *)ring + ringOffset + packed, &info._Shadow[merged[i].Begin], bytes);
+		memset(&regions[i], 0, sizeof(VkBufferCopy));
+		regions[i].srcOffset = ringOffset + packed;
+		regions[i].dstOffset = merged[i].Begin;
+		regions[i].size = bytes;
+		packed += bytes;
+	}
 
 	VkCommandBuffer cmd = _CommandBuffers[_FrameIndex];
-	VkBufferCopy region;
-	memset(&region, 0, sizeof(region));
-	region.srcOffset = ringOffset;
-	region.dstOffset = begin;
-	region.size = bytes;
-	vkCmdCopyBuffer(cmd, vertexRingBuffer(), info._VertexBuffer[info._Slot], 1, &region);
+	vkCmdCopyBuffer(cmd, vertexRingBuffer(), info._VertexBuffer[info._Slot],
+		(uint32)regions.size(), &regions[0]);
 
 	// The copy writes the buffer, the draws after this read it as vertex input.
 	VkBufferMemoryBarrier barrier;
@@ -1525,17 +1573,15 @@ bool CDriverVulkan::flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &inf
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.buffer = info._VertexBuffer[info._Slot];
-	barrier.offset = begin;
-	barrier.size = bytes;
+	barrier.offset = 0;
+	barrier.size = VK_WHOLE_SIZE;
 	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0,
 		0, NULL, 1, &barrier, 0, NULL);
 
-	info.clearDirty();
-	vb.clearDirtyRanges();
 	if (_StatsEnabled)
 	{
 		++_StatsPartialFlushes;
-		_StatsPartialBytes += bytes;
+		_StatsPartialBytes += total;
 	}
 	return true;
 }
