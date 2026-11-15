@@ -69,6 +69,34 @@ static const nlCursor EmptyCursor = None;
 const uint32 NL_VK_STAGING_RING_INITIAL = 8u * 1024u * 1024u;
 const uint32 NL_VK_STAGING_RING_MAX = 64u * 1024u * 1024u;
 
+/// Caps for the per-frame upload rings. A ring only holds the data uploaded
+/// in one frame (a snapshot of a CpuReadWrite buffer, a stream buffer, indices
+/// or uniforms); 256 MiB of that is already pathological. The cap keeps a
+/// runaway ring from reaching 2 GiB, where the old `newSize *= 2` growth
+/// overflowed uint32 and spun forever in allocVertexRing().
+const uint32 NL_VK_VERTEX_RING_MAX = 256u * 1024u * 1024u;
+const uint32 NL_VK_INDEX_RING_MAX = 64u * 1024u * 1024u;
+const uint32 NL_VK_UNIFORM_RING_MAX = 64u * 1024u * 1024u;
+
+/// Size a ring buffer has to grow to for a `required`-byte upload: at least
+/// twice the request (the ring is split in per-frame halves), at least twice
+/// the current size, and never above `maxSize`. Returns 0 when that cannot be
+/// done. The arithmetic is 64-bit on purpose: `size * 2` on uint32 (and an
+/// uncapped `newSize *= 2`) hung the client when the vertex ring reached
+/// 2 GiB.
+static inline uint32 nextRingSize(uint32 current, uint32 initial, uint32 required, uint32 maxSize)
+{
+	const uint64 wanted = (uint64)required * 2;
+	uint64 newSize = current ? current : initial;
+	while (newSize < wanted || newSize <= current)
+	{
+		newSize *= 2;
+		if (newSize > maxSize)
+			return 0;
+	}
+	return (uint32)newSize;
+}
+
 /// Driver-side data of a compiled user vertex program.
 ///
 /// A program is either a nelvp assembly program converted to Vulkan GLSL by
