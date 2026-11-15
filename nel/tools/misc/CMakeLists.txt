@@ -33,4 +33,5 @@ IF(WITH_NEL_TOOLS)
   ENDIF()
 
   ADD_SUBDIRECTORY(probe_timers)
+  ADD_SUBDIRECTORY(shape_flip)
 ENDIF()
