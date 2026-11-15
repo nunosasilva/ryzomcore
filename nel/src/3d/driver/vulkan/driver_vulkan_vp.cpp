@@ -1333,7 +1333,7 @@ bool CDriverVulkan::supportVertexProgram(CVertexProgram::TProfile profile) const
 {
 	// Developer escape hatch and A/B switch: behave like the pre-vertex-program
 	// driver, letting the engine take its non-VP fallbacks.
-	if (getenv("NLVK_NOVP"))
+	if (_NoVP)
 		return false;
 	if (!_MegaResourcesReady)
 		return false;
@@ -1358,7 +1358,7 @@ bool CDriverVulkan::supportVertexProgram(CVertexProgram::TProfile profile) const
 		// geomorph path is equally unverified. The CPU path is the one both
 		// reference drivers use and it is known-correct, so it is the default.
 		// Run with NLVK_GPUSKIN=1 to exercise the insert path.
-		return getenv("NLVK_GPUSKIN") != NULL;
+		return _GpuSkin;
 	default:
 		return false;
 	}
@@ -1423,7 +1423,7 @@ bool CDriverVulkan::compileInsertVertexProgram(CVertexProgram *program, IProgram
 
 bool CDriverVulkan::compileVertexProgram(CVertexProgram *program)
 {
-	if (getenv("NLVK_NOVP"))
+	if (_NoVP)
 		return false;
 	if (program->m_DrvInfo)
 		return true;

@@ -714,7 +714,7 @@ public:
 	virtual ITexture *getRenderTarget() const override;
 	virtual IOcclusionQuery *createOcclusionQuery() override;
 	virtual bool bindUniformBuffer(TUBBinding binding, CUniformBuffer *ub) override;
-	virtual bool supportBuiltinUBO() const override { return getenv("NLVK_NOUBO") == NULL; }
+	virtual bool supportBuiltinUBO() const override { return !_NoUBO; }
 	virtual uint getMaxLightTableSize() const override;
 	/// User clip planes: the vertex shaders write gl_ClipDistance from the
 	/// camera UBO (mega) or the per-draw block (simple path), so the engine's
@@ -723,7 +723,7 @@ public:
 	/// support and so restores the static-envmap water path.
 	virtual bool supportVertexProgramClipPlanes() const override
 	{
-		return getenv("NLVK_NOCLIP") == NULL && _ShaderClipDistance;
+		return !_NoClip && _ShaderClipDistance;
 	}
 	/// The shaders fold the plane mask at draw time, so no engine-side clip
 	/// variant is needed (GL3 without GLES behaves the same way per pass).
@@ -1001,6 +1001,15 @@ private:
 	void					*_ScreenshotMapped;
 	VkDeviceSize			_ScreenshotSize;
 	bool					_ScreenshotPending;
+	/// Debug switches on the frame path, read once at construction so a frame
+	/// never walks environ: NLVK_TESTTRI, NLVK_TEXTEST, NLVK_FORCECLEAR and
+	/// the NLVK_SCREENSHOT* group (_ScreenshotEvery is 0 for a single dump at
+	/// NLVK_SCREENSHOT_FRAME, or the NLVK_SCREENSHOT_EVERY/_SEQ period).
+	bool					_TestTriangle;
+	bool					_TextureBlitTest;
+	bool					_ForceClear;
+	std::string				_ScreenshotPath;
+	uint64					_ScreenshotEvery;
 	uint32					_ArrayDrawCount;
 	uint32					_IndexedDrawCount;
 
@@ -1299,6 +1308,20 @@ private:
 	/// nothing is drawn. GL's FBO textures are effectively black there.
 	std::set<std::pair<VkImage, uint32> >	_FrameClearedTargets;
 	bool						_UsedTextureMemorySumEnabled;
+
+	/// Developer A/B switches that the engine asks for per instance per frame
+	/// (NLVK_NOVP, NLVK_GPUSKIN, NLVK_NOUBO, NLVK_NOCLIP, NLVK_NOQUERIES).
+	/// getenv() scans environ, and supportVertexProgram() alone runs hundreds of
+	/// times per frame on a crowded scene, so they are read once here.
+	bool						_NoVP;
+	bool						_GpuSkin;
+	bool						_NoUBO;
+	bool						_NoClip;
+	bool						_NoQueries;
+	/// NLVK_RT_FEEDBACK_DBG=1: setupMaterial() inspects the bound stages for a
+	/// draw that samples the render target it is drawing into. setupMaterial()
+	/// runs on every material change, so the switch is read once here.
+	bool						_RTFeedbackDbg;
 
 	// --- Mega shader resources ---
 	/// Select the mega (GL3-equivalent) shader for the draws it supports. On by
@@ -1665,6 +1688,11 @@ public:
 	/// Reserve `size` bytes in the current frame's vertex ring (4-byte aligned)
 	/// and return the offset, or 0xFFFFFFFF when the ring could not grow.
 	uint32					allocVertexRing(uint32 size);
+	/// Fallback for an upload that cannot use the vertex ring: a dedicated
+	/// host-visible vertex buffer, returned mapped; null when even that
+	/// allocation fails. `mapped` is the whole buffer, so lock() can hand the
+	/// engine `mapped + begin`.
+	VkBuffer				createDedicatedVertexUpload(uint32 size, void *&mapped);
 	/// Upload a PartialWrite buffer's dirty shadow ranges into this frame's
 	/// command buffer, in order with the draws that follow (GL3's flush()).
 	bool					flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &info);
@@ -1684,6 +1712,15 @@ public:
 				_VertexRingSize / 1024);
 		}
 	}
+	/// Draw prologue shared by drawArrays()/drawIndexed()/renderRawQuads():
+	/// advance the vertex buffer's frame state and report whether it has a
+	/// buffer that can be bound. beginFrameState() can reset _DrawBuffer to
+	/// _VertexBuffer[_Slot], which is VK_NULL_HANDLE for _Dynamic (its data is
+	/// in the ring) and _PartialWrite (host shadow only) buffers, so the null
+	/// check has to run after it. A draw that ends up without a buffer is
+	/// counted and dropped: vkCmdBindVertexBuffers() with a null handle is a
+	/// validation error and undefined behaviour.
+	bool					beginVertexDraw(CVBDrvInfosVulkan &info);
 	/// DBG-PERF: draws that used a stream buffer whose ring slice is from an
 	/// earlier frame (should stay 0; a nonzero count is a flicker candidate).
 	void					countStaleStreamDraw(const CVBDrvInfosVulkan &info)

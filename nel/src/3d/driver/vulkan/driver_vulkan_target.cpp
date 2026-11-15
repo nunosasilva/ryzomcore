@@ -152,9 +152,18 @@ void CDriverVulkan::applyViewportScissor(VkCommandBuffer cmd, VkExtent2D extent)
 
 void CDriverVulkan::beginMainPass(VkCommandBuffer cmd, bool first)
 {
+	// Vulkan leaves command-buffer state undefined at the start of a render
+	// pass instance, and a frame switches main -> offscreen (shadows, bloom,
+	// FXAA, water reflection) -> main. Forget the cached dynamic state here so
+	// the first draw after every switch re-binds its pipeline and blend
+	// constants instead of trusting the previous pass's hardware state. One
+	// extra bind per pass switch, not per draw.
+	_LastPipeline = VK_NULL_HANDLE;
+	_BlendConstantsSet = false;
+
 	VkClearValue clears[2];
 	memset(clears, 0, sizeof(clears));
-	if (getenv("NLVK_FORCECLEAR"))
+	if (_ForceClear)
 	{
 		clears[0].color.float32[0] = 1.f;
 		clears[0].color.float32[1] = 0.f;
@@ -374,6 +383,11 @@ bool CDriverVulkan::ensureRenderTarget(ITexture &tex, CTextureVulkan &target)
 
 void CDriverVulkan::beginOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target, VkFramebuffer framebuffer, VkExtent2D extent)
 {
+	// Same as beginMainPass(): the dynamic state cache describes the previous
+	// render pass instance, and Vulkan does not carry it across.
+	_LastPipeline = VK_NULL_HANDLE;
+	_BlendConstantsSet = false;
+
 	// Make the colour image a render target again. It was left in
 	// SHADER_READ_ONLY layout by endOffscreenPass() so that it could be sampled
 	// in between. ALL_COMMANDS as a source scope covers every way the image
