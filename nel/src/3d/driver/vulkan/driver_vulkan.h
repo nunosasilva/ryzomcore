@@ -1665,6 +1665,11 @@ public:
 	/// Reserve `size` bytes in the current frame's vertex ring (4-byte aligned)
 	/// and return the offset, or 0xFFFFFFFF when the ring could not grow.
 	uint32					allocVertexRing(uint32 size);
+	/// Fallback for an upload that cannot use the vertex ring: a dedicated
+	/// host-visible vertex buffer, returned mapped; null when even that
+	/// allocation fails. `mapped` is the whole buffer, so lock() can hand the
+	/// engine `mapped + begin`.
+	VkBuffer				createDedicatedVertexUpload(uint32 size, void *&mapped);
 	/// Upload a PartialWrite buffer's dirty shadow ranges into this frame's
 	/// command buffer, in order with the draws that follow (GL3's flush()).
 	bool					flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &info);
