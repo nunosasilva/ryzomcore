@@ -514,6 +514,14 @@ bool CDriverVulkan::createRenderTargetImage(ITexture &tex, CTextureVulkan &out)
 		freeTextureObjects(out);
 		return false;
 	}
+	// A colour render target can be sampled before the first draw fills it
+	// (reflection, goo, particle or shadow reads). Vulkan does not
+	// zero-initialise colour images, so clear it once at creation; the image
+	// ends in SHADER_READ_ONLY and ensureRenderTarget() transitions from
+	// whatever layout it is in. Cube targets are written face by face by the
+	// env-map passes; leave their per-face setup to the render target code.
+	if (!cube)
+		clearTextureImage(out, 1);
 	out.HasAlpha = true;
 	out.SourceFormat = tex.getPixelFormat();
 
