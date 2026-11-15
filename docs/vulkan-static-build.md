@@ -128,6 +128,66 @@ can be kept. `/luaScript` needs `AllowDebugLua = 1;` in `client.cfg`;
 `/setLightHour 12` works as a normal chat command and a negative value resets
 the automatic cycle.
 
+## Tier 1 static third-party libraries (Linux)
+
+The official client statically links most third-party libraries but keeps the
+platform ABI libraries dynamic.  The closest low-risk subset is:
+
+- **static**: lua, zlib, libpng, libjpeg, gif, libxml2 (+lzma), vorbis and
+  vorbisfile;
+- **dynamic**: curl/OpenSSL and freetype (Tier 2, security-sensitive),
+  GL/GLX, X11/Xrandr/Xrender/Xxf86vm/Xcursor, OpenAL, the Vulkan loader,
+  libc/libm/libstdc++.
+
+No new CMake option is needed.  `WITH_STATIC_EXTERNAL=ON` makes
+`find_library()` prefer `.a`; `WITH_LUA53=ON` lets the repo's
+`FindLua53.cmake` find `liblua5.3.a` without hardcoding its path.  The global
+suffix preference would also pick static curl/OpenSSL/freetype, so force those
+few cache entries back to `.so`:
+
+```sh
+CXXFLAGS="-D__STDCPP_DEFAULT_NEW_ALIGNMENT__=16" \
+cmake -S . -B build-static-tier1 -G Ninja \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  -DCMAKE_BUILD_TYPE=Release -DFINAL_VERSION=OFF \
+  -DWITH_STATIC=ON -DWITH_STATIC_DRIVERS=ON \
+  -DWITH_STATIC_EXTERNAL=ON -DWITH_STATIC_LIBXML2=ON \
+  -DWITH_STATIC_CURL=OFF \
+  -DWITH_LUA51=OFF -DWITH_LUA52=OFF -DWITH_LUA53=ON \
+  -DLUA_MATH_LIBRARY=/usr/lib/x86_64-linux-gnu/libm.so \
+  -DCURL_LIBRARY_RELEASE=/usr/lib/x86_64-linux-gnu/libcurl.so \
+  -DFREETYPE_LIBRARY_RELEASE=/usr/lib/x86_64-linux-gnu/libfreetype.so \
+  -DOPENSSL_SSL_LIBRARY=/usr/lib/x86_64-linux-gnu/libssl.so \
+  -DOPENSSL_CRYPTO_LIBRARY=/usr/lib/x86_64-linux-gnu/libcrypto.so \
+  -DLUABIND_INCLUDE_DIR=$HOME/Projects/ryzom/luabind-install/include \
+  -DLUABIND_LIBRARY_RELEASE=$HOME/Projects/ryzom/luabind-install/lib/libluabind_lua53.a \
+  -DBREAKPAD_INCLUDE_DIR=$HOME/Projects/ryzom/breakpad/src \
+  -DBREAKPAD_CLIENT_LIB=$HOME/Projects/ryzom/breakpad/src/client/linux/libbreakpad_client.a \
+  -DWITH_RYZOM_LIVE=OFF -DWITH_RYZOM_CLIENT=ON -DWITH_RYZOM_SERVER=OFF \
+  -DWITH_DRIVER_OPENGL=ON -DWITH_DRIVER_OPENGL3=ON -DWITH_DRIVER_VULKAN=ON \
+  -DWITH_NEL_TOOLS=OFF -DWITH_NEL_TESTS=OFF -DWITH_NEL_SAMPLES=OFF
+
+ninja -C build-static-tier1 ryzom_client
+```
+
+`WITH_STATIC_CURL=OFF` is important when curl stays dynamic: otherwise the
+build defines `CURL_STATICLIB` while linking a `.so`.  On a distribution where
+`FindLua53` picks a static `libm.a`, point `LUA_MATH_LIBRARY` at `libm.so` (as
+above) to avoid a static libm in the PIE.
+
+Verify the result:
+
+```sh
+readelf -d build-static-tier1/bin/ryzom_client_dev | grep NEEDED
+ldd build-static-tier1/bin/ryzom_client_dev | grep -E \
+  'liblua|libxml2|libpng|libjpeg|libgif|libz|libvorbis' || true
+```
+
+The Tier 1 libraries must not appear in either list; curl, OpenSSL, freetype,
+GL, X11, OpenAL and Vulkan should.  A test session with the static binary
+renders the normal UI, textures and NPCs; `Media player requires sound` is the
+usual modal, not a link failure.
+
 ## Run from a normal install
 
 Copy `build-static/bin/ryzom_client_dev` into the install directory (for
