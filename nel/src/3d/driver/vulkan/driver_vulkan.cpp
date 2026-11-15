@@ -294,6 +294,13 @@ CDriverVulkan::CDriverVulkan()
 	memset(_UserUBStageCache, 0, sizeof(_UserUBStageCache));
 	memset(_UserUBStageOffset, 0, sizeof(_UserUBStageOffset));
 	memset(_UserUBStageSize, 0, sizeof(_UserUBStageSize));
+	// Developer A/B switches the engine polls per instance per frame: read
+	// once here, so supportVertexProgram() and friends never call getenv().
+	_NoVP = getenv("NLVK_NOVP") != NULL;
+	_GpuSkin = getenv("NLVK_GPUSKIN") != NULL;
+	_NoUBO = getenv("NLVK_NOUBO") != NULL;
+	_NoClip = getenv("NLVK_NOCLIP") != NULL;
+	_NoQueries = getenv("NLVK_NOQUERIES") != NULL;
 	_StatsEnabled = getenv("NLVK_STATS") != NULL;
 	{
 		const char *inFlight = getenv("NLVK_VB_INFLIGHT");

@@ -415,7 +415,7 @@ bool CDriverVulkan::supportOcclusionQuery() const
 	// NLVK_NOQUERIES=1 is a debug switch for A/B captures: it restores the
 	// pre-implementation behaviour (CFlareModel returns before drawing
 	// anything) without rebuilding the driver.
-	if (getenv("NLVK_NOQUERIES") != NULL)
+	if (_NoQueries)
 		return false;
 	return _OcclusionPools[0] != VK_NULL_HANDLE && _OcclusionPools[1] != VK_NULL_HANDLE;
 }

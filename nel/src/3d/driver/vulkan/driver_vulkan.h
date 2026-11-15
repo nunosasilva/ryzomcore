@@ -714,7 +714,7 @@ public:
 	virtual ITexture *getRenderTarget() const override;
 	virtual IOcclusionQuery *createOcclusionQuery() override;
 	virtual bool bindUniformBuffer(TUBBinding binding, CUniformBuffer *ub) override;
-	virtual bool supportBuiltinUBO() const override { return getenv("NLVK_NOUBO") == NULL; }
+	virtual bool supportBuiltinUBO() const override { return !_NoUBO; }
 	virtual uint getMaxLightTableSize() const override;
 	/// User clip planes: the vertex shaders write gl_ClipDistance from the
 	/// camera UBO (mega) or the per-draw block (simple path), so the engine's
@@ -723,7 +723,7 @@ public:
 	/// support and so restores the static-envmap water path.
 	virtual bool supportVertexProgramClipPlanes() const override
 	{
-		return getenv("NLVK_NOCLIP") == NULL && _ShaderClipDistance;
+		return !_NoClip && _ShaderClipDistance;
 	}
 	/// The shaders fold the plane mask at draw time, so no engine-side clip
 	/// variant is needed (GL3 without GLES behaves the same way per pass).
@@ -1299,6 +1299,16 @@ private:
 	/// nothing is drawn. GL's FBO textures are effectively black there.
 	std::set<std::pair<VkImage, uint32> >	_FrameClearedTargets;
 	bool						_UsedTextureMemorySumEnabled;
+
+	/// Developer A/B switches that the engine asks for per instance per frame
+	/// (NLVK_NOVP, NLVK_GPUSKIN, NLVK_NOUBO, NLVK_NOCLIP, NLVK_NOQUERIES).
+	/// getenv() scans environ, and supportVertexProgram() alone runs hundreds of
+	/// times per frame on a crowded scene, so they are read once here.
+	bool						_NoVP;
+	bool						_GpuSkin;
+	bool						_NoUBO;
+	bool						_NoClip;
+	bool						_NoQueries;
 
 	// --- Mega shader resources ---
 	/// Select the mega (GL3-equivalent) shader for the draws it supports. On by
