@@ -74,7 +74,12 @@ const uint32 NL_VK_STAGING_RING_MAX = 64u * 1024u * 1024u;
 /// or uniforms); 256 MiB of that is already pathological. The cap keeps a
 /// runaway ring from reaching 2 GiB, where the old `newSize *= 2` growth
 /// overflowed uint32 and spun forever in allocVertexRing().
-const uint32 NL_VK_VERTEX_RING_MAX = 256u * 1024u * 1024u;
+// The loading screen can spend seconds in one "frame" and fill the ring with
+// the buffers it prepares (measured: >128 MiB in a single frame, and the ring
+// used to reach 512 MiB during a zone load). 1 GiB leaves room for that while
+// staying below the 2 GiB point where the old doubling overflowed. In game the
+// ring stays at a few MiB.
+const uint32 NL_VK_VERTEX_RING_MAX = 1024u * 1024u * 1024u;
 const uint32 NL_VK_INDEX_RING_MAX = 64u * 1024u * 1024u;
 const uint32 NL_VK_UNIFORM_RING_MAX = 64u * 1024u * 1024u;
 
