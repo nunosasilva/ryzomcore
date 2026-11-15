@@ -171,6 +171,7 @@ CDriverVulkan::CDriverVulkan()
 	, _ImageIndex(0)
 	, _FrameOpen(false)
 	, _SwapBufferCounter(0)
+	, _FrameInFlightMargin(0)
 	, _CullMode(CCW)
 	, _ZWrite(true)
 	, _ZTest(true)
@@ -294,6 +295,14 @@ CDriverVulkan::CDriverVulkan()
 	memset(_UserUBStageOffset, 0, sizeof(_UserUBStageOffset));
 	memset(_UserUBStageSize, 0, sizeof(_UserUBStageSize));
 	_StatsEnabled = getenv("NLVK_STATS") != NULL;
+	{
+		const char *inFlight = getenv("NLVK_VB_INFLIGHT");
+		const int margin = inFlight ? atoi(inFlight) : 0;
+		_FrameInFlightMargin = margin > 0 ? (uint64)margin : 0;
+		if (_FrameInFlightMargin)
+			nlinfo("Vulkan: NLVK_VB_INFLIGHT=%llu: the engine's deferred vertex frees will run",
+				(unsigned long long)_FrameInFlightMargin);
+	}
 	_StatsDraws = 0;
 	_StatsOcclusionIssued = 0;
 	_StatsOcclusionHarvested = 0;
