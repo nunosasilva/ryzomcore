@@ -1309,6 +1309,10 @@ private:
 	bool						_NoUBO;
 	bool						_NoClip;
 	bool						_NoQueries;
+	/// NLVK_RT_FEEDBACK_DBG=1: setupMaterial() inspects the bound stages for a
+	/// draw that samples the render target it is drawing into. setupMaterial()
+	/// runs on every material change, so the switch is read once here.
+	bool						_RTFeedbackDbg;
 
 	// --- Mega shader resources ---
 	/// Select the mega (GL3-equivalent) shader for the draws it supports. On by

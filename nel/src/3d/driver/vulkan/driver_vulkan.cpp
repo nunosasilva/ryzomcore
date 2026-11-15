@@ -301,6 +301,7 @@ CDriverVulkan::CDriverVulkan()
 	_NoUBO = getenv("NLVK_NOUBO") != NULL;
 	_NoClip = getenv("NLVK_NOCLIP") != NULL;
 	_NoQueries = getenv("NLVK_NOQUERIES") != NULL;
+	_RTFeedbackDbg = getenv("NLVK_RT_FEEDBACK_DBG") != NULL;
 	_StatsEnabled = getenv("NLVK_STATS") != NULL;
 	{
 		const char *inFlight = getenv("NLVK_VB_INFLIGHT");

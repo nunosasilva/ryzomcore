@@ -1841,8 +1841,9 @@ bool CDriverVulkan::setupMaterial(CMaterial &mat)
 	// currently rendering into (feedback loop: undefined values), and a sampled
 	// render target that is not in the shader-read layout the descriptor
 	// assumes. Read-only: nothing is changed, this is how the "1-frame across
-	// the screen" artifact in water (Fairhaven) gets a name.
-	if (_RenderTargetInfo != NULL && getenv("NLVK_RT_FEEDBACK_DBG"))
+	// the screen" artifact in water (Fairhaven) gets a name. The switch is a
+	// member: this function runs on every material change, thousands per frame.
+	if (_RTFeedbackDbg && _RenderTargetInfo != NULL)
 	{
 		for (uint stage = 0; stage < IDRV_PROGRAM_MAXSAMPLERS; ++stage)
 		{
