@@ -354,6 +354,11 @@ CDriverVulkan::CDriverVulkan()
 	_StatsVBSnapshots = 0;
 	_StatsVBSnapshotBytes = 0;
 	_StatsVBSnapshotFails = 0;
+	_StatsVBSnapshotNs = 0;
+	_StatsVBSnapshotAllocNs = 0;
+	_StatsVBSnapshotFromPersistent = 0;
+	_StatsVBSnapshotFromSlice = 0;
+	_StatsVBCoWLocks = 0;
 	_StatsPartialFlushes = 0;
 	_StatsPartialBytes = 0;
 	_StatsPartialDrops = 0;
@@ -373,6 +378,9 @@ CDriverVulkan::CDriverVulkan()
 	_StatsPipelineBinds = 0;
 	_StatsDescriptorSets = 0;
 	_StatsTextureBinds = 0;
+	_StatsVertexBinds = 0;
+	_StatsVertexBindRepeats = 0;
+	_StatsMegaDescWrites = 0;
 	_StatsSamplerLookups = 0;
 	_StatsSamplerCreates = 0;
 	memset(_StatsVertexFormats, 0, sizeof(_StatsVertexFormats));
@@ -391,8 +399,7 @@ CDriverVulkan::CDriverVulkan()
 	_MegaLightMapDynTableValid = false;
 	_MegaLightMapDynTableOffset = 0xFFFFFFFF;
 	_LightMapDynLogged = false;
-	_LastPipeline = VK_NULL_HANDLE;
-	_BlendConstantsSet = false;
+	forgetDrawState();
 	_StatsWindowStartNs = 0;
 	_StatsWindowFrames = 0;
 	_GpuTimeQuery = VK_NULL_HANDLE;
@@ -1750,10 +1757,15 @@ void CDriverVulkan::shutdownVulkan()
 	}
 }
 
-uint32 CDriverVulkan::findMemoryType(uint32 typeBits, VkMemoryPropertyFlags props) const
+uint32 CDriverVulkan::findMemoryType(uint32 typeBits, VkMemoryPropertyFlags props,
+	VkMemoryPropertyFlags preferred) const
 {
 	VkPhysicalDeviceMemoryProperties mp;
 	vkGetPhysicalDeviceMemoryProperties(_PhysicalDevice, &mp);
+	if (preferred)
+		for (uint32 i = 0; i < mp.memoryTypeCount; ++i)
+			if ((typeBits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & (props | preferred)) == (props | preferred))
+				return i;
 	for (uint32 i = 0; i < mp.memoryTypeCount; ++i)
 		if ((typeBits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props)
 			return i;
@@ -2227,8 +2239,7 @@ bool CDriverVulkan::beginFrame()
 	_FrameOpen = true;
 	_FrameClearedTargets.clear();
 	// Dynamic state is per command buffer: it starts from the defaults.
-	_LastPipeline = VK_NULL_HANDLE;
-	_BlendConstantsSet = false;
+	forgetDrawState();
 	_MegaLightTableValid = false;
 	_MegaLightMapDynTableValid = false;
 	_RenderTargetTexture = NULL;
@@ -2557,6 +2568,12 @@ bool CDriverVulkan::swapBuffers()
 				_VertexRingSize / 1024,
 				(unsigned long long)_StatsStaleStreamDraws,
 				(unsigned long long)_StatsVBSnapshotFails);
+			nlinfo("Vulkan stats: vb snapshot cost %.3f ms/frame (alloc %.3f), %llu from persistent / %llu from slice, %.1f cow locks/frame",
+				(double)_StatsVBSnapshotNs / 1e6 / (double)_StatsWindowFrames,
+				(double)_StatsVBSnapshotAllocNs / 1e6 / (double)_StatsWindowFrames,
+				(unsigned long long)_StatsVBSnapshotFromPersistent,
+				(unsigned long long)_StatsVBSnapshotFromSlice,
+				(double)_StatsVBCoWLocks / (double)_StatsWindowFrames);
 			nlinfo("Vulkan stats: partial write copies %llu/frame, %.2f MiB/frame, %llu dropped",
 				(unsigned long long)(_StatsPartialFlushes / _StatsWindowFrames),
 				(double)_StatsPartialBytes / (1024.0 * 1024.0) / (double)_StatsWindowFrames,
@@ -2575,6 +2592,11 @@ bool CDriverVulkan::swapBuffers()
 				_StatsDraws ? (double)_StatsDescriptorSets / (double)_StatsDraws : 0.0,
 				(unsigned long long)(_StatsTextureBinds / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				_StatsDraws ? (double)_StatsTextureBinds / (double)_StatsDraws : 0.0);
+			nlinfo("Vulkan stats: vertex binds %llu/frame, %llu repeated the last one (%.1f%%); mega descriptor writes %llu/frame",
+				(unsigned long long)(_StatsVertexBinds / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				(unsigned long long)(_StatsVertexBindRepeats / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				_StatsVertexBinds ? 100.0 * (double)_StatsVertexBindRepeats / (double)_StatsVertexBinds : 0.0,
+				(unsigned long long)(_StatsMegaDescWrites / (_StatsWindowFrames ? _StatsWindowFrames : 1)));
 			{
 				char formats[512];
 				formats[0] = 0;
@@ -2638,6 +2660,11 @@ bool CDriverVulkan::swapBuffers()
 			_StatsVBSnapshots = 0;
 			_StatsVBSnapshotBytes = 0;
 			_StatsVBSnapshotFails = 0;
+			_StatsVBSnapshotNs = 0;
+			_StatsVBSnapshotAllocNs = 0;
+			_StatsVBSnapshotFromPersistent = 0;
+			_StatsVBSnapshotFromSlice = 0;
+			_StatsVBCoWLocks = 0;
 			_StatsPartialFlushes = 0;
 			_StatsPartialBytes = 0;
 			_StatsPartialDrops = 0;
@@ -2645,6 +2672,9 @@ bool CDriverVulkan::swapBuffers()
 			_StatsPipelineBinds = 0;
 			_StatsDescriptorSets = 0;
 			_StatsTextureBinds = 0;
+			_StatsVertexBinds = 0;
+			_StatsVertexBindRepeats = 0;
+			_StatsMegaDescWrites = 0;
 			memset(_StatsVertexFormats, 0, sizeof(_StatsVertexFormats));
 			_StatsVertexFormatCount = 0;
 		}

@@ -1079,9 +1079,23 @@ private:
 	/// has that pipeline / those blend constants.
 	void					bindPipeline(VkCommandBuffer cmd, VkPipeline pipeline);
 	void					setBlendConstants(VkCommandBuffer cmd);
+	/// Bind stage 0's vertex buffer, skipping the call when the command buffer
+	/// already has it bound (the stats count how many binds that saves).
+	void					bindVertexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset);
+	/// Forget the cached dynamic state: at every pass boundary and frame start,
+	/// because Vulkan leaves a command buffer's state undefined there.
+	void					forgetDrawState()
+	{
+		_LastPipeline = VK_NULL_HANDLE;
+		_BlendConstantsSet = false;
+		_LastVertexBuffer = VK_NULL_HANDLE;
+		_LastVertexOffset = 0;
+	}
 	VkPipeline				_LastPipeline;
 	float					_BlendConstants[4];
 	bool					_BlendConstantsSet;
+	VkBuffer				_LastVertexBuffer;
+	VkDeviceSize			_LastVertexOffset;
 	void					updateMaterialState(CMaterial &mat);
 	bool					setupVertexBuffer(CVertexBuffer &vb);
 	bool					drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count, VkPrimitiveTopology topo, uint32 indexStride);
@@ -1110,6 +1124,12 @@ private:
 	/// light (or none), so the baked lightmap is never doubled by scene lights.
 	bool					isLightMapDraw() const;
 	uint32					allocUniformBlock(const void *data, uint32 size);
+	/// Make sure this frame's half of the uniform ring has room for `bytes`
+	/// more in `blocks` aligned blocks, growing the ring once if it does not.
+	/// Growing *between* two allocations would leave them in different buffers,
+	/// which the mega path cannot express (bindings 0-3 are bound as one group
+	/// per draw), so it reserves the whole per-draw group up front.
+	bool					reserveUniformBlock(uint32 bytes, uint32 blocks);
 	/// Make room for one more per-draw uniform block, growing the ring without
 	/// invalidating blocks a frame in flight may still reference.
 	bool					growUniformRing(uint32 required);
@@ -1159,6 +1179,17 @@ private:
 	/// (bytes and count) in the current stat window.
 	uint64					_StatsVBSnapshots;
 	uint64					_StatsVBSnapshotFails;
+	/// Where that cost is: nanoseconds spent in the snapshot block (ring
+	/// allocation + memcpy + bookkeeping), of which the allocation, and how
+	/// many copies read their source from the persistent buffer (host memory,
+	/// uncached on RADV) rather than from this frame's slice.
+	uint64					_StatsVBSnapshotNs;
+	uint64					_StatsVBSnapshotAllocNs;
+	uint64					_StatsVBSnapshotFromPersistent;
+	uint64					_StatsVBSnapshotFromSlice;
+	/// lock() calls that went through the CpuReadWrite copy-on-write block,
+	/// with and without taking a copy: the copies are the ones counted above.
+	uint64					_StatsVBCoWLocks;
 	/// PartialWrite flushes (count and bytes) in the current NLVK_STATS window.
 	uint64					_StatsPartialFlushes;
 	uint64					_StatsPartialBytes;
@@ -1188,6 +1219,13 @@ private:
 	uint64					_StatsPipelineBinds;
 	uint64					_StatsDescriptorSets;
 	uint64					_StatsTextureBinds;
+	/// Vertex-buffer binds issued, and how many of them repeated the buffer and
+	/// offset the previous draw of this command buffer had already bound.
+	uint64					_StatsVertexBinds;
+	uint64					_StatsVertexBindRepeats;
+	/// VkWriteDescriptorSet records the mega path issues per window: 15 per mega
+	/// draw, i.e. the descriptor cost of the mega path's per-draw setup.
+	uint64					_StatsMegaDescWrites;
 	/// Vertex layouts of the draws in the window, for the vertex-format report:
 	/// {CVertexBuffer flags, stride, draw count}, most frequent first.
 	struct SVertexFormatDraw
@@ -1684,7 +1722,11 @@ public:
 	/// Destroy the Vulkan objects of a texture whose last ITexture is gone.
 	void					releaseTextureDrvInfo(CTextureDrvInfosVulkan &info);
 
-	uint32					findMemoryType(uint32 typeBits, VkMemoryPropertyFlags props) const;
+	/// First memory type that has `props`. `preferred` (optional) is asked for
+	/// on top of `props` and silently dropped when the device has no such type,
+	/// which is how the CpuReadWrite vertex buffers ask for cached host memory.
+	uint32					findMemoryType(uint32 typeBits, VkMemoryPropertyFlags props,
+								VkMemoryPropertyFlags preferred = 0) const;
 	/// Reserve `size` bytes in the current frame's vertex ring (4-byte aligned)
 	/// and return the offset, or 0xFFFFFFFF when the ring could not grow.
 	uint32					allocVertexRing(uint32 size);
@@ -1696,8 +1738,25 @@ public:
 	/// Upload a PartialWrite buffer's dirty shadow ranges into this frame's
 	/// command buffer, in order with the draws that follow (GL3's flush()).
 	bool					flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &info);
-	/// Account one CpuReadWrite vertex-buffer snapshot (NLVK_STATS windows).
-	void					countVBSnapshot(uint32 bytes) { ++_StatsVBSnapshots; _StatsVBSnapshotBytes += bytes; }
+	/// Account one CpuReadWrite vertex-buffer snapshot (NLVK_STATS windows):
+	/// bytes, time spent, and whether the source was the persistent buffer
+	/// (host memory - uncached on RADV, so a copy costs ~0.4 ms per 128 KiB
+	/// there) or this frame's earlier slice.
+	void					countVBSnapshot(uint32 bytes, bool fromPersistent, uint64 allocNs, uint64 totalNs)	{
+		++_StatsVBSnapshots;
+		_StatsVBSnapshotBytes += bytes;
+		_StatsVBSnapshotAllocNs += allocNs;
+		_StatsVBSnapshotNs += totalNs;
+		if (fromPersistent)
+			++_StatsVBSnapshotFromPersistent;
+		else
+			++_StatsVBSnapshotFromSlice;
+	}
+	/// NLVK_STATS: true while the counters are kept. lock() is called several
+	/// times per frame and only times itself when they are.
+	bool					statsEnabled() const { return _StatsEnabled; }
+	/// Account one lock() through the CpuReadWrite copy-on-write block.
+	void					countVBCoWLock() { ++_StatsVBCoWLocks; }
 	/// CoW snapshot could not be allocated (ring exhausted): the build fell back
 	/// to write-through, which is exactly the corruption the snapshot prevents.
 	/// Rate-limited warning; counted in the NLVK_STATS window.
