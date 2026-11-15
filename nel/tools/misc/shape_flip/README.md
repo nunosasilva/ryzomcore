@@ -27,6 +27,17 @@ shape_flip ge_mission_enclos.shape ge_mission_enclos_fixed.shape g_tower2
 # Dry run: same, but report the blocks that would be patched
 shape_flip ge_mission_enclos.shape - g_tower2
 
+# Select by material index instead of texture (list or range)
+shape_flip ge_newbieland_starting_village.shape out.shape --mat=12,38,65,83
+shape_flip ge_newbieland_starting_village.shape out.shape --mat=52-65 --degenerate
+
+# --degenerate: collapse every triangle (i0,i0,i0) instead of swapping the
+# 2nd/3rd index. The faces disappear whatever the driver's winding convention
+# is, which makes it a reliable probe for "which material is this surface?".
+
+# Per-material geometry statistics (triangle count, bbox, longest edge, area)
+shape_flip ge_newbieland_starting_village.shape stats
+
 # Debug: dump the serialized form of each selected index block
 shape_flip ge_mission_enclos.shape dump
 ```
@@ -35,6 +46,10 @@ shape_flip ge_mission_enclos.shape dump
 values of the selected pass blocks change, and only their 2nd and 3rd index are
 swapped, so if anything goes wrong the file is obviously broken instead of
 subtly different.
+
+The tool prints each material with its flags (two-sided, blend, lighting, alpha
+test), shader, texgen and textures, including the lightmaps, which is what is
+needed to tell a lightmapped prop material from a plain one.
 
 ## How the patch is located
 
