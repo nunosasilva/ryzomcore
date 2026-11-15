@@ -658,14 +658,14 @@ void CDriverVulkan::stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data)
 
 	// Render-target textures are stored top-down, while NeL texture coordinates
 	// have V = 0 at the bottom. Tell the pixel program which stages to flip.
+	// This covers every target, CTextureMem ones (shadow maps and their blur
+	// textures, clouds) included: they are rendered through the same GL-like
+	// viewport, so they are stored top-down too.
 	data.rtFlipMask = 0;
 	for (uint i = 0; i < IDRV_MAT_MAXTEXTURES; ++i)
 	{
 		const ITexture *tex = mat.getTexture(i);
-		// Same rule as the simple path: only NeL offscreen textures are
-		// flipped (the shadow maps' CTextureMem targets are handled by the
-		// shadow map manager's copy pass).
-		if (tex && tex->getRenderTarget() && tex->isOffscreenTexture())
+		if (tex && tex->getRenderTarget())
 			data.rtFlipMask |= (1 << i);
 	}
 
