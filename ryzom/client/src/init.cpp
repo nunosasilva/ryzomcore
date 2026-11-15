@@ -1053,6 +1053,28 @@ void prelogInit()
 			}
 		}
 
+		// Tag the pipeline cache with the actual client build (the same
+		// version string the log prints), so a rebuilt binary in the same
+		// install cannot read an older build's pipelines even when CMake's
+		// configure-time RYZOM_VERSION is stale.
+		if (getenv("NLVK_PIPELINE_CACHE_TAG") == NULL)
+		{
+			const std::string version = getVersion();
+			unsigned long long h = 1469598103934665603ULL;
+			for (std::string::const_iterator it = version.begin(); it != version.end(); ++it)
+			{
+				h ^= (unsigned char)*it;
+				h *= 1099511628211ULL;
+			}
+			char tag[32];
+			snprintf(tag, sizeof(tag), "%016llx", h);
+#ifdef NL_OS_WINDOWS
+			_putenv_s("NLVK_PIPELINE_CACHE_TAG", tag);
+#else
+			setenv("NLVK_PIPELINE_CACHE_TAG", tag, 1);
+#endif
+		}
+
 		sint cpuMask;
 
 		if (ClientCfg.CPUMask < 1)
