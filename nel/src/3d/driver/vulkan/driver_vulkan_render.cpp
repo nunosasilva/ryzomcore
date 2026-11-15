@@ -1102,6 +1102,11 @@ CVBDrvInfosVulkan::CVBDrvInfosVulkan(CDriverVulkan *drv, ItVBDrvInfoPtrList it, 
 	, _CopyOnWrite(false)
 	, _DrawFrame(~0ull)
 	, _DrawBufferFrame(~0ull)
+	, _PartialWrite(false)
+	, _DirtyBegin(0)
+	, _DirtyEnd(0)
+	, _LockBegin(0)
+	, _LockEnd(0)
 	, _DrawBuffer(VK_NULL_HANDLE)
 	, _DrawOffset(0)
 	, _Size(0)
@@ -1138,6 +1143,16 @@ CVBDrvInfosVulkan::CVBDrvInfosVulkan(CDriverVulkan *drv, ItVBDrvInfoPtrList it, 
 		_SlotCount = 1;
 		_CopyOnWrite = true;
 		break;
+	case CVertexBuffer::PartialWrite:
+	case CVertexBuffer::UnsynchronizedWrite:
+		// The engine rewrites parts of it while frames in flight may still read
+		// the same memory (landscape tiles/fars, vegetation). Give it a host
+		// shadow and upload the dirty ranges in command-stream order, like GL3.
+		// NLVK_NO_PARTIAL_UPLOAD=1 keeps the old write-through for A/B.
+		_Dynamic = false;
+		_SlotCount = 1;
+		_PartialWrite = getenv("NLVK_NO_PARTIAL_UPLOAD") == NULL;
+		break;
 	default:
 		_Dynamic = false;
 		_SlotCount = 1;
@@ -1170,6 +1185,17 @@ void CVBDrvInfosVulkan::ensureCapacity(uint32 size)
 	if (_Dynamic)
 		return;
 
+	// A PartialWrite buffer keeps its content in a host shadow only: every frame
+	// the shadow is copied into a fresh vertex-ring slice (one per frame) and the
+	// draws bind that slice, exactly like a CpuReadWrite copy. There is no
+	// persistent GPU copy to write into. resize() preserves the prefix, so growth
+	// keeps what the engine already wrote.
+	if (_PartialWrite)
+	{
+		_Shadow.resize(size, 0);
+		return;
+	}
+
 	CDriverVulkan *driver = static_cast<CDriverVulkan *>(_Driver);
 	VkDevice device = driver->getDevice();
 	for (uint slot = 0; slot < _SlotCount; ++slot)
@@ -1192,6 +1218,8 @@ void CVBDrvInfosVulkan::ensureCapacity(uint32 size)
 		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 		bci.size = size;
 		bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		if (_PartialWrite)
+			bci.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;	// flushPartialWrites()
 		bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		if (vkCreateBuffer(device, &bci, NULL, &_VertexBuffer[slot]) != VK_SUCCESS)
 		{
@@ -1261,39 +1289,107 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 		return (uint8 *)driver->vertexRingMapped() + offset + begin;
 	}
 
-	// CpuReadWrite buffers are rewritten in place by the engine (MRM geomorph
-	// writes the interpolated wedges of the LOD it is about to draw). This
-	// buffer is the GPU's source, so an in-place write would also change the
-	// vertices of draws already recorded this frame - including the draws of
-	// another instance of the same shape at another LOD, which is how a mesh
-	// turns into spikes. Take a snapshot in the per-frame vertex ring first and
-	// let the write land there; the draw binds that copy. This is the same
-	// contract GL3 implements with its shadow buffer and orphaned uploads.
-	// NLVK_NO_VB_SNAPSHOT=1 restores the old write-through behaviour for
-	// A/B runs (the MRM spikes come back when two instances of a shape are at
+	// PartialWrite / UnsynchronizedWrite: hand out the host shadow. Writing into
+	// the GPU copy here is what tears the landscape (F2); the shadow is uploaded
+	// in order by flushPartialWrites().
+	if (_PartialWrite && !_Shadow.empty())
+	{
+		if (!readOnly)
+		{
+			_LockBegin = begin;
+			_LockEnd = end ? end : (uint32)_Shadow.size();
+			if (_LockEnd > _Shadow.size())
+				_LockEnd = (uint32)_Shadow.size();
+			if (_LockBegin > _LockEnd)
+				_LockBegin = _LockEnd;
+		}
+		return &_Shadow[begin];
+	}
+
+	// CpuReadWrite buffers are rewritten in place by the engine, several times
+	// per frame and before the draws that read them (skinning, morphing, MRM
+	// geomorph). This buffer is the GPU's source, so an in-place write would
+	// also change the vertices of draws already recorded - another instance of
+	// the same shape at another LOD (the totem spikes), or the same instance
+	// earlier in the frame.
+	//
+	// The driver gives each such buffer ONE ring slice per frame and lets every
+	// write accumulate in it; the copy is only renewed when the slice has
+	// already been drawn (a recorded draw must keep the vertices it was
+	// recorded with), or when the frame changed and a frame in flight can still
+	// read the persistent copy. That is GL3's shadow buffer, minus the upload.
+	//
+	// NLVK_NO_VB_SNAPSHOT=1 restores the old write-through behaviour for A/B
+	// runs (the MRM spikes come back when two instances of a shape are at
 	// different LODs; use it to tell a snapshot problem from a shader/ring one).
 	static const bool snapshotEnabled = getenv("NLVK_NO_VB_SNAPSHOT") == NULL;
-	if (!readOnly && _CopyOnWrite && _Size && driver && snapshotEnabled)
+	if (_CopyOnWrite && _Size && driver && snapshotEnabled && _Mapped[_Slot])
 	{
 		const uint64 now = driver->getSwapBufferCounter();
-		// A draw of this frame, or of a frame that can still be executing,
-		// references the current contents.
-		const bool inUse = _Drawn || (_DrawFrame != ~0ull && _DrawFrame + 3 > now);
-		if (inUse && _Mapped[_Slot])
+		if (_CoWFrame != now)
+			resetCoW();
+		bool haveSlice = (_CoWFrame == now && _CoWBuffer != VK_NULL_HANDLE);
+		void *ring = driver->vertexRingMapped();
+		if (readOnly)
 		{
-			const uint32 ringOffset = driver->allocVertexRing(_Size);
-			void *ring = driver->vertexRingMapped();
+			// F3: a read has to see the engine's current data, which lives in
+			// this frame's slice once there is one - not in the persistent copy.
+			_DrawBuffer = haveSlice ? _CoWBuffer : _VertexBuffer[_Slot];
+			_DrawOffset = haveSlice ? _CoWOffset : 0;
+			_DrawBufferFrame = now;
+			return (uint8 *)(haveSlice ? ring : _Mapped[_Slot]) + _DrawOffset + begin;
+		}
+
+		// A write. Keep accumulating into this frame's slice while no draw has
+		// used it; otherwise take a fresh copy of the current content.
+		const bool inUse = haveSlice || (_DrawFrame != ~0ull && _DrawFrame + 3 > now);
+		const bool needCopy = !haveSlice || _CoWDrawn;
+		const uint32 copyBytes = copyLength();
+		if (inUse && needCopy && copyBytes != 0)
+		{
+			const uint32 ringOffset = driver->allocVertexRing(copyBytes);
+			ring = driver->vertexRingMapped();
 			if (ringOffset != 0xFFFFFFFFu && ring)
 			{
-				memcpy((uint8 *)ring + ringOffset, _Mapped[_Slot], _Size);
-				driver->countVBSnapshot(_Size);
-				_DrawBuffer = driver->vertexRingBuffer();
-				_DrawOffset = ringOffset;
-				_DrawBufferFrame = now;
+				// Source: the existing slice when this frame already wrote into
+				// it (the accumulation F1 is about), the persistent copy
+				// otherwise.
+				const uint8 *src = haveSlice ? (const uint8 *)ring + _CoWOffset
+					: (const uint8 *)_Mapped[_Slot];
+				memcpy((uint8 *)ring + ringOffset, src, copyBytes);
+				driver->countVBSnapshot(copyBytes);
+				_CoWBuffer = driver->vertexRingBuffer();	// the ring may have grown
+				_CoWOffset = ringOffset;
+				_CoWFrame = now;
+				_CoWDrawn = false;
+				haveSlice = true;
+			}
+			else
+			{
+				// F5: never fall back to write-through silently. The vertices of
+				// recorded draws would change under them; log, count, and keep
+				// the state consistent so the frame degrades to "no snapshot"
+				// instead of corrupting silently.
+				driver->countVBSnapshotFail();
+				resetCoW();
 				_Drawn = false;
-				return (uint8 *)ring + ringOffset + begin;
+				_DrawBuffer = _VertexBuffer[_Slot];
+				_DrawOffset = 0;
+				_DrawBufferFrame = ~0ull;
+				return (uint8 *)_Mapped[_Slot] + begin;
 			}
 		}
+
+		if (_CoWFrame == now && _CoWBuffer != VK_NULL_HANDLE)
+		{
+			_DrawBuffer = _CoWBuffer;
+			_DrawOffset = _CoWOffset;
+			_DrawBufferFrame = now;
+			_Drawn = false;
+			return (uint8 *)driver->vertexRingMapped() + _CoWOffset + begin;
+		}
+		// Nothing references the persistent copy and this frame has no slice:
+		// write through (load-time uploads, a buffer drawn several frames ago).
 	}
 
 	// FullRewrite buffers are rewritten now and then. Alternate between the
@@ -1318,7 +1414,11 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 
 void CVBDrvInfosVulkan::unlock(uint begin, uint end)
 {
-	// Host coherent memory: nothing to do.
+	if (!_PartialWrite || _Shadow.empty())
+		return;	// host coherent memory: nothing to do
+	// The engine calls unlock(0,0) for "the whole buffer", so the range recorded
+	// by lock() is what we have.
+	markDirty(_LockBegin, _LockEnd);
 }
 
 bool CDriverVulkan::setupVertexBuffer(CVertexBuffer &vb)
@@ -1341,6 +1441,10 @@ bool CDriverVulkan::setupVertexBuffer(CVertexBuffer &vb)
 		const uint size = vb.capacity() * vb.getVertexSize();
 		info->ensureCapacity(size);
 		vb.setLocation(CVertexBuffer::AGPResident);
+		// The engine reports the ranges it rewrote through invalidateRange();
+		// flushPartialWrites() uploads exactly those.
+		if (info->_PartialWrite)
+			vb.setDirtyTracking(true);
 	}
 	return true;
 }
@@ -1352,7 +1456,67 @@ bool CDriverVulkan::activeVertexBuffer(CVertexBuffer &vb)
 	if (vb.getNumVertices() == 0)
 		return true;
 	vb.fillBuffer();
+	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)vb.DrvInfos);
+	if (info && !flushPartialWrites(vb, *info))
+		return false;
 	_CurrentVB = &vb;
+	return true;
+}
+
+/// GL3's flush(): the engine wrote into the host shadow, and the draws that
+/// follow must read those bytes while draws already recorded keep the old ones.
+///
+/// Vulkan has no glBufferSubData, and a vkCmdCopyBuffer here would be recorded
+/// inside the render pass (validation: VUID-vkCmdCopyBuffer-renderpass), so the
+/// shadow is copied into a fresh slice of the per-frame vertex ring and the
+/// following draws bind that slice - the same mechanism as the CpuReadWrite
+/// snapshot, one slice per frame. The ring's halves keep the previous frame's
+/// slice intact while it is still in flight.
+bool CDriverVulkan::flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &info)
+{
+	if (!info._PartialWrite || info._Shadow.empty())
+		return true;
+
+	const uint64 now = getSwapBufferCounter();
+	// A copy is needed for the first activation of the frame, and again after any
+	// new write: the engine writes vertices for a patch and then draws it, so a
+	// stale slice would show the previous content of that patch.
+	const bool firstThisFrame = (info._DrawBufferFrame != now);
+	const bool dirty = !vb.getDirtyRanges().empty() || info.hasDirty();
+	if (!firstThisFrame && !dirty)
+		return true;
+
+	// Only the vertices the engine fills; a draw cannot reference more.
+	uint32 bytes = (uint32)info._Shadow.size();
+	if (vb.getNumVertices() != 0 && vb.getVertexSize() != 0)
+	{
+		const uint32 used = vb.getNumVertices() * vb.getVertexSize();
+		if (used != 0 && used < bytes)
+			bytes = used;
+	}
+	if (bytes == 0)
+		return true;
+
+	const uint32 ringOffset = allocVertexRing(bytes);
+	void *ring = vertexRingMapped();
+	if (ringOffset == 0xFFFFFFFFu || !ring)
+	{
+		// No staging room: drop this frame's copy rather than draw stale
+		// vertices. Counted, so a 0 MiB/frame window is visible in NLVK_STATS.
+		++_StatsPartialDrops;
+		return true;
+	}
+	memcpy((uint8 *)ring + ringOffset, &info._Shadow[0], bytes);
+	info._DrawBuffer = vertexRingBuffer();	// the ring may have grown
+	info._DrawOffset = ringOffset;
+	info._DrawBufferFrame = now;
+	info.clearDirty();
+	vb.clearDirtyRanges();
+	if (_StatsEnabled)
+	{
+		++_StatsPartialFlushes;
+		_StatsPartialBytes += bytes;
+	}
 	return true;
 }
 
@@ -1396,7 +1560,8 @@ uint32 CDriverVulkan::allocVertexRing(uint32 size)
 		memset(&bci, 0, sizeof(bci));
 		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 		bci.size = newSize;
-		bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		// Also the staging source of flushPartialWrites() (vkCmdCopyBuffer).
+		bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 		bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		VkBuffer buffer = VK_NULL_HANDLE;
 		if (vkCreateBuffer(_Device, &bci, NULL, &buffer) != VK_SUCCESS)
@@ -2118,11 +2283,9 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
 	if (!info || !info->currentBuffer())
 		return false;
-	// A copy-on-write buffer may hold a ring copy from an earlier frame; the
-	// ring is reused every frame, so fall back to the persistent buffer (the
-	// engine did not rewrite this buffer in this frame).
-	if (info->_CopyOnWrite && info->_DrawBufferFrame != getSwapBufferCounter())
-		info->resetDrawBuffer();
+	// Frame boundary for per-frame copies: drop last frame's CoW slice and a
+	// draw pointer that is not from this frame (the ring is reused every frame).
+	info->beginFrameState(getSwapBufferCounter());
 	// DBG-PERF: a stream buffer drawn without a lock in this frame would still
 	// point at last frame's ring slice, which the ring reuses. Count and log it:
 	// this is a candidate for the one-frame flicker.
@@ -2177,6 +2340,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	vkCmdDraw(cmd, count, 1, firstVertex, 0);
 	info->_Drawn = true;
 	info->_DrawFrame = getSwapBufferCounter();
+	info->markDrawn(info->_DrawFrame);
 	++_ArrayDrawCount;
 	return true;
 }
@@ -2193,11 +2357,9 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
 	if (!info || !info->currentBuffer())
 		return false;
-	// A copy-on-write buffer may hold a ring copy from an earlier frame; the
-	// ring is reused every frame, so fall back to the persistent buffer (the
-	// engine did not rewrite this buffer in this frame).
-	if (info->_CopyOnWrite && info->_DrawBufferFrame != getSwapBufferCounter())
-		info->resetDrawBuffer();
+	// Frame boundary for per-frame copies: drop last frame's CoW slice and a
+	// draw pointer that is not from this frame (the ring is reused every frame).
+	info->beginFrameState(getSwapBufferCounter());
 	// DBG-PERF: a stream buffer drawn without a lock in this frame would still
 	// point at last frame's ring slice, which the ring reuses. Count and log it:
 	// this is a candidate for the one-frame flicker.
@@ -2276,6 +2438,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	vkCmdDrawIndexed(cmd, count, 1, 0, 0, 0);
 	info->_Drawn = true;
 	info->_DrawFrame = getSwapBufferCounter();
+	info->markDrawn(info->_DrawFrame);
 	++_IndexedDrawCount;
 	if (_StatsEnabled)
 	{
@@ -2432,11 +2595,9 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 	CVBDrvInfosVulkan *info = dynamic_cast<CVBDrvInfosVulkan *>((IVBDrvInfos *)_CurrentVB->DrvInfos);
 	if (!info || !info->currentBuffer())
 		return false;
-	// A copy-on-write buffer may hold a ring copy from an earlier frame; the
-	// ring is reused every frame, so fall back to the persistent buffer (the
-	// engine did not rewrite this buffer in this frame).
-	if (info->_CopyOnWrite && info->_DrawBufferFrame != getSwapBufferCounter())
-		info->resetDrawBuffer();
+	// Frame boundary for per-frame copies: drop last frame's CoW slice and a
+	// draw pointer that is not from this frame (the ring is reused every frame).
+	info->beginFrameState(getSwapBufferCounter());
 	// DBG-PERF: a stream buffer drawn without a lock in this frame would still
 	// point at last frame's ring slice, which the ring reuses. Count and log it:
 	// this is a candidate for the one-frame flicker.
@@ -2510,6 +2671,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 			vkCmdBindIndexBuffer(cmd, indexBuffer, _IndexRingDrawOffset, VK_INDEX_TYPE_UINT16);
 			info->_Drawn = true;
 			info->_DrawFrame = getSwapBufferCounter();
+			info->markDrawn(info->_DrawFrame);
 
 			// The quad index pattern addresses vertices relative to the batch start.
 			sint32 firstVertex = (sint32)(startVertex + base);

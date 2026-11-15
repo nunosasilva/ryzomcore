@@ -200,8 +200,78 @@ public:
 	/// frame: an instance whose LOD needs no geomorph) falls back to the
 	/// persistent buffer.
 	uint64		_DrawBufferFrame;
-	/// Point the draw back at the persistent buffer.
-	void		resetDrawBuffer() { _DrawBuffer = _VertexBuffer[0]; _DrawOffset = 0; _DrawBufferFrame = ~0ull; }
+	/// Copy-on-write state (CpuReadWrite buffers). The engine writes such a
+	/// buffer several times per frame before drawing it (skinning, morphing,
+	/// geomorphing), and those writes must accumulate: one ring slice per frame
+	/// and buffer, kept while it has not been drawn yet. A new slice is only
+	/// taken when the previous one has already been referenced by a draw.
+	uint64		_CoWFrame;
+	VkBuffer	_CoWBuffer;
+	uint32		_CoWOffset;
+	bool		_CoWDrawn;
+	/// Point the draw back at the persistent buffer (F9: the slot that was
+	/// actually written, not always slot 0).
+	void		resetDrawBuffer() { _DrawBuffer = _VertexBuffer[_Slot]; _DrawOffset = 0; _DrawBufferFrame = ~0ull; }
+	void		resetCoW() { _CoWFrame = ~0ull; _CoWBuffer = VK_NULL_HANDLE; _CoWOffset = 0; _CoWDrawn = false; }
+	/// Frame boundary: forget last frame's copy and a draw pointer that is not
+	/// from this frame. Called by the draw paths, which are the only place a
+	/// stale copy can surface.
+	void		beginFrameState(uint64 now)
+	{
+		if (_CoWFrame != now)
+			resetCoW();
+		if (_DrawBufferFrame != now)
+			resetDrawBuffer();
+	}
+	/// A draw used the current copy in this frame: the next write needs a new
+	/// slice so the recorded draw keeps its vertices.
+	void		markDrawn(uint64 now)
+	{
+		if (_CoWFrame == now && _CoWBuffer != VK_NULL_HANDLE && _DrawBuffer == _CoWBuffer)
+			_CoWDrawn = true;
+	}
+	/// Bytes a copy has to cover: the vertices the engine fills. Capacity can be
+	/// much larger than what the engine writes, and a draw can only reference
+	/// vertices below getNumVertices().
+	uint32		copyLength() const
+	{
+		if (VertexBufferPtr != NULL)
+		{
+			const uint32 used = VertexBufferPtr->getNumVertices() * VertexBufferPtr->getVertexSize();
+			if (used != 0 && used < _Size)
+				return used;
+		}
+		return _Size;
+	}
+	/// PartialWrite / UnsynchronizedWrite: the engine writes parts of the buffer
+	/// every frame (landscape tiles and fars, vegetation) and GL3 gives it a host
+	/// shadow whose dirty ranges are uploaded in command-stream order. Same here:
+	/// lock() hands out the shadow, unlock() marks it dirty and
+	/// flushPartialWrites() copies the dirty bytes into the frame's command
+	/// buffer before the draws that follow.
+	bool		_PartialWrite;
+	std::vector<uint8>	_Shadow;
+	uint32		_DirtyBegin;
+	uint32		_DirtyEnd;
+	uint32		_LockBegin;
+	uint32		_LockEnd;
+	void		markDirty(uint32 begin, uint32 end)
+	{
+		if (end <= begin)
+			return;
+		if (_DirtyEnd <= _DirtyBegin)
+		{
+			_DirtyBegin = begin;
+			_DirtyEnd = end;
+		}
+		else
+		{
+			_DirtyBegin = std::min(_DirtyBegin, begin);
+			_DirtyEnd = std::max(_DirtyEnd, end);
+		}
+	}
+	bool		hasDirty() const { return _DirtyEnd > _DirtyBegin; }
+	void		clearDirty() { _DirtyBegin = 0; _DirtyEnd = 0; }
 	VkBuffer	_DrawBuffer;
 	uint32		_DrawOffset;
 	uint32		_Size;
@@ -1079,6 +1149,11 @@ private:
 	/// CpuReadWrite vertex-buffer snapshots taken by CVBDrvInfosVulkan::lock()
 	/// (bytes and count) in the current stat window.
 	uint64					_StatsVBSnapshots;
+	uint64					_StatsVBSnapshotFails;
+	/// PartialWrite flushes (count and bytes) in the current NLVK_STATS window.
+	uint64					_StatsPartialFlushes;
+	uint64					_StatsPartialBytes;
+	uint64					_StatsPartialDrops;
 	uint64					_StatsStaleStreamDraws;
 	uint64					_StatsVBSnapshotBytes;
 	uint64					_StatsUploadBytes;
@@ -1590,8 +1665,25 @@ public:
 	/// Reserve `size` bytes in the current frame's vertex ring (4-byte aligned)
 	/// and return the offset, or 0xFFFFFFFF when the ring could not grow.
 	uint32					allocVertexRing(uint32 size);
+	/// Upload a PartialWrite buffer's dirty shadow ranges into this frame's
+	/// command buffer, in order with the draws that follow (GL3's flush()).
+	bool					flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &info);
 	/// Account one CpuReadWrite vertex-buffer snapshot (NLVK_STATS windows).
 	void					countVBSnapshot(uint32 bytes) { ++_StatsVBSnapshots; _StatsVBSnapshotBytes += bytes; }
+	/// CoW snapshot could not be allocated (ring exhausted): the build fell back
+	/// to write-through, which is exactly the corruption the snapshot prevents.
+	/// Rate-limited warning; counted in the NLVK_STATS window.
+	void					countVBSnapshotFail()
+	{
+		++_StatsVBSnapshotFails;
+		static int remain = 5;
+		if (remain > 0)
+		{
+			--remain;
+			nlwarning("Vulkan: vertex ring exhausted (ring %u KiB), a CpuReadWrite buffer is written through - recorded draws may see changed vertices",
+				_VertexRingSize / 1024);
+		}
+	}
 	/// DBG-PERF: draws that used a stream buffer whose ring slice is from an
 	/// earlier frame (should stay 0; a nonzero count is a flicker candidate).
 	void					countStaleStreamDraw(const CVBDrvInfosVulkan &info)
