@@ -1036,9 +1036,6 @@ private:
 	/// (bytes and count) in the current stat window.
 	uint64					_StatsVBSnapshots;
 	uint64					_StatsStaleStreamDraws;
-	/// Times a vertex-ring allocation found the offset outside the current
-	/// frame's half (a between-frames lock, or a stale offset).
-	uint64					_StatsRingRebases;
 	uint64					_StatsVBSnapshotBytes;
 	uint64					_StatsUploadBytes;
 	/// Time spent in vkCreateGraphicsPipelines and in texture image creation,
