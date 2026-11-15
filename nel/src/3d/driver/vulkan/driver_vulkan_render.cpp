@@ -1267,7 +1267,22 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 		}
 		const uint32 offset = driver->allocVertexRing(_Size);
 		if (offset == 0xFFFFFFFFu)
-			return NULL;
+		{
+			// Ring exhausted: keep the draw working rather than returning NULL
+			// (the engine writes through the returned pointer and would crash).
+			// This is the old write-through path and can tear a frame; it is a
+			// last resort, the cap is high enough for a full zone load.
+			static bool warned = false;
+			if (!warned)
+			{
+				warned = true;
+				nlwarning("Vulkan: vertex ring exhausted, writing a dynamic vertex buffer through (rendering may tear)");
+			}
+			_DrawBuffer = _VertexBuffer[_Slot];
+			_DrawOffset = 0;
+			_DrawBufferFrame = driver->getSwapBufferCounter();
+			return (uint8 *)_Mapped[_Slot] + begin;
+		}
 		_DrawBuffer = driver->vertexRingBuffer();
 		_DrawOffset = offset;
 		_DrawBufferFrame = driver->getSwapBufferCounter();
@@ -1533,8 +1548,12 @@ uint32 CDriverVulkan::allocVertexRing(uint32 size)
 		const uint32 newSize = nextRingSize(_VertexRingSize, 4u * 1024u * 1024u, size, NL_VK_VERTEX_RING_MAX);
 		if (newSize == 0)
 		{
-			nlwarning("Vulkan: vertex ring would exceed %u MiB for a %u-byte upload (ring %u MiB)",
-				NL_VK_VERTEX_RING_MAX / (1024u * 1024u), size, _VertexRingSize / (1024u * 1024u));
+			// A full loading frame can hit this in a burst; keep the log usable.
+			static uint32 warnCount = 0;
+			if (warnCount < 3 || (warnCount % 1000) == 0)
+				nlwarning("Vulkan: vertex ring would exceed %u MiB for a %u-byte upload (ring %u MiB)",
+					NL_VK_VERTEX_RING_MAX / (1024u * 1024u), size, _VertexRingSize / (1024u * 1024u));
+			++warnCount;
 			return 0xFFFFFFFFu;
 		}
 		VkBufferCreateInfo bci;
