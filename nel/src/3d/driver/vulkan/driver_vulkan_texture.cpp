@@ -1058,7 +1058,7 @@ bool CDriverVulkan::clearTextureImage(CTextureVulkan &out, uint32 mipCount)
 	// NLVK_NO_TEX_CLEAR=1 A/B switch: fall back to the old layout-only
 	// transition, i.e. the image keeps undefined contents until its streamed
 	// regions arrive. Only for measuring this path; the pixels are garbage.
-	if (getenv("NLVK_NO_TEX_CLEAR"))
+	if (!_TextureClearEnabled)
 		return false;
 
 	if (out.Image == VK_NULL_HANDLE || mipCount == 0)

@@ -304,6 +304,10 @@ CDriverVulkan::CDriverVulkan()
 	// instead of a write-combined ring slice. NLVK_VB_SHADOW=0 is the A/B.
 	_VbShadow = getenv("NLVK_VB_SHADOW") == NULL;
 	_VbSnapshots = getenv("NLVK_NO_VB_SNAPSHOT") == NULL;
+	// Both are checked per vertex buffer / per texture, i.e. many times at
+	// load and while a new zone streams in: read them once here too.
+	_PartialUploadEnabled = getenv("NLVK_NO_PARTIAL_UPLOAD") == NULL;
+	_TextureClearEnabled = getenv("NLVK_NO_TEX_CLEAR") == NULL;
 	_NoQueries = getenv("NLVK_NOQUERIES") != NULL;
 	_RTFeedbackDbg = getenv("NLVK_RT_FEEDBACK_DBG") != NULL;
 	// Frame-path debug switches: read once, the frame code must not call

@@ -486,11 +486,12 @@ bool CDriverVulkan::compileShader(const char *glsl, VkShaderModule *outModule, b
 	{
 		nlwarning("Vulkan: shader compile failed: %s", shader.getInfoLog());
 		// Temporary developer aid: keep the rejected source for inspection.
-		if (getenv("NLVK_VP_DUMP"))
+		static const char *dumpPath = getenv("NLVK_VP_DUMP");
+		if (dumpPath && *dumpPath)
 		{
 			static int dumpCount = 0;
 			char path[256];
-			snprintf(path, sizeof(path), "%s/fail%d.glsl", getenv("NLVK_VP_DUMP"), dumpCount++);
+			snprintf(path, sizeof(path), "%s/fail%d.glsl", dumpPath, dumpCount++);
 			FILE *f = fopen(path, "wb");
 			if (f) { fwrite(glsl, 1, strlen(glsl), f); fclose(f); }
 		}
@@ -1160,7 +1161,7 @@ CVBDrvInfosVulkan::CVBDrvInfosVulkan(CDriverVulkan *drv, ItVBDrvInfoPtrList it, 
 		// NLVK_NO_PARTIAL_UPLOAD=1 keeps the old write-through for A/B.
 		_Dynamic = false;
 		_SlotCount = 1;
-		_PartialWrite = getenv("NLVK_NO_PARTIAL_UPLOAD") == NULL;
+		_PartialWrite = drv && drv->partialUploadEnabled();
 		break;
 	default:
 		_Dynamic = false;
