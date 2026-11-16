@@ -1118,15 +1118,16 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	// b = first split / 100.
 	if (fogOrPpl)
 	{
-		ss << "  if (nlShadow.params.w > 3.5) fragColor = vec4(1.0, 0.0, 1.0, 1.0);" << std::endl;
-		ss << "  else if (nlShadow.params.w > 2.5) {" << std::endl;
-		ss << "    // red = NaN uv, green = inf uv, blue = usable uv (0..1)" << std::endl;
-		ss << "    bool nanUv = any(isnan(nlSunUv)); bool infUv = any(isinf(nlSunUv));" << std::endl;
-		ss << "    bool inRange = all(greaterThanEqual(nlSunUv, vec2(0.0))) && all(lessThanEqual(nlSunUv, vec2(1.0)));" << std::endl;
-		ss << "    fragColor = nanUv ? vec4(1.0, 0.0, 0.0, 1.0) : (infUv ? vec4(0.0, 1.0, 0.0, 1.0) : (inRange ? vec4(0.0, 0.0, 1.0, 1.0) : vec4(1.0, 0.0, 1.0, 1.0)));" << std::endl;
+		// The interface is drawn through the same program, and painting it with
+		// the debug views hides the world they are meant to show. Fog is only
+		// enabled for the 3D pass, so it separates the two.
+		ss << "  if (nlFogEnabled != 0 && nlShadow.params.w > 3.5) fragColor = vec4(1.0, 0.0, 1.0, 1.0);" << std::endl;
+		ss << "  else if (nlFogEnabled != 0 && nlShadow.params.w > 2.5) {" << std::endl;
+		ss << "    vec4 raw = texture(nlShadowMask0, nlSunUv);" << std::endl;
+		ss << "    fragColor = vec4(raw.a, raw.r, 0.0, 1.0);" << std::endl;
 		ss << "  }" << std::endl;
-		ss << "  else if (nlShadow.params.w > 1.5) fragColor = vec4(nlShadow.params.x, nlShadow.params.z, nlShadow.splits.x / 100.0, 1.0);" << std::endl;
-		ss << "  else if (nlShadow.params.w > 0.5) fragColor = vec4(vec3(1.0 - nlSunShadow), 1.0);" << std::endl;
+		ss << "  else if (nlFogEnabled != 0 && nlShadow.params.w > 1.5) fragColor = vec4(nlShadow.params.x, nlShadow.params.z, nlShadow.splits.x / 100.0, 1.0);" << std::endl;
+		ss << "  else if (nlFogEnabled != 0 && nlShadow.params.w > 0.5) fragColor = vec4(vec3(1.0 - nlSunShadow), 1.0);" << std::endl;
 	}
 	ss << std::endl;
 
