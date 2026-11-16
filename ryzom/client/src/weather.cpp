@@ -22,6 +22,7 @@
 
 
 #include "stdpch.h"
+#include <cstdlib>
 #include "light_cycle_manager.h"
 #include "weather_manager_client.h"
 #include "game_share/light_cycle.h"
@@ -55,7 +56,12 @@ float               ManualWeatherValue = 0.f;
 EGSPD::CSeason::TSeason	ManualSeasonValue = EGSPD::CSeason::Spring;
 bool                ForceTrueWeatherValue = false;
 float				DayNightCycleHour = 12.f;
-float				ForcedDayNightCycleHour = -1.0f;
+static float forcedHourFromEnv()
+{
+	const char *hour = getenv("NLVK_FORCE_HOUR");
+	return hour ? (float)atof(hour) : -1.0f;
+}
+float				ForcedDayNightCycleHour = forcedHourFromEnv();
 
 EGSPD::CSeason::TSeason CurrSeason = EGSPD::CSeason::Invalid;
 EGSPD::CSeason::TSeason StartupSeason = EGSPD::CSeason::Invalid;

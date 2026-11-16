@@ -381,6 +381,17 @@ void			CShadowMapManager::renderGenerate(CScene *scene)
 			// render to screen
 			sc->generateShadowMap(lightDir);
 
+			if (shadowMapDebugEnabled())
+			{
+				CShadowMap	*dbgSm= sc->getShadowMap();
+				const CVector	&dbgPos= sc->getWorldMatrix().getPos();
+				CVector	dbgHs= dbgSm ? dbgSm->LocalBoundingBox.getHalfSize() : CVector::Null;
+				nlinfo("SHADOWDBG genCaster %u/%u ptr=%p pos %.2f %.2f %.2f boxHalf %.2f %.2f %.2f ldir %.3f %.3f %.3f fade %.2f",
+					baseSC+i+1, (unsigned)_GenerateShadowCasters.size(), (void*)sc,
+					dbgPos.x, dbgPos.y, dbgPos.z, dbgHs.x, dbgHs.y, dbgHs.z,
+					lightDir.x, lightDir.y, lightDir.z, dbgSm ? dbgSm->getFinalFade() : -1.f);
+			}
+
 			// next text
 			textX++;
 			if(textX==numTextW)
@@ -685,8 +696,11 @@ void			CShadowMapManager::renderProject(CScene *scene)
 
 			if (shadowMapDebugEnabled())
 			{
-				nlinfo("SHADOWDBG renderProject: caster receivers=%u fade=%.2f mapSize=%u",
-					dbgReceivers, sm->getFinalFade(), sm->getTextureSize());
+				CVector	dbgHs= worldBB.getHalfSize();
+				nlinfo("SHADOWDBG renderProject: caster ptr=%p pos %.2f %.2f %.2f boxHalf %.2f %.2f %.2f receivers=%u fade=%.2f mapSize=%u tex=%p",
+					(void*)caster, casterPos.x, casterPos.y, casterPos.z,
+					dbgHs.x, dbgHs.y, dbgHs.z, dbgReceivers, sm->getFinalFade(),
+					sm->getTextureSize(), (void*)sm->getTexture());
 			}
 
 			// Additionaly, the VisualCollisionManager may manage some shadow receiving
