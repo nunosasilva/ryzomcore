@@ -44,7 +44,15 @@ CMeshInstance::CMeshInstance()
 	CTransform::setIsLoadbalancable(false);
 
 	// Mesh support shadow map casting only
-	CTransform::setIsShadowMapCaster(true);
+	// Ryzom: static mesh instances (buildings, props, road pieces, and
+	// entity instances without a skeleton) do not cast shadow maps in the
+	// live client - its GL2 shadow path leaves those maps empty, so the live
+	// look has only skeleton (character/NPC) shadows. On Vulkan the same maps
+	// are rendered, and the big merged starting-village instance projects a
+	// large ground shadow that pops in and out with the camera and nearby
+	// avatars. Keep CMeshInstance out of the caster set; CSkeletonModel still
+	// enables its own shadow map in its constructor.
+	CTransform::setIsShadowMapCaster(false);
 }
 
 // ***************************************************************************

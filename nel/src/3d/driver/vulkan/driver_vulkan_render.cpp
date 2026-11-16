@@ -3303,6 +3303,12 @@ void CDriverVulkan::setupViewport(const CViewport &viewport)
 	if (_FrameOpen)
 	{
 		VkViewport vk = computeViewport(currentTargetExtent());
+		if (_ShadowDbg)
+		{
+			VkExtent2D ext = currentTargetExtent();
+			nlinfo("SHADOWDBG setupViewport target %ux%u -> %.1f,%.1f %.1fx%.1f depth %.3f..%.3f",
+				ext.width, ext.height, vk.x, vk.y, vk.width, vk.height, vk.minDepth, vk.maxDepth);
+		}
 		vkCmdSetViewport(_CommandBuffers[_FrameIndex], 0, 1, &vk);
 	}
 }
@@ -3323,6 +3329,9 @@ void CDriverVulkan::setupScissor(const CScissor &scissor)
 		rect.offset.y = (sint32)(extent.height - (scissor.Y + scissor.Height) * extent.height);
 		rect.extent.width = (uint32)(scissor.Width * extent.width);
 		rect.extent.height = (uint32)(scissor.Height * extent.height);
+		if (_ShadowDbg)
+			nlinfo("SHADOWDBG setupScissor target %ux%u -> %d,%d %ux%u",
+				extent.width, extent.height, rect.offset.x, rect.offset.y, rect.extent.width, rect.extent.height);
 		vkCmdSetScissor(_CommandBuffers[_FrameIndex], 0, 1, &rect);
 	}
 }
