@@ -823,6 +823,7 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	if (fogOrPpl)
 	{
 		ss << "float nlSunShadow = 1.0;" << std::endl;
+		ss << "vec2 nlSunUv = vec2(-1.0);" << std::endl;
 		ss << "float sampleSunMask(sampler2D smap, vec2 uv, float texel) {" << std::endl;
 		ss << "  float sum = 0.0;" << std::endl;
 		ss << "  for (int y = -1; y <= 1; ++y)" << std::endl;
@@ -880,12 +881,17 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// landscape/vegetation lightmaps, so it is applied to the final lit
 		// colour below rather than to one entry of the light table.
 		ss << "  nlSunShadow = 1.0;" << std::endl;
-		ss << "  if (nlShadow.params.x > 0.5) {" << std::endl;
-		ss << "    vec3 shadowWsPos = worldPos.xyz / worldPos.w;" << std::endl;
+		// World position for the shadow lookup, rebuilt from eye space: the
+		// worldPos varying is only written by vertex programs that ask for it,
+		// and the landscape/village programs do not. ecPos is always there.
+		ss << "  bool haveWsPos = ecPos.w != 0.0;" << std::endl;
+		ss << "  vec3 shadowWsPos = haveWsPos ? (transpose(mat3(viewMatrix)) * (ecPos.xyz - viewMatrix[3].xyz * ecPos.w)) / ecPos.w : vec3(0.0);" << std::endl;
+		ss << "  if (nlShadow.params.x > 0.5 && haveWsPos) {" << std::endl;
 		ss << "    float sunDist = length(shadowWsPos - cameraWorldPos);" << std::endl;
 		ss << "    vec4 sunP = (sunDist < nlShadow.splits.x) ? (nlShadow.worldToMask0 * vec4(shadowWsPos, 1.0)) : (nlShadow.worldToMask1 * vec4(shadowWsPos, 1.0));" << std::endl;
 		ss << "    vec2 sunUv = sunP.xy;" << std::endl;
 		ss << "    sunUv.y = 1.0 - sunUv.y;" << std::endl;
+		ss << "    nlSunUv = sunUv;" << std::endl;
 		ss << "    if (sunDist < nlShadow.splits.x)" << std::endl;
 		ss << "      nlSunShadow = sampleSunMask(nlShadowMask0, sunUv, nlShadow.params.y);" << std::endl;
 		ss << "    else" << std::endl;
@@ -1107,10 +1113,21 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	if (fogOrPpl)
 		ss << "  fragColor.rgb *= (1.0 - (1.0 - nlSunShadow) * nlShadow.params.z);" << std::endl;
 
-	// Development view: paint the sun coverage (black = lit, white =
-	// shadowed). Toggled by CModernShadowState::DebugView.
+	// Development views, see CModernShadowState::DebugMode. Mode 2 shows the
+	// cascade block as the shader reads it: r = enabled, g = sun strength,
+	// b = first split / 100.
 	if (fogOrPpl)
-		ss << "  if (nlShadow.params.w > 0.5) fragColor = vec4(vec3(1.0 - nlSunShadow), 1.0);" << std::endl;
+	{
+		ss << "  if (nlShadow.params.w > 3.5) fragColor = vec4(1.0, 0.0, 1.0, 1.0);" << std::endl;
+		ss << "  else if (nlShadow.params.w > 2.5) {" << std::endl;
+		ss << "    // red = NaN uv, green = inf uv, blue = usable uv (0..1)" << std::endl;
+		ss << "    bool nanUv = any(isnan(nlSunUv)); bool infUv = any(isinf(nlSunUv));" << std::endl;
+		ss << "    bool inRange = all(greaterThanEqual(nlSunUv, vec2(0.0))) && all(lessThanEqual(nlSunUv, vec2(1.0)));" << std::endl;
+		ss << "    fragColor = nanUv ? vec4(1.0, 0.0, 0.0, 1.0) : (infUv ? vec4(0.0, 1.0, 0.0, 1.0) : (inRange ? vec4(0.0, 0.0, 1.0, 1.0) : vec4(1.0, 0.0, 1.0, 1.0)));" << std::endl;
+		ss << "  }" << std::endl;
+		ss << "  else if (nlShadow.params.w > 1.5) fragColor = vec4(nlShadow.params.x, nlShadow.params.z, nlShadow.splits.x / 100.0, 1.0);" << std::endl;
+		ss << "  else if (nlShadow.params.w > 0.5) fragColor = vec4(vec3(1.0 - nlSunShadow), 1.0);" << std::endl;
+	}
 	ss << std::endl;
 
 	// Fog (runtime-gated: fogOrPpl=1 always has the function, but only applies when fog is enabled)

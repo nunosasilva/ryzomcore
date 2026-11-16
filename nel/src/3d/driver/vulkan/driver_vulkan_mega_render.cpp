@@ -32,6 +32,8 @@
 #include "driver_vulkan.h"
 
 #include "nel/3d/light.h"
+#include "nel/misc/file.h"
+#include "nel/misc/string_conversion.h"
 #include "nel/3d/texture_bump.h"
 
 #include <algorithm>
@@ -433,6 +435,17 @@ VkShaderModule CDriverVulkan::getMegaPixelShader(bool cube, bool specular)
 		return VK_NULL_HANDLE;
 	}
 	nlinfo("Vulkan: compiled mega pixel program (cube=%d, specular=%d)", cube ? 1 : 0, specular ? 1 : 0);
+	// Development: keep the generated GLSL for inspection (NLVK_DUMP_SHADERS=1).
+	if (getenv("NLVK_DUMP_SHADERS"))
+	{
+		std::string name = "tmp/shadervk/pixel_" + NLMISC::toString((uint)key) + ".glsl";
+		COFile file;
+		if (file.open(name, false, false))
+		{
+			file.serialBuffer((uint8 *)source.c_str(), (uint32)source.size());
+			file.close();
+		}
+	}
 	_MegaPixelShaderVariants[key] = module;
 	return module;
 }
@@ -975,7 +988,7 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		shadowData.params[0] = 1.f;
 		shadowData.params[1] = _ModernShadowState.TexelWorldSize[0];
 		shadowData.params[2] = _ModernShadowState.SunStrength;
-		shadowData.params[3] = _ModernShadowState.DebugView ? 1.f : 0.f;
+		shadowData.params[3] = (float)_ModernShadowState.DebugMode;
 		memcpy(shadowData.worldToMask0, _ModernShadowState.WorldToMask[0], sizeof(shadowData.worldToMask0));
 		memcpy(shadowData.worldToMask1, _ModernShadowState.WorldToMask[1], sizeof(shadowData.worldToMask1));
 		shadowData.splits[0] = _ModernShadowState.CascadeSplits[0];
@@ -1118,6 +1131,21 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		shadowMaskInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		shadowMaskInfos[i].imageView = maskTex ? maskTex->View : getWhiteTexture();
 		shadowMaskInfos[i].sampler = maskTex ? maskTex->Sampler : _WhiteTexture.Sampler;
+	}
+	// TEMP: what the mask descriptors actually point at.
+	{
+		static bool logged = false;
+		if (!logged && _ModernShadowState.Enabled && _ModernShadowState.Mask[0])
+		{
+			logged = true;
+			CTextureVulkan *m0 = getTextureVulkan(*_ModernShadowState.Mask[0]);
+			nlinfo("MODERNSHADOW desc: tex=%p image=%p view=%p sampler=%p %ux%u layout=%d fmt=%d uploaded=%d",
+				(void *)_ModernShadowState.Mask[0], m0 ? (void *)m0->Image : NULL,
+				m0 ? (void *)m0->View : NULL, m0 ? (void *)m0->Sampler : NULL,
+				m0 ? m0->Width : 0, m0 ? m0->Height : 0,
+				m0 ? (int)m0->Layout : -1, m0 ? (int)m0->Format : -1,
+				m0 ? (int)m0->Uploaded : -1);
+		}
 	}
 
 	VkDescriptorSet descriptorSet = allocDescriptorSet(_MegaDescriptorSetLayout);

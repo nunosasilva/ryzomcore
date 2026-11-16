@@ -57,13 +57,13 @@ struct CModernShadowState
 	/// at dusk, when the sun is dim, a full shadow would otherwise paint
 	/// ambient-lit ground black.
 	float			SunStrength;
-	/// Development view: paint the sun coverage (black = lit, white =
-	/// shadowed) instead of the shaded scene. Toggled at runtime by creating
-	/// ./tmp/shadow_debug, so both views can be compared without a restart.
-	bool			DebugView;
+	/// Development views, toggled at runtime by creating files (see
+	/// CModernShadowMask::render): 1 paints the sun coverage (black = lit,
+	/// white = shadowed), 2 paints the cascade block read by the shader.
+	uint			DebugMode;
 
 	CModernShadowState()
-		: Enabled(false), NumCascades(0), SunStrength(0.f), DebugView(false)
+		: Enabled(false), NumCascades(0), SunStrength(0.f), DebugMode(0)
 	{
 		for (uint i = 0; i < 4; ++i)
 		{
@@ -123,12 +123,13 @@ private:
 	float					_Split[2];
 	uint					_Size;
 	bool					_Active;
-	/// Frame the masks were last fitted to the main camera for. The same
-	/// scene is rendered again within one frame for water reflections and the
-	/// water env map; those must not replace the player's masks.
-	uint64					_LastMaskFrame;
 	uint					_NumCascades;
 };
+
+/// Development counter: triangles submitted to the modern sun masks since it
+/// was last reset. CModernShadowMask::render() resets it once per pass.
+extern uint32			NLModernShadowCasterTris;
+extern uint32			NLModernShadowCasterMeshes;
 
 } // NL3D
 

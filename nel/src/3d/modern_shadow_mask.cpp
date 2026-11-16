@@ -34,13 +34,16 @@ using namespace NLMISC;
 
 namespace NL3D {
 
+uint32	NLModernShadowCasterTris = 0;
+uint32	NLModernShadowCasterMeshes = 0;
+
 // Cascade world half sizes (around the camera). The first cascade is the
 // readable one near the player; the second covers the visible mid distance.
 static const float	NL_MODERN_SHADOW_RADIUS[2] = { 40.f, 80.f };
 static const uint	NL_MODERN_SHADOW_SIZE = 2048;
 
 CModernShadowMask::CModernShadowMask(CShadowMapManager *owner)
-	: _Owner(owner), _Size(NL_MODERN_SHADOW_SIZE), _Active(false), _LastMaskFrame(0xFFFFFFFFFFFFFFFFull), _NumCascades(0)
+	: _Owner(owner), _Size(NL_MODERN_SHADOW_SIZE), _Active(false), _NumCascades(0)
 {
 	for (uint i = 0; i < 2; ++i)
 		_Split[i] = 0.f;
@@ -49,7 +52,10 @@ CModernShadowMask::CModernShadowMask(CShadowMapManager *owner)
 	_CasterMaterial.setColor(CRGBA::White);
 	_CasterMaterial.setZWrite(false);
 	_CasterMaterial.setZFunc(CMaterial::always);
-	_CasterMaterial.setDoubleSided(false);
+	// The casters are drawn as they are, without culling: several Ryzom shapes
+	// are single-layer shells whose only faces point away from the light, and
+	// culling them would leave the mask empty.
+	_CasterMaterial.setDoubleSided(true);
 	_CasterMaterial.setBlend(true);
 	_CasterMaterial.setBlendFunc(CMaterial::one, CMaterial::one);
 }
@@ -112,22 +118,21 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		return false;
 	}
 
-	// The cascades are fitted around the rendertrav camera. The same scene is
-	// rendered again within one frame for the water reflection and the water
-	// env map cube; those passes must keep the player's masks instead of
-	// replacing them with ones fitted to a reflected camera.
-	if (scene->getFrameId() == _LastMaskFrame)
-		return _Active;
-
-	if (!ensureMasks())
-		return false;
-
-	_LastMaskFrame = scene->getFrameId();
-	_Active = false;
-
 	IDriver *driver = scene->getRenderTrav().getAuxDriver();
 	if (!driver)
 		return false;
+
+	// Every opaque pass rebuilds the cascades around its own camera. The main
+	// pass is what the player sees; the water env map renders the same scene
+	// with a reflected camera from time to time, which costs one extra mask
+	// render but is immediately replaced by the next frame's main pass.
+	if (!ensureMasks())
+		return false;
+
+	_Active = false;
+
+	NLModernShadowCasterTris = 0;
+	NLModernShadowCasterMeshes = 0;
 
 	static uint lastLoggedCasters = 0xFFFFFFFFu;
 	if ((uint)casters.size() != lastLoggedCasters)
@@ -136,32 +141,28 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		nlinfo("MODERNSHADOW casters now=%u size=%u", (unsigned)casters.size(), (unsigned)_Size);
 	}
 
-	// TEMP: the largest casters by ground footprint. A big, flat static mesh
-	// (a village platform, for instance) covers its whole footprint in a
-	// coverage mask, because the mask stores occlusion without depth.
+	// TEMP: what the casters are and where they land in cascade 0.
 	{
 		static bool loggedBoxes = false;
 		if (!loggedBoxes && !casters.empty())
 		{
 			loggedBoxes = true;
-			std::vector<std::pair<float, CAABBox> > boxes;
-			boxes.reserve(casters.size());
-			for (uint c = 0; c < casters.size(); ++c)
+			const CMatrix &w2m = _WorldToMask[0];
+			for (uint c = 0; c < casters.size() && c < 6; ++c)
 			{
 				CAABBox bb;
-				if (casters[c] && casters[c]->computeWorldBBoxForShadow(bb))
-					boxes.push_back(std::make_pair(bb.getSize().x * bb.getSize().y, bb));
-			}
-			std::sort(boxes.begin(), boxes.end(),
-				[](const std::pair<float, CAABBox> &a, const std::pair<float, CAABBox> &b)
-				{ return a.first > b.first; });
-			const uint n = std::min<uint>(8, (uint)boxes.size());
-			for (uint b = 0; b < n; ++b)
-			{
-				const CAABBox &bb = boxes[b].second;
-				const CVector c = bb.getCenter(), s = bb.getSize();
-				nlinfo("MODERNSHADOW caster %u: footprint %.0f m2 center=(%.1f %.1f %.1f) size=(%.1f %.1f %.1f)",
-					b, boxes[b].first, c.x, c.y, c.z, s.x, s.y, s.z);
+				if (!casters[c] || !casters[c]->computeWorldBBoxForShadow(bb))
+				{
+					nlinfo("MODERNSHADOW caster %u: no bbox (no-op caster)", c);
+					continue;
+				}
+				const CVector cc = bb.getCenter(), hs = bb.getHalfSize();
+				const CVector p0 = w2m * (cc - hs);
+				const CVector p1 = w2m * (cc + hs);
+				nlinfo("MODERNSHADOW caster %u: center=(%.1f %.1f %.1f) half=(%.1f %.1f %.1f) uv=(%.3f..%.3f, %.3f..%.3f)",
+					c, cc.x, cc.y, cc.z, hs.x, hs.y, hs.z,
+					std::min(p0.x, p1.x), std::max(p0.x, p1.x),
+					std::min(p0.y, p1.y), std::max(p0.y, p1.y));
 			}
 		}
 	}
@@ -174,9 +175,12 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 
 	driver->enableFog(false);
 	driver->setColorMask(false, false, false, true);
-	// Cull front faces: the ground planes are front-facing to the sun and
-	// must not cover the mask; the far building/character silhouettes remain.
-	driver->setCullMode(IDriver::CW);
+
+	// The casters are drawn with the same mega shader as everything else. Turn
+	// the shadow state off for the duration of the pass: the mask textures are
+	// the render targets here, and a shader must never sample the image it is
+	// writing. It would also darken the casters themselves.
+	driver->setModernShadowState(CModernShadowState());
 
 	const CVector	sun = scene->getSunDirection();
 	const CVector	camPos = scene->getRenderTrav().CamPos;
@@ -200,14 +204,25 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 			cameraMatrix.getJ() * localBox.getSize().y,
 			cameraMatrix.getK() * localBox.getSize().z);
 
-		_WorldToMask[i] = cameraMatrix;
+		// cameraMatrix is the camera-to-world matrix of the light camera (the
+		// same convention as CShadowMap::buildCasterCameraMatrix); the shader
+		// needs world -> mask UV, i.e. its inverse.
+		_WorldToMask[i] = cameraMatrix.inverted();
 		_Split[i] = NL_MODERN_SHADOW_RADIUS[i];
 
 		driver->setRenderTarget(_Mask[i], 0, 0, _Size, _Size);
-		driver->setColorMask(false, false, false, true);
 		CScissor	scissor;
 		scissor.initFullScreen();
 		driver->setupScissor(scissor);
+		// TEMP probe: fill cascade 0 with white and cascade 1 with black to
+		// tell "the mask is never written" from "the casters write nothing".
+		static const bool testFill = getenv("NLVK_SHADOW_TESTFILL") != NULL;
+		if (testFill)
+		{
+			driver->setColorMask(true, true, true, true);
+			driver->clear2D(i == 0 ? CRGBA(255, 255, 255, 255) : CRGBA(0, 0, 0, 255));
+		}
+		driver->setColorMask(false, false, false, true);
 		driver->clear2D(CRGBA(0, 0, 0, 0));
 
 		for (uint c = 0; c < casters.size(); ++c)
@@ -219,7 +234,6 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 
 	driver->setRenderTarget(previousTarget);
 	driver->setColorMask(true, true, true, true);
-	driver->setCullMode(IDriver::CCW);
 	driver->setupViewport(bkupViewport);
 	driver->enableFog(bkupFog);
 	CScissor	scissor;
@@ -244,8 +258,24 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		const float share = sunLum / std::max(1.f, sunLum + ambLum);
 		state.SunStrength = std::min(0.85f, std::max(0.25f, share));
 	}
-	// Development view toggle; see CModernShadowState::DebugView.
-	state.DebugView = CFile::isExists("tmp/shadow_debug");
+	// TEMP probe: publish no mask, so the shader binds the white fallback
+	// texture. With the coverage view on, the screen must turn white if the
+	// mask sampling path works at all.
+	if (getenv("NLVK_SHADOW_WHITE"))
+	{
+		state.Mask[0] = NULL;
+		state.Mask[1] = NULL;
+	}
+
+	// Development view toggles; see CModernShadowState::DebugMode.
+	if (CFile::isExists("tmp/shadow_magenta"))
+		state.DebugMode = 4;
+	else if (CFile::isExists("tmp/shadow_raw"))
+		state.DebugMode = 3;
+	else if (CFile::isExists("tmp/shadow_ubodbg"))
+		state.DebugMode = 2;
+	else if (CFile::isExists("tmp/shadow_debug"))
+		state.DebugMode = 1;
 	// Development A/B: ./tmp/shadow_off keeps the masks but does not darken
 	// anything, so the same view can be compared with and without shading
 	// without restarting the client.
@@ -259,6 +289,16 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		state.TexelWorldSize[i] = 1.f / (float)_Size;
 	}
 	driver->setModernShadowState(state);
+	static uint32 lastLoggedTris = 0xFFFFFFFFu;
+	if (NLModernShadowCasterTris != lastLoggedTris)
+	{
+		lastLoggedTris = NLModernShadowCasterTris;
+		const CVector uv0 = _WorldToMask[0] * camPos;
+		const CVector uv1 = _WorldToMask[1] * camPos;
+		nlinfo("MODERNSHADOW pass: meshes=%u tris=%u camUV=(%.3f %.3f) / (%.3f %.3f) sun=(%.2f %.2f %.2f)",
+			NLModernShadowCasterMeshes, NLModernShadowCasterTris,
+			uv0.x, uv0.y, uv1.x, uv1.y, sun.x, sun.y, sun.z);
+	}
 	static bool loggedState = false;
 	if (!loggedState)
 	{

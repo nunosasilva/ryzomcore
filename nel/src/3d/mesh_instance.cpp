@@ -309,9 +309,11 @@ void		CMeshInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMa
 		{
 			const CIndexBuffer	&pb= mesh->getRdrPassPrimitiveBlock(mb, rp);
 			driver->activeIndexBuffer(const_cast<CIndexBuffer&>(pb));
+			NLModernShadowCasterTris += pb.getNumIndexes() / 3;
 			driver->renderTriangles(castMat, 0, pb.getNumIndexes()/3);
 		}
 	}
+	++NLModernShadowCasterMeshes;
 }
 
 // ***************************************************************************

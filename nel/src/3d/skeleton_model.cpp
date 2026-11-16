@@ -2170,6 +2170,7 @@ void		CSkeletonModel::renderModernShadowCaster(IDriver *driver, const NLMISC::CM
 	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
 	driver->setupViewMatrix(cameraMatrix.inverted());
 	renderIntoSkeletonShadowMap(this, castMat);
+	++NLModernShadowCasterMeshes;
 }
 
 // ***************************************************************************
