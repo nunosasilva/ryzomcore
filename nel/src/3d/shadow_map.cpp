@@ -135,7 +135,7 @@ void			CShadowMap::buildCasterCameraMatrix(const CVector &lightDir, const CMatri
 
 	// Enlarge for 1 pixel left and right.
 	float	scaleSize= (float)getTextureSize();
-	scaleSize= (scaleSize+2)/scaleSize;
+	scaleSize= (scaleSize+8)/scaleSize;
 	CVector		hs= bbLocal.getHalfSize();
 	hs.x*= scaleSize;
 	hs.z*= scaleSize;
