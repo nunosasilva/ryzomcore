@@ -209,7 +209,7 @@ start_screen() {
 			[ -n "${WAYLAND_DISPLAY:-}" ] && backend=wayland || backend=x11
 		fi
 		local args=(-W "$SCREEN_W" -H "$SCREEN_H" -w "$SCREEN_W" -h "$SCREEN_H"
-		            --force-windows-fullscreen -r 60)
+		            --force-windows-fullscreen)
 		if [ "$SCREEN" = gamescope-headless ]; then
 			args+=(--backend headless)
 		else
