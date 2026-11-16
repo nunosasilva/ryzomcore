@@ -1065,7 +1065,7 @@ struct	CShadowMapSort
 void			CShadowMapManager::selectShadowMapsToGenerate(CScene *scene)
 {
 	// TODO: Scene option.
-	const uint		maxPerFrame= 8;
+	const uint		maxPerFrame= 24;
 	const float		minCamDist= 10;
 	const CVector	&camPos= scene->getRenderTrav().CamPos;
 	uint			i;
