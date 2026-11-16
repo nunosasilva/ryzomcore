@@ -591,7 +591,6 @@ void	CClipTrav::clipShadowCasters()
 		OODeltaDistFade= 1.0f/(distFadeEnd-distFadeStart);
 	else
 		OODeltaDistFade= 1000000;
-	uint	maxCastInScreen= Scene->getShadowMapMaxCasterInScreen();
 	uint	maxCastAround= Scene->getShadowMapMaxCasterAround();
 
 
@@ -687,7 +686,6 @@ void	CClipTrav::clipShadowCasters()
 	// **** Load Balance Models that cast ShadowMaps around,
 
 	sort(aroundCasters.begin(), aroundCasters.end());
-	sort(screenCasters.begin(), screenCasters.end());
 
 	// For All Around nearest Casters, decrement their fadeOutScreen
 	uint	numNearCast= min((uint)aroundCasters.size(), maxCastAround);
@@ -700,23 +698,20 @@ void	CClipTrav::clipShadowCasters()
 		shadowMap->TemporalOutScreenFade-= 2*dFade;
 	}
 
-	// For InScreen Casters, increment or decrement their fadeInScreen. Also resolve InScreenFadeAccum.
-	numNearCast= min((uint)screenCasters.size(), maxCastInScreen);
-	// nearest: decrement fadeInScreen, and remove accum
-	for(i=0;i<numNearCast;i++)
+	// For InScreen Casters, decrement their fadeInScreen. Also resolve InScreenFadeAccum.
+	// Every visible caster fades in. There used to be a nearest-N cap here
+	// (getShadowMapMaxCasterInScreen()): only the N closest in-screen casters
+	// faded in, the rest faded out even though they were visible. A big static
+	// shape (the whole starting-village mesh) lost that race as soon as a few
+	// avatars came close, so its ground shadow popped out and back in while
+	// walking or turning the camera. The shadow-map generation cap
+	// (maxPerFrame in CShadowMapManager::selectShadowMapsToGenerate) bounds the
+	// per-frame work, so keep every visible caster faded in instead.
+	for(i=0;i<screenCasters.size();i++)
 	{
 		CShadowMap	*shadowMap= screenCasters[i].Model->getShadowMap();
 		// Decrement the fade.
 		shadowMap->TemporalInScreenFade-= dFade + shadowMap->InScreenFadeAccum;
-		// Since visible and resolved, reset accum
-		shadowMap->InScreenFadeAccum= 0;
-	}
-	// farthest: increment fadeInScreen, and append accum
-	for(i=numNearCast;i<screenCasters.size();i++)
-	{
-		CShadowMap	*shadowMap= screenCasters[i].Model->getShadowMap();
-		// Increment the fade.
-		shadowMap->TemporalInScreenFade+= dFade + shadowMap->InScreenFadeAccum;
 		// Since visible and resolved, reset accum
 		shadowMap->InScreenFadeAccum= 0;
 	}
