@@ -211,11 +211,15 @@ public:
 	bool		_CoWDrawn;
 	/// CpuReadWrite write shadow (F1). The engine writes vertices here - cached
 	/// host memory, so its per-vertex MRM geomorph writes cost memory bandwidth
-	/// instead of the ~0.1-0.3 GB/s of a write-combined mapping - and unlock()
-	/// mirrors the written span into the persistent buffer. The persistent
-	/// buffer is what a frame without a slice draws, and what the per-frame ring
-	/// slice is copied from (cached -> write-combined, sequential). NLVK_VB_SHADOW=0
-	/// restores the old "hand the engine the ring slice" behaviour for A/B runs.
+	/// instead of the ~0.1-0.3 GB/s of a write-combined mapping. The per-frame
+	/// ring slice is copied straight from this shadow; the persistent buffer is
+	/// only the fallback for a frame without a slice. unlock() therefore marks
+	/// the persistent buffer stale instead of mirroring into it: the Goo fog's
+	/// CpuReadWrite buffer is locked/unlocked hundreds of times per frame, and
+	/// an eager mirror copied the whole buffer on every one of those unlocks
+	/// (700+ MiB/frame) although only the last write is drawn.
+	/// NLVK_VB_SHADOW=0 restores the old "hand the engine the ring slice"
+	/// behaviour for A/B runs.
 	bool		_ShadowEnabled;
 	std::vector<uint8>	_WriteShadow;
 	uint32		_ShadowBegin;
@@ -223,6 +227,20 @@ public:
 	/// True when the shadow changed after the current slice was filled: the
 	/// next draw needs a fresh slice (the recorded one must keep its vertices).
 	bool		_ShadowDirty;
+	/// The persistent buffer no longer matches the shadow and must be synced
+	/// before a fallback draw reads it.
+	bool		_ShadowPersistentDirty;
+	/// Mirror the write shadow into the persistent buffer, lazily: only the
+	/// fallback paths (snapshots disabled, or the ring is full) need it.
+	void		syncShadowToPersistent()
+	{
+		if (!_ShadowPersistentDirty || !_CopyOnWrite || !_ShadowEnabled ||
+			_WriteShadow.empty() || _Mapped[_Slot] == NULL || _Size == 0)
+			return;
+		const uint32 bytes = _Size < (uint32)_WriteShadow.size() ? _Size : (uint32)_WriteShadow.size();
+		memcpy(_Mapped[_Slot], &_WriteShadow[0], bytes);
+		_ShadowPersistentDirty = false;
+	}
 	/// Point the draw back at the persistent buffer (F9: the slot that was
 	/// actually written, not always slot 0).
 	void		resetDrawBuffer() { _DrawBuffer = _VertexBuffer[_Slot]; _DrawOffset = 0; _DrawBufferFrame = ~0ull; }
