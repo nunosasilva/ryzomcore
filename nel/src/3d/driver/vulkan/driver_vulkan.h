@@ -1401,6 +1401,11 @@ private:
 	/// NLVK_VB_SHADOW=0 / NLVK_NO_VB_SNAPSHOT=1 (read once, see the ctor).
 	bool						_VbShadow;
 	bool						_VbSnapshots;
+	/// NLVK_NO_PARTIAL_UPLOAD=1 / NLVK_NO_TEX_CLEAR=1 (read once, see the
+	/// ctor). These used to call getenv() per vertex buffer / per texture;
+	/// both are created many times at load and while streaming new zones.
+	bool						_PartialUploadEnabled;
+	bool						_TextureClearEnabled;
 	/// NLVK_RT_FEEDBACK_DBG=1: setupMaterial() inspects the bound stages for a
 	/// draw that samples the render target it is drawing into. setupMaterial()
 	/// runs on every material change, so the switch is read once here.
@@ -1806,6 +1811,8 @@ public:
 	bool					vbShadowEnabled() const { return _VbShadow; }
 	/// NLVK_NO_VB_SNAPSHOT: false makes CoW draws bind the persistent buffer.
 	bool					vbSnapshotsEnabled() const { return _VbSnapshots; }
+	/// NLVK_NO_PARTIAL_UPLOAD: false keeps the old write-through for A/B.
+	bool					partialUploadEnabled() const { return _PartialUploadEnabled; }
 	/// Account an unlock() that mirrored the engine's write-shadow span into the
 	/// persistent buffer (bytes), when the stats window is open.
 	void					countShadowSync(uint32 bytes)

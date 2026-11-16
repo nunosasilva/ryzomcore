@@ -164,7 +164,8 @@ uint			CLandscapeVBAllocator::allocateVertex()
 		// the deferred frees are not running (getSwapBufferInFlight()==0). Each
 		// growth reallocates the vertex buffer and refills it, so this counts
 		// the stall the engine pays for it.
-		if (getenv("NL3D_LANDVBDBG"))
+		static const bool landVbDbg = getenv("NL3D_LANDVBDBG") != NULL;
+		if (landVbDbg)
 			nlinfo("LANDVBDBG: %s allocator grew to %u vertices (+%u, free list %u, deferred %u)",
 				_Type == Far0 ? "far0" : (_Type == Far1 ? "far1" : "tile"),
 				_NumVerticesAllocated, newResize, (uint)_VertexFreeMemory.size(),
