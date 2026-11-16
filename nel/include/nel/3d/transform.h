@@ -59,6 +59,7 @@ class	CMaterial;
 class	IDriver;
 class CInstanceUser;
 class CVertexProgram;
+class IDriver;
 
 // ***************************************************************************
 // ClassIds.
@@ -525,6 +526,14 @@ public:
 	 *	NB: you can overwrite the current driver frustum/ViewMatrix/modelMatrix without backuping it (ShadowMapManager work)
 	 */
 	virtual	void		generateShadowMap(const CVector &/* lightDir */) { }
+
+	/** Modern (Vulkan) shadow path: render this caster as coverage into the
+	 *	shared cascade mask. The manager has already bound the mask target,
+	 *	set the alpha-only color mask and cleared it. cameraMatrix maps the
+	 *	world cascade box to [0,1]^3 (the same matrix the receiver shader
+	 *	uses), so the caster must render in world space.
+	 */
+	virtual	void		renderModernShadowCaster(IDriver * /* driver */, const NLMISC::CMatrix & /* cameraMatrix */, CMaterial & /* castMat */) { }
 	/** get The shadow Map result for receveing. If NULL, nothing is displayed.
 	 */
 	virtual	CShadowMap	*getShadowMap() { return nullptr; }

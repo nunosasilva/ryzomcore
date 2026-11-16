@@ -290,6 +290,31 @@ void		CMeshInstance::generateShadowMap(const CVector &lightDir)
 }
 
 // ***************************************************************************
+void		CMeshInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat)
+{
+	if (!Shape)
+		return;
+
+	// The cascade camera is world -> [0,1]^3; the mesh vertices are local, so
+	// the world matrix brings them into the same space as the receiver.
+	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
+	driver->setupViewMatrix(cameraMatrix.inverted());
+	driver->setupModelMatrix(getWorldMatrix());
+
+	CMesh	*mesh= (CMesh*)(IShape*)Shape;
+	driver->activeVertexBuffer( const_cast<CVertexBuffer&>(mesh->getVertexBuffer()) );
+	for(uint mb=0;mb<mesh->getNbMatrixBlock();mb++)
+	{
+		for(uint rp=0;rp<mesh->getNbRdrPass(mb);rp++)
+		{
+			const CIndexBuffer	&pb= mesh->getRdrPassPrimitiveBlock(mb, rp);
+			driver->activeIndexBuffer(const_cast<CIndexBuffer&>(pb));
+			driver->renderTriangles(castMat, 0, pb.getNumIndexes()/3);
+		}
+	}
+}
+
+// ***************************************************************************
 CShadowMap	*CMeshInstance::getShadowMap()
 {
 	return _ShadowMap;

@@ -21,15 +21,24 @@
 #include "nel/3d/render_trav.h"
 #include "nel/3d/driver.h"
 #include "nel/3d/shadow_map_manager.h"
+#include "nel/3d/texture_mem.h"
+#include "nel/3d/transform.h"
+#include "nel/misc/aabbox.h"
 
 #include <cstdlib>
+#include <cstring>
 
 using namespace NLMISC;
 
 namespace NL3D {
 
+// Cascade world half sizes (around the camera). The first cascade is the
+// readable one near the player; the second covers the visible mid distance.
+static const float	NL_MODERN_SHADOW_RADIUS[2] = { 40.f, 80.f };
+static const uint	NL_MODERN_SHADOW_SIZE = 2048;
+
 CModernShadowMask::CModernShadowMask(CShadowMapManager *owner)
-	: _Owner(owner), _Size(2048), _Active(false), _NumCascades(0)
+	: _Owner(owner), _Size(NL_MODERN_SHADOW_SIZE), _Active(false), _NumCascades(0)
 {
 	for (uint i = 0; i < 2; ++i)
 		_Split[i] = 0.f;
@@ -55,17 +64,100 @@ bool CModernShadowMask::isEnabled(CScene *scene) const
 	return devOptIn;
 }
 
+bool CModernShadowMask::ensureMasks()
+{
+	if (_Mask[0] && _Mask[1])
+		return true;
+
+	releaseMasks();
+	for (uint i = 0; i < 2; ++i)
+	{
+		const uint32 bytes = 4 * _Size * _Size;
+		uint8 *mem = new uint8[bytes];
+		memset(mem, 0, bytes);
+		CTextureMem *tex = new CTextureMem(mem, bytes, true, false, _Size, _Size);
+		tex->setWrapS(ITexture::Clamp);
+		tex->setWrapT(ITexture::Clamp);
+		tex->setFilterMode(ITexture::Linear, ITexture::LinearMipMapOff);
+		tex->generate();
+		tex->setReleasable(false);
+		tex->setRenderTarget(true);
+		_Mask[i] = tex;
+	}
+	return true;
+}
+
 bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &casters)
 {
 	_Active = false;
 	if (!isEnabled(scene))
 		return false;
+	if (!ensureMasks())
+		return false;
 
-	// TODO: fit the cascades, render the casters as coverage masks and bind
-	// them to the driver. Until that path is implemented the legacy manager
-	// keeps generating the shadows.
-	(void)casters;
-	return false;
+	IDriver *driver = scene->getRenderTrav().getAuxDriver();
+	if (!driver)
+		return false;
+
+	CMaterial	&castMat = _Owner->getCasterShadowMaterial();
+	ITexture	*previousTarget = driver->getRenderTarget();
+	CViewport	bkupViewport;
+	driver->getViewport(bkupViewport);
+	const bool	bkupFog = driver->fogEnabled();
+
+	driver->enableFog(false);
+	driver->setColorMask(false, false, false, true);
+
+	const CVector	sun = scene->getSunDirection();
+	const CVector	camPos = scene->getRenderTrav().CamPos;
+
+	_NumCascades = 2;
+	for (uint i = 0; i < 2; ++i)
+	{
+		// Build the same kind of world -> [0,1]^3 camera the legacy caster
+		// maps use, but fitted to a box around the camera instead of a single
+		// caster bbox. The light looks along J; the box is the world AABB
+		// transformed into light space.
+		CMatrix		cameraMatrix;
+		cameraMatrix.setArbitraryRotJ(sun);
+		CAABBox		worldBox;
+		worldBox.setCenter(camPos);
+		worldBox.setHalfSize(CVector(NL_MODERN_SHADOW_RADIUS[i], NL_MODERN_SHADOW_RADIUS[i], NL_MODERN_SHADOW_RADIUS[i]));
+		CAABBox		localBox = CAABBox::transformAABBox(cameraMatrix.inverted(), worldBox);
+		cameraMatrix.translate(localBox.getMin());
+		cameraMatrix.setRot(
+			cameraMatrix.getI() * localBox.getSize().x,
+			cameraMatrix.getJ() * localBox.getSize().y,
+			cameraMatrix.getK() * localBox.getSize().z);
+
+		_WorldToMask[i] = cameraMatrix;
+		_Split[i] = NL_MODERN_SHADOW_RADIUS[i];
+
+		driver->setRenderTarget(_Mask[i], 0, 0, _Size, _Size);
+		driver->setColorMask(false, false, false, true);
+		CScissor	scissor;
+		scissor.initFullScreen();
+		driver->setupScissor(scissor);
+		driver->clear2D(CRGBA(0, 0, 0, 0));
+
+		for (uint c = 0; c < casters.size(); ++c)
+		{
+			if (casters[c])
+				casters[c]->renderModernShadowCaster(driver, cameraMatrix, castMat);
+		}
+	}
+
+	driver->setRenderTarget(previousTarget);
+	driver->setColorMask(true, true, true, true);
+	driver->setupViewport(bkupViewport);
+	driver->enableFog(bkupFog);
+	CScissor	scissor;
+	scissor.initFullScreen();
+	driver->setupScissor(scissor);
+	scene->getRenderTrav().setupDriverCamera();
+
+	_Active = true;
+	return true;
 }
 
 bool CModernShadowMask::apply(CScene *scene)
@@ -73,13 +165,22 @@ bool CModernShadowMask::apply(CScene *scene)
 	if (!_Active)
 		return false;
 
-	(void)scene;
-	return false;
-}
+	IDriver *driver = scene->getRenderTrav().getDriver();
+	if (!driver)
+		return false;
 
-bool CModernShadowMask::ensureMasks()
-{
-	return false;
+	CModernShadowState	state;
+	state.Enabled = true;
+	state.NumCascades = _NumCascades;
+	for (uint i = 0; i < _NumCascades; ++i)
+	{
+		state.CascadeSplits[i] = _Split[i];
+		memcpy(state.WorldToMask[i], _WorldToMask[i].get(), sizeof(state.WorldToMask[i]));
+		state.Mask[i] = _Mask[i];
+		state.TexelWorldSize[i] = 1.f / (float)_Size;
+	}
+	driver->setModernShadowState(state);
+	return true;
 }
 
 void CModernShadowMask::releaseMasks()
