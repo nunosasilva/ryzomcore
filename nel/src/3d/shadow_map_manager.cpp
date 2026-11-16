@@ -614,6 +614,15 @@ void			CShadowMapManager::renderProject(CScene *scene)
 		CTransform	*caster= _ShadowCasters[i];
 		CShadowMap	*sm= caster->getShadowMap();
 		nlassert(sm);
+		if (shadowMapDebugEnabled())
+		{
+			const CVector	&dbgPos= caster->getWorldMatrix().getPos();
+			CVector	dbgHs= sm->LocalBoundingBox.getHalfSize();
+			nlinfo("SHADOWDBG projCaster ptr=%p pos %.2f %.2f %.2f boxHalf %.2f %.2f %.2f distFade=%.2f outFade=%.2f inFade=%.2f final=%.2f tex=%p",
+				(void*)caster, dbgPos.x, dbgPos.y, dbgPos.z, dbgHs.x, dbgHs.y, dbgHs.z,
+				sm->DistanceFade, sm->TemporalOutScreenFade, sm->TemporalInScreenFade,
+				sm->getFinalFade(), (void*)sm->getTexture());
+		}
 		// NB: the ShadowCaster may not have a texture yet, for example because of Generate selection...
 		// If the final fade is 1, don't render!
 		if( sm->getTexture() && sm->getFinalFade()<1 )
@@ -669,6 +678,17 @@ void			CShadowMapManager::renderProject(CScene *scene)
 				B= 255*factor + B*(256-factor); B>>=8;
 			}
 			_ReceiveShadowMaterial.setColor(CRGBA(uint8(R),uint8(G),uint8(B),255));
+			if (shadowMapDebugEnabled() && max(max(worldBB.getHalfSize().x, worldBB.getHalfSize().y), worldBB.getHalfSize().z) > 10.f)
+			{
+				const CLightContribution &dbgLc= caster->getLightContribution();
+				nlinfo("SHADOWDBG shadowColor ptr=%p pos %.2f %.2f %.2f amb %u %u %u diff %u %u %u final %u %u %u sunC=%.3f att0=%.3f att1=%.3f pts=%p,%p",
+					(void*)caster, casterPos.x, casterPos.y, casterPos.z,
+					(unsigned)ambient.R, (unsigned)ambient.G, (unsigned)ambient.B,
+					(unsigned)diffuse.R, (unsigned)diffuse.G, (unsigned)diffuse.B,
+					(unsigned)R, (unsigned)G, (unsigned)B,
+					dbgLc.SunContribution, dbgLc.AttFactor[0], dbgLc.AttFactor[1],
+					(void*)dbgLc.PointLight[0], (void*)dbgLc.PointLight[1]);
+			}
 
 			// init the _ShadowMapProjector
 			_ShadowMapProjector.setWorldSpaceTextMat(wsTextMat);

@@ -32,6 +32,7 @@
 #include "nel/misc/hierarchical_timer.h"
 #include "nel/3d/scene.h"
 #include "nel/3d/skeleton_model.h"
+#include "nel/3d/shadow_map_manager.h"
 #include "nel/misc/fast_floor.h"
 
 using namespace std;
@@ -671,6 +672,10 @@ void	CClipTrav::clipShadowCasters()
 			// if !visible, increment the InScreenFadeAccum
 			if(!visible)
 				shadowMap->InScreenFadeAccum+= dFade;
+			if (shadowMapDebugEnabled() && (Scene->getNumRender() % 10)==0)
+				nlinfo("SHADOWDBG clipCaster ptr=%p pos %.2f %.2f %.2f visible=%d dist=%.2f",
+					(void*)sc, sc->getWorldMatrix().getPos().x, sc->getWorldMatrix().getPos().y,
+					sc->getWorldMatrix().getPos().z, (int)visible, fsms.Dist);
 		}
 		// If the model is not visible, or if temporary bound to a AncestorSkeletonModel
 		else
@@ -725,6 +730,19 @@ void	CClipTrav::clipShadowCasters()
 
 		CShadowMap		*shadowMap= sc->getShadowMap();
 		shadowMap->processFades();
+	}
+	if (shadowMapDebugEnabled() && (Scene->getNumRender() % 10)==0)
+	{
+		for(itShadowCaster= Scene->getShadowCasterListBegin(); itShadowCaster!=Scene->getShadowCasterListEnd(); itShadowCaster++)
+		{
+			CTransform	*sc= *itShadowCaster;
+			CShadowMap	*shadowMap= sc->getShadowMap();
+			nlinfo("SHADOWDBG fadeState ptr=%p pos %.2f %.2f %.2f df=%.2f osf=%.2f isf=%.2f final=%.2f tex=%p",
+				(void*)sc, sc->getWorldMatrix().getPos().x, sc->getWorldMatrix().getPos().y,
+				sc->getWorldMatrix().getPos().z, shadowMap->DistanceFade,
+				shadowMap->TemporalOutScreenFade, shadowMap->TemporalInScreenFade,
+				shadowMap->getFinalFade(), (void*)shadowMap->getTexture());
+		}
 	}
 
 	// **** Use the rendered Skeletons ShadowMap to select the Ones that will be generated this Frame.
