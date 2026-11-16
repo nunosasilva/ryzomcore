@@ -623,10 +623,12 @@ bool CDriverVulkan::pickPhysicalDevice()
 /// more adds another, larger pool (see allocDescriptorSet()).
 static const uint32 NL_VK_DESCRIPTOR_POOL_SETS = 4096;
 /// Descriptors one set of either layout can use: the simple layout allocates
-/// 1 UBO and 4 samplers, the mega layout 7 UBOs and 8 samplers. Sizing the
-/// pool for the larger one lets both layouts share it.
-static const uint32 NL_VK_DESCRIPTOR_SET_SAMPLERS = (uint32)NL_VK_MEGA_SAMPLER_COUNT;
-static const uint32 NL_VK_DESCRIPTOR_SET_UNIFORMS = 7;
+/// 1 UBO and 4 samplers, the mega layout 8 UBOs (camera, light table, object,
+/// material, three user blocks and the modern shadow block) and 10 samplers
+/// (8 material stages + 2 shadow masks). Sizing the pool for the larger one
+/// lets both layouts share it.
+static const uint32 NL_VK_DESCRIPTOR_SET_SAMPLERS = (uint32)NL_VK_MEGA_SAMPLER_COUNT + 2;
+static const uint32 NL_VK_DESCRIPTOR_SET_UNIFORMS = 8;
 
 bool CDriverVulkan::createDescriptorPool(uint32 frame, uint32 maxSets)
 {

@@ -702,6 +702,18 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	}
 	ss << std::endl;
 
+	// Modern sun shadow: two coverage masks and their cascade block. Bind a
+	// white texture and params.x = 0 while the modern path is disabled.
+	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW << ") uniform NlShadow {" << std::endl;
+	ss << "  mat4 worldToMask0;" << std::endl;
+	ss << "  mat4 worldToMask1;" << std::endl;
+	ss << "  vec4 splits;" << std::endl;
+	ss << "  vec4 params;" << std::endl;
+	ss << "} nlShadow;" << std::endl;
+	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK0 << ") uniform sampler2D nlShadowMask0;" << std::endl;
+	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK1 << ") uniform sampler2D nlShadowMask1;" << std::endl;
+	ss << std::endl;
+
 	// NlCamera, NlLightTable, NlModel and NlMaterial blocks are prepended by
 	// the caller (assembleMegaSource in driver_vulkan_mega_render.cpp).
 	// Material state (materialColor, alphaRef, nlShader, nlTextureActive,
@@ -810,6 +822,15 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	// Per-pixel lighting function (world-space Blinn-Phong)
 	if (fogOrPpl)
 	{
+		ss << "float nlSunShadow = 1.0;" << std::endl;
+		ss << "float sampleSunMask(sampler2D smap, vec2 uv, float texel) {" << std::endl;
+		ss << "  float sum = 0.0;" << std::endl;
+		ss << "  for (int y = -1; y <= 1; ++y)" << std::endl;
+		ss << "    for (int x = -1; x <= 1; ++x)" << std::endl;
+		ss << "      sum += texture(smap, uv + vec2(float(x), float(y)) * texel).a;" << std::endl;
+		ss << "  return clamp(1.0 - sum / 9.0, 0.0, 1.0);" << std::endl;
+		ss << "}" << std::endl;
+		ss << std::endl;
 		ss << "void computeLightPP(int lightMode, vec3 dirOrPos, vec4 colDiff, vec4 colSpec," << std::endl;
 		ss << "                    float shininess, float constAttn, float linAttn, float quadAttn," << std::endl;
 		ss << "                    vec3 spotDir, float spotCutoff, float spotExp," << std::endl;
@@ -833,10 +854,11 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "    }" << std::endl;
 		ss << "  }" << std::endl;
 		ss << "  float diff = max(0.0, dot(lightDir, wsNormal));" << std::endl;
-		ss << "  pplDiffuse += diff * attnFactor * colDiff;" << std::endl;
+		ss << "  float sunShadow = (lightMode == " << (int)CLight::DirectionalLight << ") ? nlSunShadow : 1.0;" << std::endl;
+		ss << "  pplDiffuse += diff * attnFactor * colDiff * sunShadow;" << std::endl;
 		ss << "  vec3 h = normalize(lightDir + eyeDir);" << std::endl;
 		ss << "  float spec = diff > 0.0 ? pow(max(0.0, dot(wsNormal, h)), shininess) : 0.0;" << std::endl;
-		ss << "  pplSpecular += spec * attnFactor * colSpec;" << std::endl;
+		ss << "  pplSpecular += spec * attnFactor * colSpec * sunShadow;" << std::endl;
 		ss << "}" << std::endl;
 		ss << std::endl;
 	}
@@ -859,6 +881,19 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "    vec3 wsNormal = normalize(normal.xyz);" << std::endl;
 		// cameraWorldPos: precomputed on CPU as inverse view matrix position
 		ss << "    vec3 eyeDir = normalize(cameraWorldPos - wsPos);" << std::endl;
+		ss << "    nlSunShadow = 1.0;" << std::endl;
+		ss << "    if (nlShadow.params.x > 0.5) {" << std::endl;
+		ss << "      float sunDist = length(wsPos - cameraWorldPos);" << std::endl;
+		ss << "      vec4 sunP = (sunDist < nlShadow.splits.x) ? (nlShadow.worldToMask0 * vec4(wsPos, 1.0)) : (nlShadow.worldToMask1 * vec4(wsPos, 1.0));" << std::endl;
+		ss << "      vec2 sunUv = sunP.xy;" << std::endl;
+		ss << "      sunUv.y = 1.0 - sunUv.y;" << std::endl;
+		ss << "      if (sunDist < nlShadow.splits.x)" << std::endl;
+		ss << "        nlSunShadow = sampleSunMask(nlShadowMask0, sunUv, nlShadow.params.y);" << std::endl;
+		ss << "      else" << std::endl;
+		ss << "        nlSunShadow = sampleSunMask(nlShadowMask1, sunUv, nlShadow.params.y);" << std::endl;
+		ss << "      if (sunUv.x < 0.0 || sunUv.x > 1.0 || sunUv.y < 0.0 || sunUv.y > 1.0)" << std::endl;
+		ss << "        nlSunShadow = 1.0;" << std::endl;
+		ss << "    }" << std::endl;
 		ss << "    vec4 pplDiff = vec4(0.0);" << std::endl;
 
 		// Table PPL: light data from nlLights[idx] UBO

@@ -249,6 +249,13 @@ void			CShadowMapManager::addShadowReceiver(CTransform *model)
 }
 
 // ***************************************************************************
+bool			CShadowMapManager::renderModernShadowMasks(CScene *scene)
+{
+	if( _ShadowCasters.empty() )
+		return false;
+	return _ModernShadow.render(scene, _ShadowCasters);
+}
+
 void			CShadowMapManager::renderGenerate(CScene *scene)
 {
 	H_AUTO( NL3D_ShadowManager_Generate );

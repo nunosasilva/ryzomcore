@@ -156,19 +156,8 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	driver->setupScissor(scissor);
 	scene->getRenderTrav().setupDriverCamera();
 
-	_Active = true;
-	return true;
-}
-
-bool CModernShadowMask::apply(CScene *scene)
-{
-	if (!_Active)
-		return false;
-
-	IDriver *driver = scene->getRenderTrav().getDriver();
-	if (!driver)
-		return false;
-
+	// Publish the masks before the opaque pass samples them. The masks are
+	// already back in SHADER_READ_ONLY layout (setRenderTarget(previous)).
 	CModernShadowState	state;
 	state.Enabled = true;
 	state.NumCascades = _NumCascades;
@@ -180,7 +169,15 @@ bool CModernShadowMask::apply(CScene *scene)
 		state.TexelWorldSize[i] = 1.f / (float)_Size;
 	}
 	driver->setModernShadowState(state);
+
+	_Active = true;
 	return true;
+}
+
+bool CModernShadowMask::apply(CScene *scene)
+{
+	(void)scene;
+	return _Active;
 }
 
 void CModernShadowMask::releaseMasks()

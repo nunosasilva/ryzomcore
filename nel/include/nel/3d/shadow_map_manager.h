@@ -81,6 +81,12 @@ public:
 	 */
 	void			renderGenerate(CScene *scene);
 
+	/** Modern (Vulkan) path: render the sun cascade masks and publish their
+	 *	state. Must be called before the opaque pass; returns false when the
+	 *	modern path is disabled (the legacy renderGenerate() then runs).
+	 */
+	bool			renderModernShadowMasks(CScene *scene);
+
 	/** project ShadowMaps onto receivers. NB: renderGenerate() must have been called before.
 	 *	NB: current driver Frustum, ViewMatrix kept their initial state but ModelMatrix not.
 	 *	call clearShadowCaster

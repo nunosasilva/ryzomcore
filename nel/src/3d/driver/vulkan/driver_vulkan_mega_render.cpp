@@ -177,7 +177,7 @@ bool CDriverVulkan::initMega()
 {
 	// Descriptor set layout. Binding 7 stays unused so the sampler block starts
 	// at the same index as the GL3 sampler numbering.
-	VkDescriptorSetLayoutBinding bindings[15];
+	VkDescriptorSetLayoutBinding bindings[18];
 	memset(bindings, 0, sizeof(bindings));
 	uint count = 0;
 	for (uint i = 0; i < 4; ++i)
@@ -199,6 +199,20 @@ bool CDriverVulkan::initMega()
 	for (uint i = 0; i < NL_VK_MEGA_SAMPLER_COUNT; ++i)
 	{
 		bindings[count].binding = NL_VK_MEGA_BINDING_SAMPLER_BASE + i;
+		bindings[count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		bindings[count].descriptorCount = 1;
+		bindings[count].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		++count;
+	}
+	// Modern sun shadow block and the two cascade masks.
+	bindings[count].binding = NL_VK_MEGA_BINDING_SHADOW;
+	bindings[count].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[count].descriptorCount = 1;
+	bindings[count].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	++count;
+	for (uint i = 0; i < 2; ++i)
+	{
+		bindings[count].binding = NL_VK_MEGA_BINDING_SHADOW_MASK0 + i;
 		bindings[count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		bindings[count].descriptorCount = 1;
 		bindings[count].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -899,7 +913,7 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	// clears _MegaLightTableValid, which is why the light table is staged after
 	// this point - it then lands in the ring the offsets refer to.
 	if (!reserveUniformBlock(lightTableBytes + sizeof(CCameraUBOData) +
-		sizeof(CObjectUBOData) + sizeof(CMaterialUBOData), 5))
+		sizeof(CObjectUBOData) + sizeof(CMaterialUBOData) + sizeof(CShadowUBOData), 5))
 		return false;
 	const VkBuffer ring = _UniformRing;
 	if (lightMapDyn)
@@ -937,12 +951,25 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		cameraData.fogColor[2] = 0.f;
 	}
 
+	CShadowUBOData shadowData;
+	memset(&shadowData, 0, sizeof(shadowData));
+	if (_ModernShadowState.Enabled)
+	{
+		shadowData.params[0] = 1.f;
+		shadowData.params[1] = _ModernShadowState.TexelWorldSize[0];
+		memcpy(shadowData.worldToMask0, _ModernShadowState.WorldToMask[0], sizeof(shadowData.worldToMask0));
+		memcpy(shadowData.worldToMask1, _ModernShadowState.WorldToMask[1], sizeof(shadowData.worldToMask1));
+		shadowData.splits[0] = _ModernShadowState.CascadeSplits[0];
+	}
+
 	const uint32 cameraOffset = allocUniformBlock(&cameraData, sizeof(cameraData));
 	const uint32 lightTableOffset = lightMapDyn ? _MegaLightMapDynTableOffset : _MegaLightTableOffset;
 	const uint32 objectOffset = allocUniformBlock(&objectData, sizeof(objectData));
 	const uint32 materialOffset = allocUniformBlock(&materialData, sizeof(materialData));
+	const uint32 shadowOffset = allocUniformBlock(&shadowData, sizeof(shadowData));
 	if (cameraOffset == 0xFFFFFFFF || lightTableOffset == 0xFFFFFFFF ||
-		objectOffset == 0xFFFFFFFF || materialOffset == 0xFFFFFFFF)
+		objectOffset == 0xFFFFFFFF || materialOffset == 0xFFFFFFFF ||
+		shadowOffset == 0xFFFFFFFF)
 	{
 		nlwarning("Vulkan: mega uniform ring exhausted");
 		return false;
@@ -969,7 +996,7 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	// allocated in - not necessarily _UniformRing any more: the water and user
 	// program staging below may grow the ring, and the blocks already written
 	// stay in the old one (which is kept alive until the frame is retired).
-	VkDescriptorBufferInfo bufferInfos[7];
+	VkDescriptorBufferInfo bufferInfos[8];
 	memset(bufferInfos, 0, sizeof(bufferInfos));
 	bufferInfos[0].buffer = ring;
 	bufferInfos[0].offset = cameraOffset;
@@ -983,6 +1010,9 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	bufferInfos[3].buffer = ring;
 	bufferInfos[3].offset = materialOffset;
 	bufferInfos[3].range = sizeof(materialData);
+	bufferInfos[7].buffer = ring;
+	bufferInfos[7].offset = shadowOffset;
+	bufferInfos[7].range = sizeof(shadowData);
 	for (uint i = 4; i < 7; ++i)
 	{
 		bufferInfos[i].buffer = _MegaUserBuffer;
@@ -1060,16 +1090,27 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		imageInfos[stage].sampler = tex ? tex->Sampler : (cubeStage ? _WhiteCubeTexture.Sampler : _WhiteTexture.Sampler);
 	}
 
+	VkDescriptorImageInfo shadowMaskInfos[2];
+	for (uint i = 0; i < 2; ++i)
+	{
+		CTextureVulkan *maskTex = NULL;
+		if (_ModernShadowState.Enabled && _ModernShadowState.Mask[i])
+			maskTex = getTextureVulkan(*_ModernShadowState.Mask[i]);
+		shadowMaskInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		shadowMaskInfos[i].imageView = maskTex ? maskTex->View : getWhiteTexture();
+		shadowMaskInfos[i].sampler = maskTex ? maskTex->Sampler : _WhiteTexture.Sampler;
+	}
+
 	VkDescriptorSet descriptorSet = allocDescriptorSet(_MegaDescriptorSetLayout);
 	if (descriptorSet == VK_NULL_HANDLE)
 		return false;
 	if (_StatsEnabled)
 		++_StatsDescriptorSets;
 
-	VkWriteDescriptorSet writes[15];
+	VkWriteDescriptorSet writes[18];
 	memset(writes, 0, sizeof(writes));
 	uint writeCount = 0;
-	for (uint i = 0; i < 7; ++i)
+	for (uint i = 0; i < 8; ++i)
 	{
 		writes[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[writeCount].dstSet = descriptorSet;
@@ -1087,6 +1128,16 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		writes[writeCount].descriptorCount = 1;
 		writes[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		writes[writeCount].pImageInfo = &imageInfos[i];
+		++writeCount;
+	}
+	for (uint i = 0; i < 2; ++i)
+	{
+		writes[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[writeCount].dstSet = descriptorSet;
+		writes[writeCount].dstBinding = NL_VK_MEGA_BINDING_SHADOW_MASK0 + i;
+		writes[writeCount].descriptorCount = 1;
+		writes[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writes[writeCount].pImageInfo = &shadowMaskInfos[i];
 		++writeCount;
 	}
 	if (_StatsEnabled)

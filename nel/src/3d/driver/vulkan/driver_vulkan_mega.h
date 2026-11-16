@@ -54,6 +54,12 @@ const uint NL_VK_MEGA_BINDING_USER_PIXEL_PROGRAM = 5;
 const uint NL_VK_MEGA_BINDING_USER_SKELETON = 6;
 const uint NL_VK_MEGA_BINDING_SAMPLER_BASE = 8;
 const uint NL_VK_MEGA_SAMPLER_COUNT = NL3D::IDRV_PROGRAM_MAXSAMPLERS; // 8
+// Binding 7 was deliberately left unused; the modern sun shadow uses it for
+// its per-frame cascade block. The two coverage masks sit after the material
+// sampler block.
+const uint NL_VK_MEGA_BINDING_SHADOW = 7;
+const uint NL_VK_MEGA_BINDING_SHADOW_MASK0 = 16;
+const uint NL_VK_MEGA_BINDING_SHADOW_MASK1 = 17;
 const uint NL_VK_MEGA_MAX_LIGHT_TABLE = 128;
 // Same upper bound as the GL3 driver's NL3D_DRV_MAX_LIGHTMAP.
 const uint NL_VK_MAX_LIGHTMAP = 256;
@@ -157,6 +163,19 @@ struct CWaterUBOData
 	float reflectParams[4];   // 16 (0.5, 0.5, 0, 1)
 };
 nlctassert(sizeof(CWaterUBOData) == 48);
+
+// ***************************************************************************
+// Modern sun shadow block (binding 7, std140). Two cascade coverage masks
+// with their world -> mask UV matrices; params.x enables sampling, params.y
+// is the mask texel size in UV units.
+struct CShadowUBOData
+{
+	float worldToMask0[16]; // 64
+	float worldToMask1[16]; // 64
+	float splits[4];        // 16 (x = first cascade view distance)
+	float params[4];        // 16 (x = enabled, y = texel uv)
+};
+nlctassert(sizeof(CShadowUBOData) == 160);
 
 // GLSL headers prepended to the generated mega programs.
 std::string buildVulkanLightTableHeader(sint maxLights);
