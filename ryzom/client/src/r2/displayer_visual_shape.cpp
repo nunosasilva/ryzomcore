@@ -168,7 +168,15 @@ void CDisplayerVisualShape::onPreRender()
 				return;
 			}
 			_Instance.setTransformMode(NL3D::UTransform::DirectMatrix);
-			_Instance.enableCastShadowMap(true);
+			// Static world shapes (buildings, tents, props) do not cast shadow
+			// maps in the live client: the GL2 shadow path leaves their maps
+			// empty, so the live look has only character/NPC shadows. The
+			// Vulkan driver does render those maps, and for a big merged shape
+			// (the whole starting-village mesh is one instance) the projected
+			// shadow then covers a lot of ground and pops in/out with the
+			// camera and nearby avatars. Keep them out of the shadow-caster
+			// list so every driver matches the live look.
+			// _Instance.enableCastShadowMap(true);
 		}
 		CMatrix instanceMat;
 		instanceMat.setScale(_Scale);

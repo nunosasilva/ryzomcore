@@ -68,7 +68,11 @@ void CPrimRender2::setPoints(const std::vector<NLMISC::CVector> &wp, bool lastIs
 			flagMat.setPos(wp[k]);
 			flagMat.setScale(_VertexScale);
 			_VertexMeshs[k].setMatrix(flagMat);
-			_VertexMeshs[k].enableCastShadowMap(true);
+			// Same as CDisplayerVisualShape: static world geometry does not
+			// cast shadow maps in the live client (its GL2 maps are empty), and
+			// the Vulkan maps for these merged static meshes pop in/out. Keep
+			// character/NPC shadows only.
+			// _VertexMeshs[k].enableCastShadowMap(true);
 		}
 		if ((sint) k < (sint) (wp.size() - 1 + iclosed))
 		{
