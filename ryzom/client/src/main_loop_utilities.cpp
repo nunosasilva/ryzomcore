@@ -242,6 +242,9 @@ void updateFromClientCfg()
 		{
 			Landscape->enableReceiveShadowMap(ClientCfg.Shadows);
 		}
+		// Master shadow switch (legacy and the modern Vulkan path).
+		if (Scene)
+			Scene->setShadowsEnabled(ClientCfg.Shadows);
 		// Enable/Disable Cast for all entities
 		for(uint i=0;i<EntitiesMngr.entities().size();i++)
 		{

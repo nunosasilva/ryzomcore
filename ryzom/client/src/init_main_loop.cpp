@@ -806,6 +806,9 @@ void initMainLoop()
 				{
 					Landscape->enableReceiveShadowMap(true);
 				}
+				// Master shadow switch (legacy and the modern Vulkan path).
+				if (Scene)
+					Scene->setShadowsEnabled(ClientCfg.Shadows);
 
 				// RefineCenter not auto, because ThirdPerson => refine slower
 				Landscape->setRefineCenterAuto(false);

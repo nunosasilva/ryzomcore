@@ -659,6 +659,8 @@ public:
 	virtual void setCursor(const std::string &name, NLMISC::CRGBA col, uint8 rot, sint hotSpotX, sint hotSpotY, bool forceRebuild) override;
 	virtual void setCursorScale(float scale) override;
 	virtual bool setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel, uint32 cubeFace) override;
+	virtual bool supportsModernShadows() const override { return true; }
+	virtual void setModernShadowState(const CModernShadowState &state) override;
 	virtual bool getRenderTargetSize(uint32 &width, uint32 &height) override;
 	virtual bool copyTargetToTexture(ITexture *tex, uint32 offsetx, uint32 offsety, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel) override;
 	virtual bool textureCoordinateAlternativeMode() const override;
@@ -927,6 +929,9 @@ private:
 	/// Viewport of the main target, saved when an offscreen target is bound
 	/// and restored by setRenderTarget(NULL), like the GL3 driver.
 	CViewport				_SavedViewport;
+	/// Modern shadow state pushed by the engine each frame (inactive until the
+	/// Vulkan shader samples the masks).
+	CModernShadowState		_ModernShadowState;
 
 	VkFormat				_DepthFormat;
 	// One depth/stencil image per swapchain image: frames in flight must never

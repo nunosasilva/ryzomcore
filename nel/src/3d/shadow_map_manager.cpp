@@ -56,6 +56,7 @@ static inline float	easeInEaseOut(float x)
 
 // ***************************************************************************
 CShadowMapManager::CShadowMapManager()
+	: _ModernShadow(this)
 {
 	uint	i;
 
@@ -251,6 +252,12 @@ void			CShadowMapManager::addShadowReceiver(CTransform *model)
 void			CShadowMapManager::renderGenerate(CScene *scene)
 {
 	H_AUTO( NL3D_ShadowManager_Generate );
+
+	// Modern path (Vulkan): render the sun cascades and skip the legacy
+	// per-caster maps. Returns false while the modern path is disabled or
+	// not yet implemented for this driver, so OpenGL is unaffected.
+	if (_ModernShadow.render(scene, _ShadowCasters))
+		return;
 
 	// Each frame, do a small garbage collector for unused free textures.
 	garbageShadowTextures(scene);
@@ -522,6 +529,13 @@ void			CShadowMapManager::renderProject(CScene *scene)
 	// if not needed exit. NB renderGenerate() must have been called before.
 	if( _ShadowCasters.empty() )
 	{
+		return;
+	}
+
+	// Modern path (Vulkan) published its masks during renderGenerate().
+	if (_ModernShadow.apply(scene))
+	{
+		clearAllShadowCasters();
 		return;
 	}
 

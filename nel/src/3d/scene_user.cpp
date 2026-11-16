@@ -1147,6 +1147,16 @@ uint			CSceneUser::getShadowMapMaxCasterAround() const
 	return _Scene.getShadowMapMaxCasterAround();
 }
 // ***************************************************************************
+void			CSceneUser::setShadowsEnabled(bool enabled)
+{
+	_Scene.setShadowsEnabled(enabled);
+}
+// ***************************************************************************
+bool			CSceneUser::getShadowsEnabled() const
+{
+	return _Scene.getShadowsEnabled();
+}
+// ***************************************************************************
 void			CSceneUser::setVisualCollisionManagerForShadow(UVisualCollisionManager *vcm)
 {
 	if(vcm == nullptr)

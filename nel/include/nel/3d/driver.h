@@ -40,6 +40,7 @@
 #include "nel/misc/mutex.h"
 #include "nel/3d/primitive_profile.h"
 #include "nel/3d/uniform_buffer.h"
+#include "nel/3d/modern_shadow.h"
 
 #include <vector>
 #include <list>
@@ -1010,6 +1011,14 @@ public:
 	  * It the render target is a texture, it returns the size of the texture mipmap selected as render target.
 	  */
 	virtual bool			getRenderTargetSize (uint32 &width, uint32 &height) = 0;
+
+	/** True when the driver implements the modern shadow path (cascaded sun
+	  * masks and, later, point-light cube masks). The OpenGL drivers keep the
+	  * legacy CShadowMapManager path and return false.
+	  */
+	virtual bool			supportsModernShadows() const { return false; }
+	/// Publish the modern shadow state; ignored by drivers that don't support it.
+	virtual void			setModernShadowState(const CModernShadowState &) {}
 
 	/** Trick method : copy the current texture target into another texture without updating the current texture.
 	  *

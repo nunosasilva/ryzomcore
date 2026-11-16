@@ -1203,6 +1203,11 @@ void CDriverVulkan::checkTextureBlitTest()
 	vkFreeMemory(_Device, memory, NULL);
 }
 
+void CDriverVulkan::setModernShadowState(const CModernShadowState &state)
+{
+	_ModernShadowState = state;
+}
+
 ITexture *CDriverVulkan::getRenderTarget() const
 {
 	return _RenderTargetTexture;

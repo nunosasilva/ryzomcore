@@ -24,6 +24,7 @@
 #include "nel/3d/vertex_buffer.h"
 #include "nel/3d/material.h"
 #include "nel/3d/texture.h"
+#include "nel/3d/modern_shadow.h"
 
 
 namespace NL3D {
@@ -170,6 +171,10 @@ private:
 
 	// For Texture profiling
 	NLMISC::CSmartPtr<ITexture::CTextureCategory>	_TextureCategory;
+
+	// Modern (Vulkan) cascaded sun masks. Disabled unless the scene wants
+	// shadows and the driver supports the modern path.
+	CModernShadowMask			_ModernShadow;
 };
 
 

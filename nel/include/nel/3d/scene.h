@@ -639,6 +639,11 @@ public:
 	void			setShadowMapMaxCasterAround(uint num);
 	uint			getShadowMapMaxCasterAround() const {return _ShadowMapMaxCasterAround;}
 
+	/// Master shadow switch (the client's Shadows option). Both the legacy
+	/// manager and the modern Vulkan path honor it.
+	void			setShadowsEnabled(bool enabled) {_ShadowsEnabled= enabled;}
+	bool			getShadowsEnabled() const {return _ShadowsEnabled;}
+
 	/// The scene may have one special VisualCollisionManager which can manage some shadow receiving
 	void					setVisualCollisionManagerForShadow(CVisualCollisionManager *vcm) {_VisualCollisionManagerForShadow= vcm;}
 	CVisualCollisionManager *getVisualCollisionManagerForShadow() const {return _VisualCollisionManagerForShadow;}
@@ -841,6 +846,7 @@ private:
 	// ShadowMap Options
 	uint			_ShadowMapTextureSize;
 	uint			_ShadowMapBlurSize;
+	bool			_ShadowsEnabled;
 	float			_ShadowMapDistFadeStart;
 	float			_ShadowMapDistFadeEnd;
 	uint			_ShadowMapMaxCasterInScreen;

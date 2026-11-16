@@ -641,6 +641,10 @@ public:
 	virtual	void			setShadowMapMaxCasterAround(uint num) =0;
 	virtual	uint			getShadowMapMaxCasterAround() const =0;
 
+	/// Master shadow switch (the client's Shadows option)
+	virtual	void			setShadowsEnabled(bool enabled) =0;
+	virtual	bool			getShadowsEnabled() const =0;
+
 	/// The scene may have one special VisualCollisionManager which can manage some shadow receiving
 	virtual	void			setVisualCollisionManagerForShadow(UVisualCollisionManager *vcm) =0;
 	// @}

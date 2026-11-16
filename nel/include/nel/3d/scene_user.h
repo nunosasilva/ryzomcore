@@ -299,6 +299,8 @@ public:
 	virtual	uint			getShadowMapMaxCasterInScreen() const NL_OVERRIDE;
 	virtual	void			setShadowMapMaxCasterAround(uint num) NL_OVERRIDE;
 	virtual	uint			getShadowMapMaxCasterAround() const NL_OVERRIDE;
+	virtual	void			setShadowsEnabled(bool enabled) NL_OVERRIDE;
+	virtual	bool			getShadowsEnabled() const NL_OVERRIDE;
 	virtual	void			setVisualCollisionManagerForShadow(UVisualCollisionManager *vcm) NL_OVERRIDE;
 	// @}
 
