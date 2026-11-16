@@ -1206,6 +1206,14 @@ void CDriverVulkan::checkTextureBlitTest()
 void CDriverVulkan::setModernShadowState(const CModernShadowState &state)
 {
 	_ModernShadowState = state;
+	static bool logged = false;
+	if (!logged)
+	{
+		logged = true;
+		nlinfo("MODERNSHADOW driver state: enabled=%d cascades=%u split0=%.1f texel=%.4f mask0=%p",
+			(int)state.Enabled, (unsigned)state.NumCascades, state.CascadeSplits[0],
+			state.TexelWorldSize[0], (void*)state.Mask[0]);
+	}
 }
 
 ITexture *CDriverVulkan::getRenderTarget() const

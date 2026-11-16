@@ -35,6 +35,7 @@
 #include "nel/3d/texture_bump.h"
 
 #include <algorithm>
+#include <set>
 
 using namespace std;
 using namespace NLMISC;
@@ -907,6 +908,22 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	const bool lightMapDyn = isLightMapDraw() && _LightMapDynamicLightEnabled;
 	const uint32 lightTableBytes = NL_VK_MEGA_MAX_LIGHT_TABLE * sizeof(CLightTableUBOEntry);
 
+	// TEMP: one-shot diagnosis of what the sun contributes to each draw kind.
+	{
+		static std::set<uint32> seen;
+		const uint32 key = ((uint32)_CurrentMaterial->getShader() << 9) |
+			((uint32)objectData.numPerPixelLights & 0xFF) | (lightMapDyn ? 0x100u : 0u);
+		if (seen.insert(key).second)
+		{
+			const int firstMode = _LightTableMode ? _LightTable[0].Mode : _Lights[0].Mode;
+			const CRGBA d = _LightTableMode ? _LightTable[0].Diffuse : _Lights[0].Diffuse;
+			nlinfo("SHADOWDIAG shader=%d numPPL=%u lmDyn=%d tblMode=%d tblSize=%u light0=(mode=%d rgb=%u,%u,%u)",
+				(int)_CurrentMaterial->getShader(), (unsigned)objectData.numPerPixelLights,
+				(int)lightMapDyn, (int)_LightTableMode, (unsigned)_LightTableSize,
+				firstMode, (uint)d.R, (uint)d.G, (uint)d.B);
+		}
+	}
+
 	// The four per-draw blocks are bound as one group with their own offsets, so
 	// they must not straddle a ring growth: reserve the whole group (light
 	// table included) before any of them is allocated. A growth here also
@@ -957,6 +974,8 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	{
 		shadowData.params[0] = 1.f;
 		shadowData.params[1] = _ModernShadowState.TexelWorldSize[0];
+		shadowData.params[2] = _ModernShadowState.SunStrength;
+		shadowData.params[3] = _ModernShadowState.DebugView ? 1.f : 0.f;
 		memcpy(shadowData.worldToMask0, _ModernShadowState.WorldToMask[0], sizeof(shadowData.worldToMask0));
 		memcpy(shadowData.worldToMask1, _ModernShadowState.WorldToMask[1], sizeof(shadowData.worldToMask1));
 		shadowData.splits[0] = _ModernShadowState.CascadeSplits[0];

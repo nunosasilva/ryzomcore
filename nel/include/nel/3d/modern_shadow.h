@@ -20,6 +20,7 @@
 #include "nel/misc/types_nl.h"
 #include "nel/misc/matrix.h"
 #include "nel/misc/smart_ptr.h"
+#include "nel/3d/material.h"
 #include "nel/3d/texture.h"
 
 #include <cstring>
@@ -51,9 +52,18 @@ struct CModernShadowState
 	ITexture		*Mask[4];
 	/// World size of a mask texel (for PCF), per cascade.
 	float			TexelWorldSize[4];
+	/// How much of the scene's light is direct sun (0..1). The shader uses it
+	/// to scale the darkening so shadowed areas keep the sky/ambient part:
+	/// at dusk, when the sun is dim, a full shadow would otherwise paint
+	/// ambient-lit ground black.
+	float			SunStrength;
+	/// Development view: paint the sun coverage (black = lit, white =
+	/// shadowed) instead of the shaded scene. Toggled at runtime by creating
+	/// ./tmp/shadow_debug, so both views can be compared without a restart.
+	bool			DebugView;
 
 	CModernShadowState()
-		: Enabled(false), NumCascades(0)
+		: Enabled(false), NumCascades(0), SunStrength(0.f), DebugView(false)
 	{
 		for (uint i = 0; i < 4; ++i)
 		{
@@ -103,11 +113,20 @@ private:
 	void					releaseMasks();
 
 	CShadowMapManager		*_Owner;
+	/// Single-sided coverage material: culling front faces keeps the far
+	/// silhouettes of buildings/characters and drops up-facing ground planes
+	/// (the village shape contains ground geometry that would otherwise cover
+	/// the whole mask).
+	CMaterial				_CasterMaterial;
 	NLMISC::CSmartPtr<ITexture>	_Mask[2];
 	NLMISC::CMatrix			_WorldToMask[2];
 	float					_Split[2];
 	uint					_Size;
 	bool					_Active;
+	/// Frame the masks were last fitted to the main camera for. The same
+	/// scene is rendered again within one frame for water reflections and the
+	/// water env map; those must not replace the player's masks.
+	uint64					_LastMaskFrame;
 	uint					_NumCascades;
 };
 

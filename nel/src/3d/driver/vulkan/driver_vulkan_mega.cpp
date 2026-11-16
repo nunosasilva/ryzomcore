@@ -854,11 +854,10 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "    }" << std::endl;
 		ss << "  }" << std::endl;
 		ss << "  float diff = max(0.0, dot(lightDir, wsNormal));" << std::endl;
-		ss << "  float sunShadow = (lightMode == " << (int)CLight::DirectionalLight << ") ? nlSunShadow : 1.0;" << std::endl;
-		ss << "  pplDiffuse += diff * attnFactor * colDiff * sunShadow;" << std::endl;
+		ss << "  pplDiffuse += diff * attnFactor * colDiff;" << std::endl;
 		ss << "  vec3 h = normalize(lightDir + eyeDir);" << std::endl;
 		ss << "  float spec = diff > 0.0 ? pow(max(0.0, dot(wsNormal, h)), shininess) : 0.0;" << std::endl;
-		ss << "  pplSpecular += spec * attnFactor * colSpec * sunShadow;" << std::endl;
+		ss << "  pplSpecular += spec * attnFactor * colSpec;" << std::endl;
 		ss << "}" << std::endl;
 		ss << std::endl;
 	}
@@ -876,24 +875,29 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// When VertexColorLighted, vertex color is the diffuse source (multiplied via vertexColor below).
 		// Material diffuse must be skipped in the light equation, matching VP behavior (effectiveDiffuse = 1.0).
 		ss << "  vec4 pplMatDiff = (nlVertexColorLighted != 0) ? vec4(1.0) : materialDiffuse;" << std::endl;
+		// Sun coverage is sampled for every PPL material, independently of the
+		// number of dynamic lights: Ryzom bakes most of the sun into the
+		// landscape/vegetation lightmaps, so it is applied to the final lit
+		// colour below rather than to one entry of the light table.
+		ss << "  nlSunShadow = 1.0;" << std::endl;
+		ss << "  if (nlShadow.params.x > 0.5) {" << std::endl;
+		ss << "    vec3 shadowWsPos = worldPos.xyz / worldPos.w;" << std::endl;
+		ss << "    float sunDist = length(shadowWsPos - cameraWorldPos);" << std::endl;
+		ss << "    vec4 sunP = (sunDist < nlShadow.splits.x) ? (nlShadow.worldToMask0 * vec4(shadowWsPos, 1.0)) : (nlShadow.worldToMask1 * vec4(shadowWsPos, 1.0));" << std::endl;
+		ss << "    vec2 sunUv = sunP.xy;" << std::endl;
+		ss << "    sunUv.y = 1.0 - sunUv.y;" << std::endl;
+		ss << "    if (sunDist < nlShadow.splits.x)" << std::endl;
+		ss << "      nlSunShadow = sampleSunMask(nlShadowMask0, sunUv, nlShadow.params.y);" << std::endl;
+		ss << "    else" << std::endl;
+		ss << "      nlSunShadow = sampleSunMask(nlShadowMask1, sunUv, nlShadow.params.y);" << std::endl;
+		ss << "    if (sunUv.x < 0.0 || sunUv.x > 1.0 || sunUv.y < 0.0 || sunUv.y > 1.0)" << std::endl;
+		ss << "      nlSunShadow = 1.0;" << std::endl;
+		ss << "  }" << std::endl;
 		ss << "  if (nlNumPerPixelLights > 0) {" << std::endl;
 		ss << "    vec3 wsPos = worldPos.xyz / worldPos.w;" << std::endl;
 		ss << "    vec3 wsNormal = normalize(normal.xyz);" << std::endl;
 		// cameraWorldPos: precomputed on CPU as inverse view matrix position
 		ss << "    vec3 eyeDir = normalize(cameraWorldPos - wsPos);" << std::endl;
-		ss << "    nlSunShadow = 1.0;" << std::endl;
-		ss << "    if (nlShadow.params.x > 0.5) {" << std::endl;
-		ss << "      float sunDist = length(wsPos - cameraWorldPos);" << std::endl;
-		ss << "      vec4 sunP = (sunDist < nlShadow.splits.x) ? (nlShadow.worldToMask0 * vec4(wsPos, 1.0)) : (nlShadow.worldToMask1 * vec4(wsPos, 1.0));" << std::endl;
-		ss << "      vec2 sunUv = sunP.xy;" << std::endl;
-		ss << "      sunUv.y = 1.0 - sunUv.y;" << std::endl;
-		ss << "      if (sunDist < nlShadow.splits.x)" << std::endl;
-		ss << "        nlSunShadow = sampleSunMask(nlShadowMask0, sunUv, nlShadow.params.y);" << std::endl;
-		ss << "      else" << std::endl;
-		ss << "        nlSunShadow = sampleSunMask(nlShadowMask1, sunUv, nlShadow.params.y);" << std::endl;
-		ss << "      if (sunUv.x < 0.0 || sunUv.x > 1.0 || sunUv.y < 0.0 || sunUv.y > 1.0)" << std::endl;
-		ss << "        nlSunShadow = 1.0;" << std::endl;
-		ss << "    }" << std::endl;
 		ss << "    vec4 pplDiff = vec4(0.0);" << std::endl;
 
 		// Table PPL: light data from nlLights[idx] UBO
@@ -1092,6 +1096,21 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 
 	// Alpha test
 	ss << "  if (nlAlphaTest != 0 && fragColor.a <= alphaRef) discard;" << std::endl;
+	ss << std::endl;
+
+	// Sun shadow: Ryzom bakes most of the sun into the landscape and
+	// vegetation lightmaps, so the coverage mask is applied to the final lit
+	// colour instead of to a single dynamic light (the legacy GL2/GL3 shadow
+	// projection also modulated the final colour). params.z is the sun's share
+	// of the current lighting: only that much is removed, so shadowed areas
+	// keep their sky/ambient light and dusk shadows stay soft.
+	if (fogOrPpl)
+		ss << "  fragColor.rgb *= (1.0 - (1.0 - nlSunShadow) * nlShadow.params.z);" << std::endl;
+
+	// Development view: paint the sun coverage (black = lit, white =
+	// shadowed). Toggled by CModernShadowState::DebugView.
+	if (fogOrPpl)
+		ss << "  if (nlShadow.params.w > 0.5) fragColor = vec4(vec3(1.0 - nlSunShadow), 1.0);" << std::endl;
 	ss << std::endl;
 
 	// Fog (runtime-gated: fogOrPpl=1 always has the function, but only applies when fog is enabled)
