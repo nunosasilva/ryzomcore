@@ -735,29 +735,19 @@ void			CShadowMapManager::renderProject(CScene *scene)
 // ***************************************************************************
 void			CShadowMapManager::computeShadowDirection(CScene *scene, CTransform *sc, CVector &lightDir)
 {
-	// merge the sunLight and pointLights into a single directional
+	// use the sun direction only (point lights made the shadow jump)
 	lightDir= scene->getSunDirection();
 	const	CLightContribution	&lc= sc->getLightContribution();
 	// For Better result, weight with the light color too.
 	CRGBA	color= scene->getSunDiffuse();
 	lightDir*= (float)lc.SunContribution * (color.R + color.G + color.B);
 
-	// merge pointLights
-	const CVector		&modelPos= sc->getWorldMatrix().getPos();
-	for(uint i=0;i<NL3D_MAX_LIGHT_CONTRIBUTION;i++)
-	{
-		CPointLight		*pl= lc.PointLight[i];
-		// End of List?
-		if(!pl)
-			break;
-
-		CVector	plDir= modelPos - pl->getPosition();
-		plDir.normalize();
-		// Sum with this light, weighted by AttFactor, and light color
-		color= pl->getDiffuse();
-		lightDir+= plDir * (float)lc.AttFactor[i] * (float)(color.R + color.G + color.B);
-	}
-
+	// Do not merge point lights into the shadow direction. The per-model
+	// light contribution is rebuilt by the light traversal as the camera and
+	// nearby avatars change, so a torch/orb entering or leaving that list
+	// moved the merged direction - and with it the whole shadow map
+	// projection: the ground shadow jumped, stretched or disappeared while
+	// walking or turning. The sun alone gives one stable direction.
 	// normalize merged dir
 	lightDir.normalize();
 
@@ -799,21 +789,10 @@ void			CShadowMapManager::computeShadowColors(CScene *scene, CTransform *sc, CRG
 	g= color.G * lc.SunContribution;
 	b= color.B * lc.SunContribution;
 
-	// Add PointLights contribution
-	for(uint i=0;i<NL3D_MAX_LIGHT_CONTRIBUTION;i++)
-	{
-		CPointLight		*pl= lc.PointLight[i];
-		// End of List?
-		if(!pl)
-			break;
-
-		// Sum with this light, weighted by AttFactor
-		color= pl->getDiffuse();
-		r+= color.R * lc.AttFactor[i];
-		g+= color.G * lc.AttFactor[i];
-		b+= color.B * lc.AttFactor[i];
-	}
-
+	// Point lights are not summed into the shadow colour either: their
+	// AttFactor follows the same camera-dependent light traversal, and when
+	// the contribution dropped the shadow colour went to white and the shadow
+	// vanished. Use the sun only, so the shadow darkness is stable.
 	// normalize
 	r>>=8;
 	g>>=8;
