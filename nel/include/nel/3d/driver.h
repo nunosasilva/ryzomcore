@@ -1043,6 +1043,12 @@ public:
 	  */
 	virtual void			setModernShadowDepthPass(bool /* enabled */) {}
 
+	/** True when the modern shadow state the driver samples is enabled.
+	 *	Used by the debug trace (NLVK_SHADOW_DEBUG) to catch a state that a
+	 *	nested pass overwrote while the opaque pass was still drawing.
+	 */
+	virtual bool			isModernShadowStateEnabled() const { return false; }
+
 	/** Trick method : copy the current texture target into another texture without updating the current texture.
 	  *
 	  * This method copies the current texture into another texture.

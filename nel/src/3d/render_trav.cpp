@@ -242,6 +242,14 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 			if (modernShadows)
 				_ShadowMapManager.clearAllShadowCasters();
 		}
+		else if (modernDriver && Scene->getShadowsEnabled())
+		{
+			// No traversal this pass (water/env-map re-render): the masks and
+			// the published state stay as they are. Logged because a skip of
+			// the *main* opaque pass would leave whatever the canopy/sky scene
+			// published last.
+			modernShadowDebugLog("skip", "notraversal", Scene, getDriver(), NULL, 0, NULL);
+		}
 
 		// Render Opaque stuff.
 		// =============================
@@ -371,6 +379,12 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 			Therefore the first Lock that stall will wait not only for the first MeshSkin to finish but also for the
 			preceding landscape render to finish too! => big STALL.
 		*/
+
+		// Debug trace: the state we published at the top of this pass must
+		// still be the one the driver samples now; a nested scene/pass that
+		// published its own state would leave these draws unshadowed.
+		if (modernShadows && !getDriver()->isModernShadowStateEnabled())
+			modernShadowDebugLog("publish", "overwritten", Scene, getDriver(), NULL, 0, NULL);
 
 		// Generate ShadowMaps (legacy path; the modern masks were already
 		// rendered before the opaque pass above).

@@ -250,11 +250,24 @@ void			CShadowMapManager::addShadowReceiver(CTransform *model)
 // ***************************************************************************
 bool			CShadowMapManager::renderModernShadowMasks(CScene *scene)
 {
-	if( !_ModernShadow.isEnabled(scene) )
+	if( !scene )
+		return false;
+
+	// Only the Shadows option turning off may publish a disabled state. A pass
+	// with nothing to cast must leave the driver's state alone: the masks and
+	// the world -> mask matrices it samples belong to the main view, and a
+	// disabled publish here would leave the next pass of another scene (the
+	// canopy and the sky are separate CScenes sharing the same driver) drawing
+	// without the sun term for the rest of the frame.
+	if( !scene->getShadowsEnabled() )
 	{
+		modernShadowDebugLog("publish", "optionoff", scene, scene->getRenderTrav().getDriver(), NULL, 0, NULL);
 		_ModernShadow.reset(scene);
 		return false;
 	}
+	IDriver *driver = scene->getRenderTrav().getDriver();
+	if( !driver || !driver->supportsModernShadows() )
+		return false;
 
 	// The per-view _ShadowCasters list is filled by the clip traversal, which
 	// runs after this early pass. Use the scene's registered caster list
@@ -268,8 +281,11 @@ bool			CShadowMapManager::renderModernShadowMasks(CScene *scene)
 	}
 	if( casters.empty() )
 	{
-		// Nothing to encode this frame: stop sampling the previous masks.
-		_ModernShadow.reset(scene);
+		// Nothing to encode this frame (a scene with no casters, or the main
+		// scene during a load): keep the last published masks. They are at
+		// most one frame old and still belong to this view, whereas disabling
+		// the state would drop the sun term for the whole frame.
+		modernShadowDebugLog("keep", "nocasters", scene, driver, NULL, 0, NULL);
 		return false;
 	}
 	return _ModernShadow.render(scene, casters);

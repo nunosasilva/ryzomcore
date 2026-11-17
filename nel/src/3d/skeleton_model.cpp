@@ -2326,6 +2326,7 @@ bool		CSkeletonModel::computeWorldBBoxForShadow(NLMISC::CAABBox &worldBB)
 
 	// **** Compute The BBox with Bones of the skeleton
 	CVector		minBB(0.f, 0.f, 0.f), maxBB(0.f, 0.f, 0.f);
+	bool		haveBone = false;
 	for(i=0;i<_BoneToCompute.size();i++)
 	{
 		CBone			*bone= _BoneToCompute[i].Bone;
@@ -2333,6 +2334,23 @@ bool		CSkeletonModel::computeWorldBBoxForShadow(NLMISC::CAABBox &worldBB)
 		const	CMatrix	&worldMat= bone->getWorldMatrix();
 		CBSphere		worldSphere;
 		bone->_MaxSphere.applyTransform(worldMat, worldSphere);
+		// A bone whose sphere has not been computed yet holds garbage: a
+		// caster dump caught a freshly created skeleton with extents around
+		// 1e20. Such a box is useless for the modern cascade (it stretches
+		// the light-space depth range over ~20 orders of magnitude and costs
+		// the mask its precision) and wrong for the legacy per-caster maps, so
+		// skip the bone instead of returning it.
+		const CVector	&sphereCenter = worldSphere.Center;
+		const float		sphereRadius = worldSphere.Radius;
+		if (!(sphereRadius == sphereRadius) ||
+			!(sphereCenter.x == sphereCenter.x) ||
+			!(sphereCenter.y == sphereCenter.y) ||
+			!(sphereCenter.z == sphereCenter.z) ||
+			fabsf(sphereRadius) > 1e6f ||
+			fabsf(sphereCenter.x) > 1e6f ||
+			fabsf(sphereCenter.y) > 1e6f ||
+			fabsf(sphereCenter.z) > 1e6f)
+			continue;
 		// compute bone min max bounding cube.
 		CVector		minBone, maxBone;
 		minBone= maxBone= worldSphere.Center;
@@ -2344,16 +2362,24 @@ bool		CSkeletonModel::computeWorldBBoxForShadow(NLMISC::CAABBox &worldBB)
 		maxBone.y+= r;
 		maxBone.z+= r;
 		// set or extend
-		if(i==0)
+		if(!haveBone)
 		{
 			minBB= minBone;
 			maxBB= maxBone;
+			haveBone = true;
 		}
 		else
 		{
 			minBB.minof(minBB, minBone);
 			maxBB.maxof(maxBB, maxBone);
 		}
+	}
+	if (!haveBone)
+	{
+		// No usable bone: the caster has no shadow footprint yet (it will
+		// have one as soon as its bones are computed). Returning the
+		// zero-sized box at the world origin would add a bogus caster there.
+		return false;
 	}
 	// build the bbox
 	worldBB.setMinMax(minBB, maxBB);

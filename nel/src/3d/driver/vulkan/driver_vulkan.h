@@ -664,6 +664,7 @@ public:
 	virtual bool hasHighPrecisionShadowMask() const override { return _ShadowMaskFormat != VK_FORMAT_UNDEFINED; }
 	virtual void setModernShadowState(const CModernShadowState &state) override;
 	virtual void setModernShadowDepthPass(bool enabled) override;
+	virtual bool isModernShadowStateEnabled() const override { return _ModernShadowState.Enabled; }
 	virtual bool getRenderTargetSize(uint32 &width, uint32 &height) override;
 	virtual bool copyTargetToTexture(ITexture *tex, uint32 offsetx, uint32 offsety, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel) override;
 	virtual bool textureCoordinateAlternativeMode() const override;

@@ -30,6 +30,7 @@ namespace NL3D {
 
 class CScene;
 class CTransform;
+class IDriver;
 
 /**
  * Shadow state handed to a driver that implements the modern shadow path.
@@ -80,6 +81,19 @@ struct CModernShadowState
 		}
 	}
 };
+
+/** Opt-in frame-level trace of the modern shadow state (NLVK_SHADOW_DEBUG=1).
+ *
+ * Emits one line per event that publishes (or fails to publish) the state the
+ * opaque pass samples: the mask pass, the disabled publish of reset(), and the
+ * skips in CShadowMapManager/RenderTrav. Each line carries the driver swap
+ * counter and the scene's render/frame ids, so a 1-2 frame drop of the sun
+ * term can be attributed to the pass that caused it. Off by default (one
+ * getenv at startup); nothing is logged when it is unset.
+ */
+void	modernShadowDebugLog(const char *event, const char *reason,
+	CScene *scene, IDriver *driver, const CModernShadowState *state,
+	uint casters, ITexture *mask0, const char *extra = NULL);
 
 /**
  * Cascaded sun shadow masks.
@@ -133,6 +147,10 @@ private:
 	/// Receiver tolerance and soft-edge width, normalized by the depth extent.
 	float					_DepthBias[2];
 	float					_DepthSoftness[2];
+	/// Published sun share and whether it has a previous value yet (the
+	/// per-frame change is limited to NL_MODERN_SHADOW_SUN_SLEW).
+	float					_SunStrength;
+	bool					_HaveSunStrength;
 	/// True when the masks are 32-bit float (driver::hasHighPrecisionShadowMask).
 	bool					_HighPrecision;
 	uint					_Size;

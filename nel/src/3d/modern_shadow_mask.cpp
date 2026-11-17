@@ -26,6 +26,8 @@
 #include "nel/misc/aabbox.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 using namespace NLMISC;
@@ -57,6 +59,50 @@ static const float	NL_MODERN_SHADOW_BIAS_TEXELS = 0.5f;
 /// makes the contact shadow diffuse. Only the softness grows: the bias above
 /// stays at half a texel, so the shadow stays attached at the base.
 static const float	NL_MODERN_SHADOW_SOFTNESS_TEXELS = 4.f;
+/// Largest change of the published sun share per frame. The share comes from
+/// the light cycle's sun and ambient colours (weather + day cycle). If those
+/// colours step - a weather change, or a frame where they are not settled yet
+/// - the darkening of every shadowed surface changes with them, which reads as
+/// "the shadows brightened for a frame". With this limit the strength can only
+/// fade: at 60 fps a 0.25 step takes 0.2 s instead of one frame.
+static const float	NL_MODERN_SHADOW_SUN_SLEW = 0.02f;
+
+namespace {
+
+/** NLVK_SHADOW_DEBUG: opt-in per-event trace of the published state.
+  */
+const char	*shadowDebugEnv()
+{
+	static const char *env = getenv("NLVK_SHADOW_DEBUG");
+	return env ? env : "";
+}
+
+bool	shadowDebugEnabled()
+{
+	return *shadowDebugEnv() != 0;
+}
+
+} // anonymous namespace
+
+void	modernShadowDebugLog(const char *event, const char *reason,
+	CScene *scene, IDriver *driver, const CModernShadowState *state,
+	uint casters, ITexture *mask0, const char *extra)
+{
+	if (!shadowDebugEnabled())
+		return;
+	nlinfo("SHADOWFRAME f=%llu scene=%p nrender=%llu frame=%llu event=%s reason=%s "
+		"enabled=%d sun=%.3f cascades=%u casters=%u mask0=%p%s%s",
+		(unsigned long long)(driver ? driver->getSwapBufferCounter() : 0),
+		(void *)scene,
+		(unsigned long long)(scene ? scene->getNumRender() : 0),
+		(unsigned long long)(scene ? scene->getFrameId() : 0),
+		event, reason,
+		state ? (state->Enabled ? 1 : 0) : 0,
+		state ? state->SunStrength : 0.f,
+		state ? state->NumCascades : 0u,
+		casters, (void *)mask0,
+		(extra && *extra) ? " " : "", extra ? extra : "");
+}
 
 namespace {
 
@@ -82,7 +128,8 @@ void	lightSpaceAABBox(const CMatrix &worldToMask, const CAABBox &world,
 } // anonymous namespace
 
 CModernShadowMask::CModernShadowMask()
-	: _HighPrecision(false), _Size(NL_MODERN_SHADOW_SIZE), _Active(false), _NumCascades(0)
+	: _HighPrecision(false), _Size(NL_MODERN_SHADOW_SIZE), _Active(false), _NumCascades(0),
+	  _SunStrength(0.f), _HaveSunStrength(false)
 {
 	for (uint i = 0; i < 2; ++i)
 	{
@@ -128,7 +175,11 @@ void CModernShadowMask::reset(CScene *scene)
 	_Active = false;
 	IDriver *driver = scene ? scene->getRenderTrav().getAuxDriver() : NULL;
 	if (driver)
-		driver->setModernShadowState(CModernShadowState());
+	{
+		const CModernShadowState	disabled;
+		driver->setModernShadowState(disabled);
+		modernShadowDebugLog("publish", "reset", scene, driver, &disabled, 0, _Mask[0]);
+	}
 }
 
 bool CModernShadowMask::ensureMasks(bool highPrecision)
@@ -176,7 +227,10 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 
 	IDriver *driver = scene->getRenderTrav().getAuxDriver();
 	if (!driver)
+	{
+		modernShadowDebugLog("skip", "nodriver", scene, NULL, NULL, 0, _Mask[0]);
 		return false;
+	}
 
 	// The cascades are fitted to the player's camera. The water reflection
 	// renders the whole scene again through a mirrored camera *inside* the
@@ -185,14 +239,22 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// rest of the pass would then sample. Keep the main view's masks: the
 	// mirrored scene is only seen through moving water.
 	if (scene->getWaterReflectionManager().isRenderingReflection())
+	{
+		// Keep the main view's masks: the reflection is drawn with the state
+		// the last main pass published, so nothing is published here.
+		modernShadowDebugLog("skip", "reflection", scene, driver, NULL, 0, _Mask[0]);
 		return _Active;
+	}
 
 	// Every opaque pass of the main view rebuilds the cascades around its own
 	// camera. The water reflection pass returns early above: it is a mirrored
 	// view of the same scene and re-using the main cascades is both cheaper
 	// and keeps the published matrices valid for the rest of the pass.
 	if (!ensureMasks(driver->hasHighPrecisionShadowMask()))
+	{
+		modernShadowDebugLog("skip", "nomask", scene, driver, NULL, 0, _Mask[0]);
 		return false;
+	}
 
 	_Active = false;
 
@@ -227,6 +289,13 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 
 	_NumCascades = 2;
 	float	biasMillimetres[2] = { 0.f, 0.f };
+	// Debug trace for cascade 0: how many casters project into the box, the
+	// light-space span the range actually used and whether a caster bbox had
+	// to be rejected as degenerate.
+	uint	inBox0 = 0;
+	float	span0 = 0.f;
+	float	sunShareRaw = 0.f;
+	bool	bad0 = false;
 	for (uint i = 0; i < 2; ++i)
 	{
 		// Build the same kind of world -> [0,1]^3 camera the legacy caster
@@ -270,20 +339,48 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// -- into the window depth. That is the same naming the legacy path
 		// uses with CShadowMapProjector::_XYZToUWVMatrix.
 		CMatrix	boxToMask = cameraMatrix.inverted();
-		float	depthLo = 0.f, depthHi = 1.f;
+		float	rawLo = 0.f, rawHi = 1.f;
+		bool	badCaster = false;
 		for (uint c = 0; c < casters.size(); ++c)
 		{
 			CAABBox bb;
 			if (!casters[c] || !casters[c]->computeWorldBBoxForShadow(bb))
 				continue;
+			// A degenerate or half-initialised caster bbox must never reach the
+			// range: an uninitialised bone sphere can report extents around
+			// 1e20 (seen in a caster dump), which turns the normalized depth
+			// values into noise and clips nothing that a real caster needs.
+			const CVector	mn = bb.getMin();
+			const CVector	mx = bb.getMax();
+			if (!(mx.x >= mn.x && mx.y >= mn.y && mx.z >= mn.z) ||
+				fabsf(mn.x) > 1e6f || fabsf(mn.y) > 1e6f || fabsf(mn.z) > 1e6f ||
+				fabsf(mx.x) > 1e6f || fabsf(mx.y) > 1e6f || fabsf(mx.z) > 1e6f)
+			{
+				char	extra[160];
+				snprintf(extra, sizeof(extra), "bbox=(%.3g %.3g %.3g)-(%.3g %.3g %.3g)",
+					mn.x, mn.y, mn.z, mx.x, mx.y, mx.z);
+				modernShadowDebugLog("skip", "badcaster", scene, driver, NULL,
+					0, _Mask[0], extra);
+				badCaster = true;
+				continue;
+			}
 			CVector lo, hi;
 			lightSpaceAABBox(boxToMask, bb, lo, hi);
 			if (hi.x < 0.f || lo.x > 1.f || hi.z < 0.f || lo.z > 1.f)
 				continue; // outside the image plane of the box: it draws nothing here
-			depthLo = std::min(depthLo, lo.y - NL_MODERN_SHADOW_DEPTH_MARGIN);
-			depthHi = std::max(depthHi, hi.y + NL_MODERN_SHADOW_DEPTH_MARGIN);
+			rawLo = std::min(rawLo, lo.y - NL_MODERN_SHADOW_DEPTH_MARGIN);
+			rawHi = std::max(rawHi, hi.y + NL_MODERN_SHADOW_DEPTH_MARGIN);
+			if (i == 0)
+				++inBox0;
 		}
+		const float	depthLo = rawLo;
+		const float	depthHi = rawHi;
 		const float	depthSpan = depthHi - depthLo;
+		if (i == 0)
+		{
+			span0 = depthSpan;
+			bad0 = badCaster;
+		}
 		if (depthSpan <= 1.f)
 		{
 			// The common case: nothing sticks out, so the range stays exactly
@@ -391,7 +488,17 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		const float sunLum = 0.3f * (float)sun.R + 0.59f * (float)sun.G + 0.11f * (float)sun.B;
 		const float ambLum = 0.3f * (float)amb.R + 0.59f * (float)amb.G + 0.11f * (float)amb.B;
 		const float share = sunLum / std::max(1.f, sunLum + ambLum);
-		state.SunStrength = std::min(0.50f, std::max(0.25f, share));
+		float strength = std::min(0.50f, std::max(0.25f, share));
+		// Never let the strength pop between two frames (see
+		// NL_MODERN_SHADOW_SUN_SLEW): a one-frame step would brighten every
+		// shadowed surface at once.
+		if (_HaveSunStrength)
+			strength = std::max(_SunStrength - NL_MODERN_SHADOW_SUN_SLEW,
+				std::min(_SunStrength + NL_MODERN_SHADOW_SUN_SLEW, strength));
+		_SunStrength = strength;
+		_HaveSunStrength = true;
+		state.SunStrength = strength;
+		sunShareRaw = share;
 	}
 	for (uint i = 0; i < _NumCascades; ++i)
 	{
@@ -402,6 +509,15 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		state.DepthSoftness[i] = _DepthSoftness[i];
 	}
 	driver->setModernShadowState(state);
+	{
+		char	extra[240];
+		snprintf(extra, sizeof(extra),
+			"cam=(%.1f %.1f %.1f) inbox=%u span=%.4g bad=%d sunraw=%.3f",
+			camPos.x, camPos.y, camPos.z, inBox0, span0,
+			bad0 ? 1 : 0, sunShareRaw);
+		modernShadowDebugLog("publish", "ok", scene, driver, &state,
+			(uint)casters.size(), _Mask[0], extra);
+	}
 
 	// One line when the modern path first runs, so a support log shows which
 	// shadow implementation produced the frame. Nothing is logged per frame.
