@@ -1125,9 +1125,30 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	//   1 coverage factor, 2 cascade block, 3 raw mask texel, 4 mask image,
 	//   5 CPU-computed marker
 	ss << "  if (nlShadow.params.w > 0.5) {" << std::endl;
-	ss << "    if (nlShadow.params.w > 5.5) {" << std::endl;
+	ss << "    bool uvInCascade = all(greaterThanEqual(nlSunUv, vec2(0.0))) && all(lessThanEqual(nlSunUv, vec2(1.0)));" << std::endl;
+	ss << "    if (nlShadow.params.w > 9.5) {" << std::endl;
+	// Raw magnitudes: red = |ecPos| (eye space, metres), green =
+	// |cameraWorldPos| / 20000, blue = |shadowWsPos| / 20000.
+	ss << "      fragColor = vec4(clamp(length(ecPos.xyz) / 100.0, 0.0, 1.0)," << std::endl;
+	ss << "                      clamp(length(cameraWorldPos) / 20000.0, 0.0, 1.0)," << std::endl;
+	ss << "                      clamp(length(shadowWsPos) / 20000.0, 0.0, 1.0), 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 8.5) {" << std::endl;
+	// Space probe: red = the rebuilt position is within 1 km of the world
+	// origin (relative/PZB space), green = within 1 km of the camera position
+	// (absolute space). Yellow means both, black neither.
+	ss << "      bool nearOrigin = abs(shadowWsPos.x) < 1000.0 && abs(shadowWsPos.y) < 1000.0;" << std::endl;
+	ss << "      bool nearCamera = abs(shadowWsPos.x - cameraWorldPos.x) < 1000.0 && abs(shadowWsPos.y - cameraWorldPos.y) < 1000.0;" << std::endl;
+	ss << "      fragColor = vec4(nearOrigin ? 1.0 : 0.0, nearCamera ? 1.0 : 0.0, 0.0, 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 7.5) {" << std::endl;
+	// ecPos.w probe: red = clamp(w), green = fract(w), blue = clamp(w/64).
+	ss << "      fragColor = vec4(clamp(ecPos.w, 0.0, 1.0), fract(ecPos.w), clamp(ecPos.w / 64.0, 0.0, 1.0), 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 6.5) {" << std::endl;
+	ss << "      fragColor = uvInCascade ? vec4(fract(nlSunUv.x * 32.0), fract(nlSunUv.y * 32.0), 0.0, 1.0) : vec4(0.0, 0.0, 0.0, 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 5.5) {" << std::endl;
+	// Marker: only draw where the lookup is actually inside a cascade, otherwise
+	// distant geometry (whose UV sweeps through everything) dominates the view.
 	ss << "      vec2 d = abs(nlSunUv - nlShadow.screen.zw);" << std::endl;
-	ss << "      if (d.x < 0.004 || d.y < 0.004) fragColor = vec4(1.0, 0.0, 1.0, 1.0);" << std::endl;
+	ss << "      if (uvInCascade && (d.x < 0.004 || d.y < 0.004)) fragColor = vec4(1.0, 0.0, 1.0, 1.0);" << std::endl;
 	ss << "    } else if (nlShadow.params.w > 4.5) {" << std::endl;
 	ss << "      vec2 muv = gl_FragCoord.xy * nlShadow.screen.xy;" << std::endl;
 	ss << "      fragColor = vec4(vec3(texture(nlShadowMask0, muv).a), 1.0);" << std::endl;

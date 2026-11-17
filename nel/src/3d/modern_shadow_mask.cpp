@@ -292,7 +292,15 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// Development view toggles; see CModernShadowState::DebugMode.
 	state.FlipU = CFile::isExists("tmp/shadow_flipu");
 	state.FlipV = !CFile::isExists("tmp/shadow_noflipv");
-	if (CFile::isExists("tmp/shadow_cross"))
+	if (CFile::isExists("tmp/shadow_magprobe"))
+		state.DebugMode = 10;
+	else if (CFile::isExists("tmp/shadow_spaceprobe"))
+		state.DebugMode = 9;
+	else if (CFile::isExists("tmp/shadow_wprobe"))
+		state.DebugMode = 8;
+	else if (CFile::isExists("tmp/shadow_uvramp"))
+		state.DebugMode = 7;
+	else if (CFile::isExists("tmp/shadow_cross"))
 		state.DebugMode = 6;
 	else if (CFile::isExists("tmp/shadow_maskview"))
 		state.DebugMode = 4;
@@ -316,13 +324,47 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		state.Mask[i] = _Mask[i];
 		state.TexelWorldSize[i] = 1.f / (float)_Size;
 	}
-	// Development marker: the cascade 0 UV of a ground point five metres in
-	// front of the camera. The shader draws a cross where it sees that UV, so
-	// the published matrix can be compared with the CPU's own projection.
+	// Development marker: the cascade 0 UV of a caster base that can be seen on
+	// screen (the largest registered caster, usually the tent at the camp). The
+	// shader draws a cross where it sees that UV, so the published matrix can be
+	// compared with the CPU's own projection of an object we can point at.
 	{
-		const CVector look = scene->getRenderTrav().CamLook;
-		CVector ahead = scene->getRenderTrav().CamPos + look * 5.f;
-		ahead.z = 0.f;
+		CAABBox best;
+		float bestArea = 0.f;
+		bool haveBest = false;
+		for (uint c = 0; c < casters.size(); ++c)
+		{
+			CAABBox bb;
+			if (!casters[c] || !casters[c]->computeWorldBBoxForShadow(bb))
+				continue;
+			const CVector sz = bb.getSize();
+			if (!(sz.x > 0.5f && sz.y > 0.5f && sz.z > 0.2f) ||
+				sz.x > 60.f || sz.y > 60.f || sz.z > 60.f)
+				continue;
+			// Only casters whose base lands inside cascade 0 make a marker we can
+			// actually see on screen.
+			CVector base = bb.getCenter();
+			base.z = bb.getMin().z;
+			const CVector baseUv = _WorldToMask[0] * base;
+			if (baseUv.x < 0.05f || baseUv.x > 0.95f || baseUv.y < 0.05f || baseUv.y > 0.95f)
+				continue;
+			const float area = sz.x * sz.y * sz.z;
+			if (area > bestArea)
+			{
+				bestArea = area;
+				best = bb;
+				haveBest = true;
+			}
+		}
+		CVector ahead = scene->getRenderTrav().CamPos;
+		if (haveBest)
+		{
+			ahead = best.getCenter();
+			ahead.z = best.getMin().z;
+			const CVector bsz = best.getSize();
+			nlinfo("MODERNSHADOW marker caster: base=(%.1f %.1f %.1f) size=(%.1f %.1f %.1f)",
+				ahead.x, ahead.y, ahead.z, bsz.x, bsz.y, bsz.z);
+		}
 		const CVector uv = _WorldToMask[0] * ahead;
 		state.Screen[2] = uv.x;
 		state.Screen[3] = uv.y;
@@ -330,10 +372,11 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		if (!logged)
 		{
 			logged = true;
-			nlinfo("MODERNSHADOW w2m: |I|=%.5f |J|=%.5f |K|=%.5f camPosUV=(%.3f %.3f) aheadUV=(%.3f %.3f)",
+			nlinfo("MODERNSHADOW w2m: |I|=%.5f |J|=%.5f |K|=%.5f camPosUV=(%.3f %.3f) casterBaseUV=(%.3f %.3f) at=(%.1f %.1f %.1f)",
 				_WorldToMask[0].getI().norm(), _WorldToMask[0].getJ().norm(), _WorldToMask[0].getK().norm(),
 				_WorldToMask[0].get() ? (_WorldToMask[0] * scene->getRenderTrav().CamPos).x : 0.f,
-				(_WorldToMask[0] * scene->getRenderTrav().CamPos).y, uv.x, uv.y);
+				(_WorldToMask[0] * scene->getRenderTrav().CamPos).y, uv.x, uv.y,
+				ahead.x, ahead.y, ahead.z);
 		}
 	}
 	driver->setModernShadowState(state);
