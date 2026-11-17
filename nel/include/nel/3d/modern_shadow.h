@@ -30,13 +30,12 @@ namespace NL3D {
 
 class CScene;
 class CTransform;
-class CShadowMapManager;
 
 /**
  * Shadow state handed to a driver that implements the modern shadow path.
  *
  * The modern path is Vulkan-only for now: the engine builds cascaded sun
- * coverage masks (and, later, point-light cube masks) and the driver samples
+ * depth masks (and, later, point-light cube masks) and the driver samples
  * them in its lighting shader. OpenGL keeps the legacy CShadowMapManager
  * path untouched.
  */
@@ -48,7 +47,7 @@ struct CModernShadowState
 	float			CascadeSplits[4];
 	/// World -> mask UV matrix for each cascade (CMatrix::get() layout).
 	float			WorldToMask[4][16];
-	/// Coverage masks, one render target per cascade.
+	/// Depth masks, one render target per cascade.
 	ITexture		*Mask[4];
 	/// World size of a mask texel (for PCF), per cascade.
 	float			TexelWorldSize[4];
@@ -56,39 +55,17 @@ struct CModernShadowState
 	/// (receiverDepth > storedDepth + DepthBias => shadowed). Covers the 8-bit
 	/// quantization of the stored depth and the receiver slope over a texel.
 	float			DepthBias[4];
-	/// Development: [0]/[1] are filled by the driver with 1/width, 1/height of
-	/// the current target; [2]/[3] carry a mask UV computed on the CPU (see
-	/// CModernShadowMask::render) for the marker debug view.
-	float			Screen[4];
 	/// How much of the scene's light is direct sun (0..1). The shader uses it
 	/// to scale the darkening so shadowed areas keep the sky/ambient part:
 	/// at dusk, when the sun is dim, a full shadow would otherwise paint
 	/// ambient-lit ground black.
 	float			SunStrength;
-	/// Development views, toggled at runtime by creating files (see
-	/// CModernShadowMask::render):
-	///  1 = the shadow factor (white = shadowed), 2 = the cascade block,
-	///  3 = the stored mask depth at the lookup, 4 = the mask image,
-	///  6 = the CPU-computed marker, 12 = receiver minus stored depth
-	///  (red = behind the caster), 15 = the depths as colours
-	///  (red = receiver, green = stored), 16 = the contrast-stretched mask
-	///  image, 17 = the mask at the lookup (the shadow painted on the world),
-	///  18 = the cascade split (red = far cascade).
-	uint			DebugMode;
-	/// Development probe: mirror the mask lookup along U, to find the mask's
-	/// handedness on this driver.
-	bool			FlipU;
-	/// Mask row 0 is the top of the light image while the cascade matrix maps
-	/// the bottom of the light box to v = 0, so the lookup flips V. Kept as a
-	/// runtime toggle for the development A/B.
-	bool			FlipV;
 
 	CModernShadowState()
-		: Enabled(false), NumCascades(0), SunStrength(0.f), DebugMode(0), FlipU(false), FlipV(true)
+		: Enabled(false), NumCascades(0), SunStrength(0.f)
 	{
 		for (uint i = 0; i < 4; ++i)
 		{
-			Screen[i] = 0.f;
 			CascadeSplits[i] = 0.f;
 			Mask[i] = NULL;
 			TexelWorldSize[i] = 0.f;
@@ -111,14 +88,14 @@ struct CModernShadowState
  * directions and no hard map borders to clip a low-sun shadow.
  *
  * Enablement is gated by CScene::getShadowsEnabled() (the client's Shadows
- * option) and by the driver capability. NLVK_MODERN_SHADOWS is a
- * development-only opt-in while the Vulkan shader path is being built; it
- * must be removed before merge.
+ * option) and by the driver capability: the modern path runs only when both
+ * are true, so `Shadows = 0` disables all shadows and OpenGL keeps the legacy
+ * CShadowMapManager path.
  */
 class CModernShadowMask
 {
 public:
-	CModernShadowMask(CShadowMapManager *owner);
+	CModernShadowMask();
 	~CModernShadowMask();
 
 	/// True when the scene wants shadows and the driver can take the modern path.
@@ -129,16 +106,10 @@ public:
 	 */
 	bool					render(CScene *scene, const std::vector<CTransform*> &casters);
 
-	/** Publish the cascade state to the driver. Returns true when the modern
-	 *	path handled projection and renderProject() must be skipped.
-	 */
-	bool					apply(CScene *scene);
-
 private:
 	bool					ensureMasks();
 	void					releaseMasks();
 
-	CShadowMapManager		*_Owner;
 	/// Caster material for the depth mask: unlit, double-sided (several Ryzom
 	/// shapes are single-layer shells whose only faces point away from the
 	/// light). The driver turns the draw into a depth write with a MIN blend
@@ -152,11 +123,6 @@ private:
 	bool					_Active;
 	uint					_NumCascades;
 };
-
-/// Development counter: triangles submitted to the modern sun masks since it
-/// was last reset. CModernShadowMask::render() resets it once per pass.
-extern uint32			NLModernShadowCasterTris;
-extern uint32			NLModernShadowCasterMeshes;
 
 } // NL3D
 

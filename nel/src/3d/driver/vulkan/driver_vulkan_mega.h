@@ -55,7 +55,7 @@ const uint NL_VK_MEGA_BINDING_USER_SKELETON = 6;
 const uint NL_VK_MEGA_BINDING_SAMPLER_BASE = 8;
 const uint NL_VK_MEGA_SAMPLER_COUNT = NL3D::IDRV_PROGRAM_MAXSAMPLERS; // 8
 // Binding 7 was deliberately left unused; the modern sun shadow uses it for
-// its per-frame cascade block. The two coverage masks sit after the material
+// its per-frame cascade block. The two depth masks sit after the material
 // sampler block.
 const uint NL_VK_MEGA_BINDING_SHADOW = 7;
 const uint NL_VK_MEGA_BINDING_SHADOW_MASK0 = 16;
@@ -178,14 +178,13 @@ struct CShadowUBOData
 	float worldToMask0[16]; // 64
 	float worldToMask1[16]; // 64
 	float splits[4];        // 16 (x = first cascade view distance)
-	float params[4];        // 16 (x = enabled, y = texel uv, z = sun strength, w = debug)
-	float screen[4];        // 16 (development: 1/w, 1/h of the current target)
+	float params[4];        // 16 (x = enabled, y = texel uv, z = sun strength)
 	/// Per-cascade receiver bias, in the mask's normalized light-space depth
 	/// (x = cascade 0, y = cascade 1). Covers the 8-bit mask quantization and
 	/// the receiver's own surface slope over one texel.
 	float depthBias[4];     // 16
 };
-nlctassert(sizeof(CShadowUBOData) == 192);
+nlctassert(sizeof(CShadowUBOData) == 176);
 
 // GLSL headers prepended to the generated mega programs.
 std::string buildVulkanLightTableHeader(sint maxLights);

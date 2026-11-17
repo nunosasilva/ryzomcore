@@ -19,8 +19,6 @@
 
 #include "std3d.h"
 
-#include <cstdlib>
-
 #include "nel/3d/render_trav.h"
 #include "nel/3d/hrc_trav.h"
 #include "nel/3d/clip_trav.h"
@@ -233,7 +231,10 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 		// Modern (Vulkan) sun shadows: render and publish the cascade masks
 		// before any opaque material samples them. The OpenGL drivers report
 		// no modern support, so this returns false and the legacy pass below
-		// is unchanged.
+		// runs exactly as before. On a driver with modern support the legacy
+		// maps are never sampled, so skip generating them even when the
+		// user's Shadows option turned the modern path off.
+		const bool modernDriver = getDriver()->supportsModernShadows();
 		bool modernShadows = false;
 		if (generateShadows)
 		{
@@ -373,11 +374,7 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 
 		// Generate ShadowMaps (legacy path; the modern masks were already
 		// rendered before the opaque pass above).
-		// NLVK_SHADOW_BOTH keeps the legacy shadow maps alive next to the
-		// modern masks, so both shadow sets can be seen in the same frame and
-		// their positions compared directly.
-		static const bool bothShadows = getenv("NLVK_SHADOW_BOTH") != NULL;
-		if (generateShadows && (!modernShadows || bothShadows))
+		if (generateShadows && !modernShadows && !modernDriver)
 			_ShadowMapManager.renderGenerate(Scene);
 
 		// Render the Landscape
@@ -387,7 +384,7 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 		// entity shadows project onto the ground directly beneath their
 		// casters, which the mirrored view essentially never sees (it is
 		// hidden behind the caster's own reflection) — skip the cost.
-		if ((!modernShadows || bothShadows) && !Scene->getWaterReflectionManager().isRenderingReflection())
+		if (!modernShadows && !modernDriver && !Scene->getWaterReflectionManager().isRenderingReflection())
 		{
 			if(Scene->getLandscapePolyDrawingCallback() != nullptr)
 			{

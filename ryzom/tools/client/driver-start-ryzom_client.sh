@@ -52,7 +52,7 @@
 #   ENV="VAR=value ..."    Extra environment for the client.  The same values
 #                          can be given after a literal -- argument:
 #                              ./driver-start-ryzom_client.sh ACCOUNT=u -- \
-#                                  NLVK_MODERN_SHADOWS=1 RYZOM_FORCE_LIGHT_HOUR=12
+#                                  RYZOM_FORCE_LIGHT_HOUR=12
 #                          Values cannot contain spaces.  DISPLAY and the
 #                          RYZOM_HARNESS_* variables are reserved.
 #   LIGHT=off|on|toggle    Personal light handling after reaching the game
@@ -126,7 +126,7 @@
 #
 #   # Headless shadow run: personal light off, stable noon sun, one capture
 #   eval "$(HEADLESS=1 DRIVER=Vulkan ACCOUNT=username321 PASSWORD=password123 \
-#            SLOT=0 ENV='NLVK_MODERN_SHADOWS=1 RYZOM_FORCE_LIGHT_HOUR=12' \
+#            SLOT=0 ENV='RYZOM_FORCE_LIGHT_HOUR=12' \
 #            CAPTURE=./captures ./driver-start-ryzom_client.sh)"
 #
 #   # Reuse the tracked client, then stop it
@@ -718,12 +718,10 @@ reuse_client() {
 # Log monitoring
 # ---------------------------------------------------------------------------
 #
-# The dev build prints MODERNSHADOW lines every frame, so client.log rotates at
-# 5 MB into clientNNN.log (findNewFile picks the first free number).  In-game
-# detection therefore uses two signals:
-#   - MODERNSHADOW in the tail of the current log (fast path, dev builds);
-#   - initInGame after the last "Log Starting" across the current and rotated
-#     logs (works for every build, including after a rotation).
+# In-game detection scans the current client.log for "initInGame" after the
+# last "Log Starting".  Rotated logs (clientNNN.log, findNewFile order) are
+# included when the client has rotated during this session; the newer builds
+# only log a single line for the modern shadows, so rotation is rare.
 #
 # Rotated logs are ordered by mtime, oldest first.  For a fresh start only logs
 # touched after the launch are considered, so a previous session's initInGame
@@ -772,11 +770,7 @@ log_session_in_game() {
 }
 
 in_game_now() {
-	if [ -r "$LOG" ] && tail -n 400 "$LOG" 2>/dev/null | grep -a 'MODERNSHADOW' >/dev/null; then
-		return 0
-	fi
-	# The full scan can read several 5 MB rotated logs; do it at most every two
-	# seconds, the fast path above still runs on every poll.
+	# The full scan can read a few MB; do it at most every two seconds.
 	if [ $((SECONDS - LAST_FULL_SCAN)) -lt 2 ]; then
 		return 1
 	fi

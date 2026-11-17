@@ -59,7 +59,6 @@ class	CMaterial;
 class	IDriver;
 class CInstanceUser;
 class CVertexProgram;
-class IDriver;
 
 // ***************************************************************************
 // ClassIds.

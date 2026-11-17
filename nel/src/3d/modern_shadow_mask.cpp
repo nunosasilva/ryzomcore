@@ -24,18 +24,13 @@
 #include "nel/3d/texture_mem.h"
 #include "nel/3d/transform.h"
 #include "nel/misc/aabbox.h"
-#include "nel/misc/path.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
 
 using namespace NLMISC;
 
 namespace NL3D {
-
-uint32	NLModernShadowCasterTris = 0;
-uint32	NLModernShadowCasterMeshes = 0;
 
 // Cascade world half sizes (around the camera). The first cascade is the
 // readable one near the player; the second covers the visible mid distance.
@@ -68,8 +63,8 @@ void	lightSpaceAABBox(const CMatrix &worldToMask, const CAABBox &world,
 
 } // anonymous namespace
 
-CModernShadowMask::CModernShadowMask(CShadowMapManager *owner)
-	: _Owner(owner), _Size(NL_MODERN_SHADOW_SIZE), _Active(false), _NumCascades(0)
+CModernShadowMask::CModernShadowMask()
+	: _Size(NL_MODERN_SHADOW_SIZE), _Active(false), _NumCascades(0)
 {
 	for (uint i = 0; i < 2; ++i)
 	{
@@ -104,20 +99,7 @@ bool CModernShadowMask::isEnabled(CScene *scene) const
 		return false;
 
 	IDriver *driver = scene->getRenderTrav().getDriver();
-	if (!driver || !driver->supportsModernShadows())
-		return false;
-
-	// Development-only opt-in. The user-facing gate is the scene's Shadows
-	// flag (client cfg Shadows); this switch will be removed before merge.
-	static const bool devOptIn = getenv("NLVK_MODERN_SHADOWS") != NULL;
-	static bool logged = false;
-	if (!logged)
-	{
-		logged = true;
-		nlinfo("MODERNSHADOW enabled check: sceneShadows=%d driverSupport=%d env=%d",
-			(int)scene->getShadowsEnabled(), (int)driver->supportsModernShadows(), (int)devOptIn);
-	}
-	return devOptIn;
+	return driver && driver->supportsModernShadows();
 }
 
 bool CModernShadowMask::ensureMasks()
@@ -149,7 +131,15 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 {
 	if (!isEnabled(scene))
 	{
-		_Active = false;
+		// Publish the disabled state once, so turning the Shadows option off
+		// in game stops the shader from sampling the last rendered masks.
+		if (_Active)
+		{
+			_Active = false;
+			IDriver *driver = scene ? scene->getRenderTrav().getAuxDriver() : NULL;
+			if (driver)
+				driver->setModernShadowState(CModernShadowState());
+		}
 		return false;
 	}
 
@@ -175,16 +165,6 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 
 	_Active = false;
 
-	NLModernShadowCasterTris = 0;
-	NLModernShadowCasterMeshes = 0;
-
-	static uint lastLoggedCasters = 0xFFFFFFFFu;
-	if ((uint)casters.size() != lastLoggedCasters)
-	{
-		lastLoggedCasters = (uint)casters.size();
-		nlinfo("MODERNSHADOW casters now=%u size=%u", (unsigned)casters.size(), (unsigned)_Size);
-	}
-
 	CMaterial	&castMat = _CasterMaterial;
 	ITexture	*previousTarget = driver->getRenderTarget();
 	CViewport	bkupViewport;
@@ -201,15 +181,6 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	driver->setModernShadowState(CModernShadowState());
 
 	const CVector	sun = scene->getSunDirection();
-	// TEMP: the mask is only right for the sun direction it was built with.
-	{
-		static CVector lastSun(0.f, 0.f, 0.f);
-		if ((sun - lastSun).norm() > 0.02f)
-		{
-			lastSun = sun;
-			nlinfo("MODERNSHADOW sun now=(%.3f %.3f %.3f)", sun.x, sun.y, sun.z);
-		}
-	}
 	const CVector	camPos = scene->getRenderTrav().CamPos;
 
 	_NumCascades = 2;
@@ -308,31 +279,15 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// 1.5/255 of the fitted depth extent (see NL_MODERN_SHADOW_DEPTH_MARGIN
 		// above), so the tighter fit above also tightens the shadow contact.
 		_DepthBias[i] = 1.5f / 255.f;
-		if (i == 0)
-		{
-			static float lastLoggedSpan = -1.f;
-			if (fabsf(depthSpan - lastLoggedSpan) > 0.05f)
-			{
-				lastLoggedSpan = depthSpan;
-				nlinfo("MODERNSHADOW cascade 0 depth: span=%.3f of the box (%.1f m) bias=%.1f m",
-					depthSpan, boxSize.y * depthSpan, _DepthBias[0] * boxSize.y * depthSpan);
-			}
-		}
 
 		driver->setRenderTarget(_Mask[i], 0, 0, _Size, _Size);
 		CScissor	scissor;
 		scissor.initFullScreen();
 		driver->setupScissor(scissor);
-		// TEMP probe: fill cascade 0 with white and cascade 1 with black to
-		// tell "the mask is never written" from "the casters write nothing".
-		static const bool testFill = getenv("NLVK_SHADOW_TESTFILL") != NULL;
 		// Far (white) = no caster in this texel = lit. The caster draws blend
 		// with a MIN op, so they only ever replace it with a nearer depth.
 		driver->setColorMask(true, true, true, true);
-		if (testFill)
-			driver->clear2D(i == 0 ? CRGBA(255, 255, 255, 255) : CRGBA(0, 0, 0, 255));
-		else
-			driver->clear2D(CRGBA(255, 255, 255, 255));
+		driver->clear2D(CRGBA(255, 255, 255, 255));
 
 		driver->setModernShadowDepthPass(true);
 		for (uint c = 0; c < casters.size(); ++c)
@@ -369,55 +324,6 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		const float share = sunLum / std::max(1.f, sunLum + ambLum);
 		state.SunStrength = std::min(0.85f, std::max(0.25f, share));
 	}
-	// TEMP probe: publish no mask, so the shader binds the white fallback
-	// texture. With the coverage view on, the screen must turn white if the
-	// mask sampling path works at all.
-	if (getenv("NLVK_SHADOW_WHITE"))
-	{
-		state.Mask[0] = NULL;
-		state.Mask[1] = NULL;
-	}
-
-	// Development view toggles; see CModernShadowState::DebugMode.
-	state.FlipU = CFile::isExists("tmp/shadow_flipu");
-	state.FlipV = !CFile::isExists("tmp/shadow_noflipv");
-	if (CFile::isExists("tmp/shadow_cascades"))
-		state.DebugMode = 18;
-	else if (CFile::isExists("tmp/shadow_masklookup"))
-		state.DebugMode = 17;
-	else if (CFile::isExists("tmp/shadow_maskamp"))
-		state.DebugMode = 16;
-	else if (CFile::isExists("tmp/shadow_depthnum"))
-		state.DebugMode = 15;
-	else if (CFile::isExists("tmp/shadow_depthdiff"))
-		state.DebugMode = 12;
-	else if (CFile::isExists("tmp/shadow_depthprobe"))
-		state.DebugMode = 11;
-	else if (CFile::isExists("tmp/shadow_magprobe"))
-		state.DebugMode = 10;
-	else if (CFile::isExists("tmp/shadow_spaceprobe"))
-		state.DebugMode = 9;
-	else if (CFile::isExists("tmp/shadow_wprobe"))
-		state.DebugMode = 8;
-	else if (CFile::isExists("tmp/shadow_uvramp"))
-		state.DebugMode = 7;
-	else if (CFile::isExists("tmp/shadow_cross"))
-		state.DebugMode = 6;
-	else if (CFile::isExists("tmp/shadow_maskview"))
-		state.DebugMode = 4;
-	else if (CFile::isExists("tmp/shadow_magenta"))
-		state.DebugMode = 4;
-	else if (CFile::isExists("tmp/shadow_raw"))
-		state.DebugMode = 3;
-	else if (CFile::isExists("tmp/shadow_ubodbg"))
-		state.DebugMode = 2;
-	else if (CFile::isExists("tmp/shadow_debug"))
-		state.DebugMode = 1;
-	// Development A/B: ./tmp/shadow_off keeps the masks but does not darken
-	// anything, so the same view can be compared with and without shading
-	// without restarting the client.
-	if (CFile::isExists("tmp/shadow_off"))
-		state.SunStrength = 0.f;
 	for (uint i = 0; i < _NumCascades; ++i)
 	{
 		state.CascadeSplits[i] = _Split[i];
@@ -426,91 +332,20 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		state.TexelWorldSize[i] = 1.f / (float)_Size;
 		state.DepthBias[i] = _DepthBias[i];
 	}
-	// Development marker: the cascade 0 UV of a caster base that can be seen on
-	// screen (the largest registered caster, usually the tent at the camp). The
-	// shader draws a cross where it sees that UV, so the published matrix can be
-	// compared with the CPU's own projection of an object we can point at.
-	{
-		CAABBox best;
-		float bestArea = 0.f;
-		bool haveBest = false;
-		for (uint c = 0; c < casters.size(); ++c)
-		{
-			CAABBox bb;
-			if (!casters[c] || !casters[c]->computeWorldBBoxForShadow(bb))
-				continue;
-			const CVector sz = bb.getSize();
-			if (!(sz.x > 0.5f && sz.y > 0.5f && sz.z > 0.2f) ||
-				sz.x > 60.f || sz.y > 60.f || sz.z > 60.f)
-				continue;
-			// Only casters whose base lands inside cascade 0 make a marker we can
-			// actually see on screen.
-			CVector base = bb.getCenter();
-			base.z = bb.getMin().z;
-			const CVector baseUv = _WorldToMask[0] * base;
-			if (baseUv.x < 0.05f || baseUv.x > 0.95f || baseUv.y < 0.05f || baseUv.y > 0.95f)
-				continue;
-			const float area = sz.x * sz.y * sz.z;
-			if (area > bestArea)
-			{
-				bestArea = area;
-				best = bb;
-				haveBest = true;
-			}
-		}
-		CVector ahead = scene->getRenderTrav().CamPos;
-		if (haveBest)
-		{
-			ahead = best.getCenter();
-			ahead.z = best.getMin().z;
-			const CVector bsz = best.getSize();
-			nlinfo("MODERNSHADOW marker caster: base=(%.1f %.1f %.1f) size=(%.1f %.1f %.1f)",
-				ahead.x, ahead.y, ahead.z, bsz.x, bsz.y, bsz.z);
-		}
-		const CVector uv = _WorldToMask[0] * ahead;
-		// The shader flips V (the negative-height viewport of the mask pass),
-		// so compare against the flipped value.
-		state.Screen[2] = uv.x;
-		state.Screen[3] = 1.f - uv.y;
-		static bool logged = false;
-		if (!logged)
-		{
-			logged = true;
-			nlinfo("MODERNSHADOW w2m: |I|=%.5f |J|=%.5f |K|=%.5f camPosUV=(%.3f %.3f) casterBaseUV=(%.3f %.3f) at=(%.1f %.1f %.1f)",
-				_WorldToMask[0].getI().norm(), _WorldToMask[0].getJ().norm(), _WorldToMask[0].getK().norm(),
-				_WorldToMask[0].get() ? (_WorldToMask[0] * scene->getRenderTrav().CamPos).x : 0.f,
-				(_WorldToMask[0] * scene->getRenderTrav().CamPos).y, uv.x, uv.y,
-				ahead.x, ahead.y, ahead.z);
-		}
-	}
 	driver->setModernShadowState(state);
-	static uint32 lastLoggedTris = 0xFFFFFFFFu;
-	if (NLModernShadowCasterTris != lastLoggedTris)
+
+	// One line when the modern path first runs, so a support log shows which
+	// shadow implementation produced the frame. Nothing is logged per frame.
+	static bool logged = false;
+	if (!logged)
 	{
-		lastLoggedTris = NLModernShadowCasterTris;
-		const CVector uv0 = _WorldToMask[0] * camPos;
-		const CVector uv1 = _WorldToMask[1] * camPos;
-		nlinfo("MODERNSHADOW pass: meshes=%u tris=%u camUV=(%.3f %.3f) / (%.3f %.3f) sun=(%.2f %.2f %.2f)",
-			NLModernShadowCasterMeshes, NLModernShadowCasterTris,
-			uv0.x, uv0.y, uv1.x, uv1.y, sun.x, sun.y, sun.z);
-	}
-	static bool loggedState = false;
-	if (!loggedState)
-	{
-		loggedState = true;
-		nlinfo("MODERNSHADOW state published: enabled=1 cascades=%u split0=%.1f texel=%.4f masks=%p,%p",
-			(unsigned)state.NumCascades, state.CascadeSplits[0], state.TexelWorldSize[0],
-			(void*)state.Mask[0], (void*)state.Mask[1]);
+		logged = true;
+		nlinfo("MODERNSHADOW: modern sun shadows on: %u cascades, %ux%u masks, split %.1f m, sun=(%.2f %.2f %.2f)",
+			(unsigned)state.NumCascades, _Size, _Size, state.CascadeSplits[0], sun.x, sun.y, sun.z);
 	}
 
 	_Active = true;
 	return true;
-}
-
-bool CModernShadowMask::apply(CScene *scene)
-{
-	(void)scene;
-	return _Active;
 }
 
 void CModernShadowMask::releaseMasks()

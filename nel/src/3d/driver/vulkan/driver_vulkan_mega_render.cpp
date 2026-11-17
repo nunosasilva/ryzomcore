@@ -989,23 +989,9 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		shadowData.params[0] = 1.f;
 		shadowData.params[1] = _ModernShadowState.TexelWorldSize[0];
 		shadowData.params[2] = _ModernShadowState.SunStrength;
-		shadowData.params[3] = (float)_ModernShadowState.DebugMode;
 		memcpy(shadowData.worldToMask0, _ModernShadowState.WorldToMask[0], sizeof(shadowData.worldToMask0));
 		memcpy(shadowData.worldToMask1, _ModernShadowState.WorldToMask[1], sizeof(shadowData.worldToMask1));
 		shadowData.splits[0] = _ModernShadowState.CascadeSplits[0];
-		// splits.z is unused by the cascade selection; the development U flip
-		// probe reads it (see megavkPPGenerate).
-		shadowData.splits[2] = _ModernShadowState.FlipU ? 1.f : 0.f;
-		shadowData.splits[3] = _ModernShadowState.FlipV ? 1.f : 0.f;
-		uint32 screenW = 0, screenH = 0;
-		getRenderTargetSize(screenW, screenH);
-		if (screenW && screenH)
-		{
-			shadowData.screen[0] = 1.f / (float)screenW;
-			shadowData.screen[1] = 1.f / (float)screenH;
-		}
-		shadowData.screen[2] = _ModernShadowState.Screen[2];
-		shadowData.screen[3] = _ModernShadowState.Screen[3];
 		shadowData.depthBias[0] = _ModernShadowState.DepthBias[0];
 		shadowData.depthBias[1] = _ModernShadowState.DepthBias[1];
 	}
@@ -1147,21 +1133,6 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		shadowMaskInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		shadowMaskInfos[i].imageView = maskTex ? maskTex->View : getWhiteTexture();
 		shadowMaskInfos[i].sampler = maskTex ? maskTex->Sampler : _WhiteTexture.Sampler;
-	}
-	// TEMP: what the mask descriptors actually point at.
-	{
-		static bool logged = false;
-		if (!logged && _ModernShadowState.Enabled && _ModernShadowState.Mask[0])
-		{
-			logged = true;
-			CTextureVulkan *m0 = getTextureVulkan(*_ModernShadowState.Mask[0]);
-			nlinfo("MODERNSHADOW desc: tex=%p image=%p view=%p sampler=%p %ux%u layout=%d fmt=%d uploaded=%d",
-				(void *)_ModernShadowState.Mask[0], m0 ? (void *)m0->Image : NULL,
-				m0 ? (void *)m0->View : NULL, m0 ? (void *)m0->Sampler : NULL,
-				m0 ? m0->Width : 0, m0 ? m0->Height : 0,
-				m0 ? (int)m0->Layout : -1, m0 ? (int)m0->Format : -1,
-				m0 ? (int)m0->Uploaded : -1);
-		}
 	}
 
 	VkDescriptorSet descriptorSet = allocDescriptorSet(_MegaDescriptorSetLayout);

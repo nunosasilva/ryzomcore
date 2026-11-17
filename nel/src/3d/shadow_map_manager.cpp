@@ -56,7 +56,6 @@ static inline float	easeInEaseOut(float x)
 
 // ***************************************************************************
 CShadowMapManager::CShadowMapManager()
-	: _ModernShadow(this)
 {
 	uint	i;
 
