@@ -61,9 +61,12 @@ struct CModernShadowState
 	/// CModernShadowMask::render): 1 paints the sun coverage (black = lit,
 	/// white = shadowed), 2 paints the cascade block read by the shader.
 	uint			DebugMode;
+	/// Development probe: mirror the mask lookup along U, to find the mask's
+	/// handedness on this driver.
+	bool			FlipU;
 
 	CModernShadowState()
-		: Enabled(false), NumCascades(0), SunStrength(0.f), DebugMode(0)
+		: Enabled(false), NumCascades(0), SunStrength(0.f), DebugMode(0), FlipU(false)
 	{
 		for (uint i = 0; i < 4; ++i)
 		{

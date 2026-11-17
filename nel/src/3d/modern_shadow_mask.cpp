@@ -183,6 +183,28 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	driver->setModernShadowState(CModernShadowState());
 
 	const CVector	sun = scene->getSunDirection();
+	// TEMP: which space is the driver working in?
+	{
+		static bool logged = false;
+		if (!logged)
+		{
+			logged = true;
+			const CMatrix view = driver->getViewMatrix();
+			const CVector vt = view.getPos();
+			const CVector cp = scene->getRenderTrav().CamPos;
+			nlinfo("MODERNSHADOW space: camPos=(%.2f %.2f %.2f) viewT=(%.2f %.2f %.2f)",
+				cp.x, cp.y, cp.z, vt.x, vt.y, vt.z);
+		}
+	}
+	// TEMP: the mask is only right for the sun direction it was built with.
+	{
+		static CVector lastSun(0.f, 0.f, 0.f);
+		if ((sun - lastSun).norm() > 0.02f)
+		{
+			lastSun = sun;
+			nlinfo("MODERNSHADOW sun now=(%.3f %.3f %.3f)", sun.x, sun.y, sun.z);
+		}
+	}
 	const CVector	camPos = scene->getRenderTrav().CamPos;
 
 	_NumCascades = 2;
@@ -268,6 +290,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	}
 
 	// Development view toggles; see CModernShadowState::DebugMode.
+	state.FlipU = CFile::isExists("tmp/shadow_flipu");
 	if (CFile::isExists("tmp/shadow_magenta"))
 		state.DebugMode = 4;
 	else if (CFile::isExists("tmp/shadow_raw"))

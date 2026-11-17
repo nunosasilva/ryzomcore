@@ -890,7 +890,12 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "    float sunDist = length(shadowWsPos - cameraWorldPos);" << std::endl;
 		ss << "    vec4 sunP = (sunDist < nlShadow.splits.x) ? (nlShadow.worldToMask0 * vec4(shadowWsPos, 1.0)) : (nlShadow.worldToMask1 * vec4(shadowWsPos, 1.0));" << std::endl;
 		ss << "    vec2 sunUv = sunP.xy;" << std::endl;
-		ss << "    sunUv.y = 1.0 - sunUv.y;" << std::endl;
+		// The masks are render targets: their row 0 is the top of the light
+		// camera image, while the cascade matrix maps the bottom of the light
+		// box to v = 0.
+		ss << "    if (nlShadow.splits.z > 0.5) sunUv.x = 1.0 - sunUv.x;" << std::endl;
+		if (!getenv("NLVK_SHADOW_NOFLIP"))
+			ss << "    sunUv.y = 1.0 - sunUv.y;" << std::endl;
 		ss << "    nlSunUv = sunUv;" << std::endl;
 		ss << "    if (sunDist < nlShadow.splits.x)" << std::endl;
 		ss << "      nlSunShadow = sampleSunMask(nlShadowMask0, sunUv, nlShadow.params.y);" << std::endl;
