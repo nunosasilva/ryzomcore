@@ -53,12 +53,19 @@ static const float	NL_MODERN_SHADOW_CASTER_OFFSET = 0.01f;
 /// depth is bilinearly filtered, so the comparison needs a little slack; half
 /// a texel is enough now that the stored depth itself is exact.
 static const float	NL_MODERN_SHADOW_BIAS_TEXELS = 0.5f;
-/// Penumbra width, in mask texels. The depth comparison alone has a hard
-/// edge at the receiver's own tolerance, which reads as a staircase along the
-/// mask lattice at close range; stretching the smoothstep over several texels
-/// makes the contact shadow diffuse. Only the softness grows: the bias above
-/// stays at half a texel, so the shadow stays attached at the base.
-static const float	NL_MODERN_SHADOW_SOFTNESS_TEXELS = 4.f;
+/// Penumbra width, in mask texels. The depth comparison alone has a hard edge
+/// at the receiver's own tolerance, which reads as a staircase along the mask
+/// lattice at close range; stretching the smoothstep over several texels makes
+/// the shadow diffuse. Only the softness grows: the bias above stays at half a
+/// texel, so the shadow stays attached at the base.
+///
+/// Chosen from an A/B at the Loria camp (the hitching rail's beam and its
+/// posts, the Mektoub's legs, same camera/hour): 4 leaves the edge crisp, 8 is
+/// hazier but washes the *thin* shadows out (the rail's band and a post's
+/// shadow lose most of their contrast), 6 is visibly softer than 4 while a
+/// thin caster still reads and the contact stays attached. Raise this one
+/// number for an even softer look (the strength and the bias are separate).
+static const float	NL_MODERN_SHADOW_SOFTNESS_TEXELS = 6.f;
 /// Largest change of the published sun share per frame. The share comes from
 /// the light cycle's sun and ambient colours (weather + day cycle). If those
 /// colours step - a weather change, or a frame where they are not settled yet
@@ -142,10 +149,14 @@ CModernShadowMask::CModernShadowMask()
 	_CasterMaterial.setColor(CRGBA::White);
 	_CasterMaterial.setZWrite(false);
 	_CasterMaterial.setZFunc(CMaterial::always);
-	// The casters are drawn as they are, without culling: several Ryzom shapes
-	// are single-layer shells whose only faces point away from the light, and
-	// culling them would leave the mask empty.
-	_CasterMaterial.setDoubleSided(true);
+	// The mask keeps only the *back* faces of a closed caster (the driver culls
+	// front faces while the shadow depth pass is on), so the caster's lit side
+	// is not in the mask and cannot shadow itself: that is what draws the dark
+	// bands on a face or a fence beam that is nearly parallel to the light.
+	// Setting this material double sided keeps both faces, which a caster with
+	// a single-layer shell needs (CInstance::renderModernShadowCaster restores
+	// it per instance from the shape's own materials).
+	_CasterMaterial.setDoubleSided(false);
 	// The mask stores a depth, not a coverage: while the depth pass is on the
 	// driver ignores these blend factors and blends with MIN, which is what
 	// keeps the nearest caster per texel. They are kept as the plain

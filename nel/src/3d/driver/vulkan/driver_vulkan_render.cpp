@@ -2574,7 +2574,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	key.DepthTest = _DepthTestEnabled ? 1 : 0;
 	key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 	key.DepthCompare = _DepthFunc;
-	key.CullMode = noCullEnabled() ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
+	key.CullMode = noCullEnabled() ? VK_CULL_MODE_NONE : modernShadowCullMode();
 	key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	key.ColorWriteMask = _ClearColorMask;
 	key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
@@ -2649,7 +2649,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	key.DepthTest = _DepthTestEnabled ? 1 : 0;
 	key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 	key.DepthCompare = _DepthFunc;
-	key.CullMode = noCullEnabled() ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
+	key.CullMode = noCullEnabled() ? VK_CULL_MODE_NONE : modernShadowCullMode();
 	key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	key.ColorWriteMask = _ClearColorMask;
 	key.AlphaTest = _MaterialAlphaTest ? 1 : 0;
@@ -2888,7 +2888,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 			key.DepthTest = _DepthTestEnabled ? 1 : 0;
 			key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 			key.DepthCompare = _DepthFunc;
-			key.CullMode = noCullEnabled() ? VK_CULL_MODE_NONE : (_MaterialTwoSided ? VK_CULL_MODE_NONE : (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT));
+			key.CullMode = noCullEnabled() ? VK_CULL_MODE_NONE : modernShadowCullMode();
 			key.FrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 			key.ColorWriteMask = _ClearColorMask;
 			key.AlphaTest = _MaterialAlphaTest ? 1 : 0;

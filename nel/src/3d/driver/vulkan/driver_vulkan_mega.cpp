@@ -846,9 +846,20 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "  vec2 o2 = vec2(-o.y, o.x);" << std::endl;
 		ss << "  float stored = 0.25 * (texture(smap, uv + o).r + texture(smap, uv - o).r" << std::endl;
 		ss << "                       + texture(smap, uv + o2).r + texture(smap, uv - o2).r);" << std::endl;
+		// Receiver tolerance: the floor (bias) covers the mask's quantisation,
+		// and the slope term covers a surface nearly parallel to the light,
+		// where one mask texel spans a large depth range. There the receiver's
+		// own depth exceeds the texel's stored minimum by much more than a
+		// constant tolerance and the surface shadows itself - the dark bands
+		// across a face or a fence beam. The slope is measured per *texel* (the
+		// depth change over the UV covered by one texel), so the tolerance is
+		// independent of the screen resolution; on a surface facing the light
+		// it stays at the floor, which is what keeps the contact attached.
+		ss << "  float depthPerTexel = fwidth(depth) * texel / max(max(fwidth(uv).x, fwidth(uv).y), 1e-7);" << std::endl;
+		ss << "  float tol = max(bias, depthPerTexel);" << std::endl;
 		// max(): a disabled/zero state must not turn smoothstep's edge0==edge1
 		// into a division by zero.
-		ss << "  return smoothstep(stored + bias, stored + bias + max(softness, 1e-6), depth);" << std::endl;
+		ss << "  return smoothstep(stored + tol, stored + tol + max(softness, 1e-6), depth);" << std::endl;
 		ss << "}" << std::endl;
 		ss << std::endl;
 		ss << "void computeLightPP(int lightMode, vec3 dirOrPos, vec4 colDiff, vec4 colSpec," << std::endl;

@@ -290,10 +290,30 @@ void		CMeshInstance::generateShadowMap(const CVector &lightDir)
 }
 
 // ***************************************************************************
+/// True when the shape's own materials render both faces, which is how Ryzom
+/// marks a single-layer shell (a canvas, a leaf card). The modern shadow mask
+/// culls the caster's front faces so its lit side cannot shadow itself; such a
+/// shell has only one face, so culling it would remove the caster entirely and
+/// it has to keep both.
+static bool	shadowCasterNeedsBothFaces(const CMeshBaseInstance &inst)
+{
+	for (uint i = 0; i < inst.Materials.size(); ++i)
+	{
+		if (inst.Materials[i].getDoubleSided())
+			return true;
+	}
+	return false;
+}
+
+// ***************************************************************************
 void		CMeshInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat)
 {
 	if (!Shape)
 		return;
+
+	// Per caster: the mask pass culls the front faces (see CModernShadowMask)
+	// unless this shape is a single-layer shell.
+	castMat.setDoubleSided(shadowCasterNeedsBothFaces(*this));
 
 	// The cascade camera is world -> [0,1]^3; the mesh vertices are local, so
 	// the world matrix brings them into the same space as the receiver.
@@ -402,6 +422,9 @@ void	CMeshInstance::renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, CM
 		localPosMatrix.setPos( getWorldMatrix().getPos() - rootSkeleton->getWorldMatrix().getPos() );
 	}
 	driver->setupModelMatrix(localPosMatrix);
+
+	// Same per-caster culling choice as renderModernShadowCaster().
+	castMat.setDoubleSided(shadowCasterNeedsBothFaces(*this));
 
 	// render the Mesh
 	CMesh	*mesh= (CMesh*)(IShape*)Shape;
