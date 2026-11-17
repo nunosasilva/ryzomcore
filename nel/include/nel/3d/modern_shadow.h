@@ -64,9 +64,13 @@ struct CModernShadowState
 	/// Development probe: mirror the mask lookup along U, to find the mask's
 	/// handedness on this driver.
 	bool			FlipU;
+	/// Mask row 0 is the top of the light image while the cascade matrix maps
+	/// the bottom of the light box to v = 0, so the lookup flips V. Kept as a
+	/// runtime toggle for the development A/B.
+	bool			FlipV;
 
 	CModernShadowState()
-		: Enabled(false), NumCascades(0), SunStrength(0.f), DebugMode(0), FlipU(false)
+		: Enabled(false), NumCascades(0), SunStrength(0.f), DebugMode(0), FlipU(false), FlipV(true)
 	{
 		for (uint i = 0; i < 4; ++i)
 		{

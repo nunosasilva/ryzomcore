@@ -995,6 +995,7 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		// splits.z is unused by the cascade selection; the development U flip
 		// probe reads it (see megavkPPGenerate).
 		shadowData.splits[2] = _ModernShadowState.FlipU ? 1.f : 0.f;
+		shadowData.splits[3] = _ModernShadowState.FlipV ? 1.f : 0.f;
 	}
 
 	const uint32 cameraOffset = allocUniformBlock(&cameraData, sizeof(cameraData));

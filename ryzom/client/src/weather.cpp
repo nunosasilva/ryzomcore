@@ -22,6 +22,8 @@
 
 
 #include "stdpch.h"
+
+#include <cstdlib>
 #include "light_cycle_manager.h"
 #include "weather_manager_client.h"
 #include "game_share/light_cycle.h"
@@ -55,7 +57,21 @@ float               ManualWeatherValue = 0.f;
 EGSPD::CSeason::TSeason	ManualSeasonValue = EGSPD::CSeason::Spring;
 bool                ForceTrueWeatherValue = false;
 float				DayNightCycleHour = 12.f;
-float				ForcedDayNightCycleHour = -1.0f;
+
+/// Development and screenshot hook: RYZOM_FORCE_LIGHT_HOUR=<hour> pins the
+/// light cycle hour at startup, exactly like /setLightHour. Automated visual
+/// tests need the same light in every run, and the chat command cannot be
+/// scripted reliably.
+static float initForcedDayNightCycleHour()
+{
+	const char *env = getenv("RYZOM_FORCE_LIGHT_HOUR");
+	if (!env || !*env)
+		return -1.0f;
+	const float hour = (float)atof(env);
+	return hour >= 0.f ? hour : -1.0f;
+}
+
+float				ForcedDayNightCycleHour = initForcedDayNightCycleHour();
 
 EGSPD::CSeason::TSeason CurrSeason = EGSPD::CSeason::Invalid;
 EGSPD::CSeason::TSeason StartupSeason = EGSPD::CSeason::Invalid;
