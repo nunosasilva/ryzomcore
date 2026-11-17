@@ -23,6 +23,9 @@
 #include "nel/3d/scene.h"
 #include "nel/3d/gpu_skin_vp.h"
 #include <list>
+#include <set>
+#include <cstdio>
+#include <cstdlib>
 
 using namespace std;
 using namespace NLMISC;
@@ -300,7 +303,23 @@ static bool	shadowCasterNeedsBothFaces(const CMeshBaseInstance &inst)
 	for (uint i = 0; i < inst.Materials.size(); ++i)
 	{
 		if (inst.Materials[i].getDoubleSided())
+		{
+			// TEMP diagnosis (NLVK_SHADOW_DEBUG): one line per shape that
+			// keeps both faces in the mask, with the material that asks for it.
+			if (getenv("NLVK_SHADOW_DEBUG") != NULL)
+			{
+				static std::set<const void *> seen;
+				const void *key = (const void *)inst.Shape;
+				if (seen.insert(key).second)
+				{
+					char extra[160];
+					snprintf(extra, sizeof(extra), "shape=%p mat=%u/%u", key, i,
+						(unsigned)inst.Materials.size());
+					modernShadowDebugLog("cull", "bothfaces", NULL, NULL, NULL, 0, NULL, extra);
+				}
+			}
 			return true;
+		}
 	}
 	return false;
 }
@@ -312,8 +331,10 @@ void		CMeshInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMa
 		return;
 
 	// Per caster: the mask pass culls the front faces (see CModernShadowMask)
-	// unless this shape is a single-layer shell.
+	// unless this shape is a single-layer shell, and the id pass stamps this
+	// object's id so it never shadows itself.
 	castMat.setDoubleSided(shadowCasterNeedsBothFaces(*this));
+	driver->setModernShadowObjectId(getModernShadowId());
 
 	// The cascade camera is world -> [0,1]^3; the mesh vertices are local, so
 	// the world matrix brings them into the same space as the receiver.
@@ -423,8 +444,9 @@ void	CMeshInstance::renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, CM
 	}
 	driver->setupModelMatrix(localPosMatrix);
 
-	// Same per-caster culling choice as renderModernShadowCaster().
+	// Same per-caster culling choice and id as renderModernShadowCaster().
 	castMat.setDoubleSided(shadowCasterNeedsBothFaces(*this));
+	driver->setModernShadowObjectId(getModernShadowId());
 
 	// render the Mesh
 	CMesh	*mesh= (CMesh*)(IShape*)Shape;

@@ -182,7 +182,7 @@ bool CDriverVulkan::initMega()
 {
 	// Descriptor set layout. Binding 7 stays unused so the sampler block starts
 	// at the same index as the GL3 sampler numbering.
-	VkDescriptorSetLayoutBinding bindings[18];
+	VkDescriptorSetLayoutBinding bindings[20];
 	memset(bindings, 0, sizeof(bindings));
 	uint count = 0;
 	for (uint i = 0; i < 4; ++i)
@@ -218,6 +218,16 @@ bool CDriverVulkan::initMega()
 	for (uint i = 0; i < 2; ++i)
 	{
 		bindings[count].binding = NL_VK_MEGA_BINDING_SHADOW_MASK0 + i;
+		bindings[count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		bindings[count].descriptorCount = 1;
+		bindings[count].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		++count;
+	}
+	// Caster ids of the same texels (nearest): the receiver skips its own
+	// object's depth with them.
+	for (uint i = 0; i < 2; ++i)
+	{
+		bindings[count].binding = NL_VK_MEGA_BINDING_SHADOW_ID0 + i;
 		bindings[count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		bindings[count].descriptorCount = 1;
 		bindings[count].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -751,7 +761,7 @@ void CDriverVulkan::stageMegaMaterialUBO(CMaterial &mat, CMaterialUBOData &data)
 	data.nlShader = (sint32)shader;
 	data.nlAlphaTest = (mat.getFlags() & IDRV_MAT_ALPHA_TEST) ? 1 : 0;
 	data.nlLightMapScale = 1.f;
-	data.nlShadowDepthPass = _ModernShadowDepthPass ? 1 : 0;
+	data.nlShadowDepthPass = _ModernShadowDepthPass ? (_ModernShadowIdPass ? 2 : 1) : 0;
 
 	uint32 textureActive = 0;
 	for (uint stage = 0; stage < IDRV_MAT_MAXTEXTURES; ++stage)
@@ -992,6 +1002,9 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		// One mask texel in UV: the penumbra taps are offset by it.
 		shadowData.params[1] = _ModernShadowState.MaskTexelUv;
 		shadowData.params[2] = _ModernShadowState.SunStrength;
+		// The object being drawn: the id pass writes it, the receiver compares
+		// it against the id mask (0 = none, never matching a live object).
+		shadowData.objectId = (float)_ModernShadowObjectId;
 		memcpy(shadowData.worldToMask0, _ModernShadowState.WorldToMask[0], sizeof(shadowData.worldToMask0));
 		memcpy(shadowData.worldToMask1, _ModernShadowState.WorldToMask[1], sizeof(shadowData.worldToMask1));
 		shadowData.splits[0] = _ModernShadowState.CascadeSplits[0];
@@ -1132,12 +1145,26 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	VkDescriptorImageInfo shadowMaskInfos[2];
 	for (uint i = 0; i < 2; ++i)
 	{
+		// Mask[i] is non-null while the mask pass itself runs (the id pass
+		// samples the depth mask it just wrote), so bind it regardless of
+		// Enabled; the shader only samples these when its pass or the shadow
+		// state asks for them.
 		CTextureVulkan *maskTex = NULL;
-		if (_ModernShadowState.Enabled && _ModernShadowState.Mask[i])
+		if (_ModernShadowState.Mask[i])
 			maskTex = getTextureVulkan(*_ModernShadowState.Mask[i]);
 		shadowMaskInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		shadowMaskInfos[i].imageView = maskTex ? maskTex->View : getWhiteTexture();
 		shadowMaskInfos[i].sampler = maskTex ? maskTex->Sampler : _WhiteTexture.Sampler;
+	}
+	VkDescriptorImageInfo shadowIdInfos[2];
+	for (uint i = 0; i < 2; ++i)
+	{
+		CTextureVulkan *idTex = NULL;
+		if (_ModernShadowState.IdMask[i])
+			idTex = getTextureVulkan(*_ModernShadowState.IdMask[i]);
+		shadowIdInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		shadowIdInfos[i].imageView = idTex ? idTex->View : getWhiteTexture();
+		shadowIdInfos[i].sampler = idTex ? idTex->Sampler : _WhiteTexture.Sampler;
 	}
 
 	VkDescriptorSet descriptorSet = allocDescriptorSet(_MegaDescriptorSetLayout);
@@ -1146,7 +1173,7 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	if (_StatsEnabled)
 		++_StatsDescriptorSets;
 
-	VkWriteDescriptorSet writes[18];
+	VkWriteDescriptorSet writes[20];
 	memset(writes, 0, sizeof(writes));
 	uint writeCount = 0;
 	for (uint i = 0; i < 8; ++i)
@@ -1177,6 +1204,16 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		writes[writeCount].descriptorCount = 1;
 		writes[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		writes[writeCount].pImageInfo = &shadowMaskInfos[i];
+		++writeCount;
+	}
+	for (uint i = 0; i < 2; ++i)
+	{
+		writes[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[writeCount].dstSet = descriptorSet;
+		writes[writeCount].dstBinding = NL_VK_MEGA_BINDING_SHADOW_ID0 + i;
+		writes[writeCount].descriptorCount = 1;
+		writes[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writes[writeCount].pImageInfo = &shadowIdInfos[i];
 		++writeCount;
 	}
 	if (_StatsEnabled)

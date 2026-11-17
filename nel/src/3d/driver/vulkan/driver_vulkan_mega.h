@@ -60,6 +60,10 @@ const uint NL_VK_MEGA_SAMPLER_COUNT = NL3D::IDRV_PROGRAM_MAXSAMPLERS; // 8
 const uint NL_VK_MEGA_BINDING_SHADOW = 7;
 const uint NL_VK_MEGA_BINDING_SHADOW_MASK0 = 16;
 const uint NL_VK_MEGA_BINDING_SHADOW_MASK1 = 17;
+/// Caster-id masks (R32F, nearest): the object that wrote the depth mask's
+/// texel, so a receiver can skip its own object's depth.
+const uint NL_VK_MEGA_BINDING_SHADOW_ID0 = 18;
+const uint NL_VK_MEGA_BINDING_SHADOW_ID1 = 19;
 const uint NL_VK_MEGA_MAX_LIGHT_TABLE = 128;
 // Same upper bound as the GL3 driver's NL3D_DRV_MAX_LIGHTMAP.
 const uint NL_VK_MAX_LIGHTMAP = 256;
@@ -183,8 +187,12 @@ struct CShadowUBOData
 	/// normalized light-space depth (x = cascade 0, y = cascade 1).
 	float depthBias[4];     // 16
 	float depthSoft[4];     // 16
+	/// Id of the object being drawn (0 = none): the id pass writes it, the
+	/// receiver compares it against the id mask.
+	float objectId;         // 4
+	float pad[3];
 };
-nlctassert(sizeof(CShadowUBOData) == 192);
+nlctassert(sizeof(CShadowUBOData) == 208);
 
 // GLSL headers prepended to the generated mega programs.
 std::string buildVulkanLightTableHeader(sint maxLights);

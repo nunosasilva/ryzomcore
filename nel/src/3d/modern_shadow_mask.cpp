@@ -23,6 +23,7 @@
 #include "nel/3d/shadow_map_manager.h"
 #include "nel/3d/texture_mem.h"
 #include "nel/3d/transform.h"
+#include "nel/3d/skeleton_model.h"
 #include "nel/misc/aabbox.h"
 
 #include <algorithm>
@@ -224,6 +225,22 @@ bool CModernShadowMask::ensureMasks(bool highPrecision)
 		// false, and the bias below stays at the old 8-bit value.
 		tex->setFloatRenderTarget(highPrecision);
 		_Mask[i] = tex;
+
+		// Caster-id mask: same size and format, but sampled with *nearest*
+		// filtering because a texel holds one integer id, and cleared to 0
+		// ("no caster") instead of white.
+		const uint32 idBytes = 4 * _Size * _Size;
+		uint8 *idMem = new uint8[idBytes];
+		memset(idMem, 0, idBytes);
+		CTextureMem *idTex = new CTextureMem(idMem, idBytes, true, false, _Size, _Size);
+		idTex->setWrapS(ITexture::Clamp);
+		idTex->setWrapT(ITexture::Clamp);
+		idTex->setFilterMode(ITexture::Nearest, ITexture::NearestMipMapOff);
+		idTex->generate();
+		idTex->setReleasable(false);
+		idTex->setRenderTarget(true);
+		idTex->setFloatRenderTarget(highPrecision);
+		_IdMask[i] = idTex;
 	}
 	return true;
 }
@@ -292,8 +309,13 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// The casters are drawn with the same mega shader as everything else. Turn
 	// the shadow state off for the duration of the pass: the mask textures are
 	// the render targets here, and a shader must never sample the image it is
-	// writing. It would also darken the casters themselves.
-	driver->setModernShadowState(CModernShadowState());
+	// writing. It would also darken the casters themselves. The mask texel
+	// size is still published because the id pass needs it.
+	{
+		CModernShadowState	disabled;
+		disabled.MaskTexelUv = 1.f / (float)_Size;
+		driver->setModernShadowState(disabled);
+	}
 
 	const CVector	sun = scene->getSunDirection();
 	const CVector	camPos = scene->getRenderTrav().CamPos;
@@ -468,6 +490,34 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 				casters[c]->renderModernShadowCaster(driver, casterMatrix, castMat);
 		}
 		driver->setModernShadowDepthPass(false);
+
+		// Second pass: stamp the caster id of whoever wrote the depth mask, so
+		// a receiver can skip its own object's depth (an object must not
+		// shadow itself, and a character's layered parts must not band its
+		// body). Only the skinned casters take part: the static meshes are
+		// already clean through the back-face-only depth mask above, and they
+		// cannot shadow themselves across parts.
+		driver->setRenderTarget(_IdMask[i], 0, 0, _Size, _Size);
+		driver->clear2D(CRGBA(0, 0, 0, 0));
+		{
+			// The pass samples the depth mask it just wrote, so publish a state
+			// that carries the mask and the texel size with sampling disabled.
+			CModernShadowState	idState;
+			idState.Enabled = false;
+			idState.MaskTexelUv = 1.f / (float)_Size;
+			idState.Mask[0] = _Mask[i];
+			idState.Mask[1] = _Mask[i];
+			driver->setModernShadowState(idState);
+		}
+		driver->setModernShadowDepthPass(true);
+		driver->setModernShadowIdPass(true);
+		for (uint c = 0; c < casters.size(); ++c)
+		{
+			if (casters[c] && dynamic_cast<CSkeletonModel *>(casters[c]))
+				casters[c]->renderModernShadowCaster(driver, casterMatrix, castMat);
+		}
+		driver->setModernShadowIdPass(false);
+		driver->setModernShadowDepthPass(false);
 	}
 
 	driver->setRenderTarget(previousTarget);
@@ -516,6 +566,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		state.CascadeSplits[i] = _Split[i];
 		memcpy(state.WorldToMask[i], _WorldToMask[i].get(), sizeof(state.WorldToMask[i]));
 		state.Mask[i] = _Mask[i];
+		state.IdMask[i] = _IdMask[i];
 		state.DepthBias[i] = _DepthBias[i];
 		state.DepthSoftness[i] = _DepthSoftness[i];
 	}
@@ -548,7 +599,10 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 void CModernShadowMask::releaseMasks()
 {
 	for (uint i = 0; i < 2; ++i)
+	{
 		_Mask[i] = NULL;
+		_IdMask[i] = NULL;
+	}
 }
 
 } // NL3D

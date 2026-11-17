@@ -172,6 +172,13 @@ void	CTransformShape::traverseRender()
 {
 	H_AUTO( NL3D_TrShape_Render );
 
+	// Tell the driver which object the next draws belong to. The modern sun
+	// shadow lookup skips the depth of the receiver's own object (see
+	// CModernShadowState::IdMask), which is what removes an object's
+	// self-shadowing.
+	if(getOwnerScene() != nullptr)
+		getOwnerScene()->getRenderTrav().getDriver()->setModernShadowObjectId(getModernShadowId());
+
 
 	// Compute the current lighting setup for this instance
 	//===================

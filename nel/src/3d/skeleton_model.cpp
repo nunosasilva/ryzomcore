@@ -2169,6 +2169,9 @@ void		CSkeletonModel::renderModernShadowCaster(IDriver *driver, const NLMISC::CM
 	// world to [0,1]^3 and the skinned vertices are rendered in world space.
 	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
 	driver->setupViewMatrix(cameraMatrix.inverted());
+	// One id for the whole character: the id pass stamps it and the body's
+	// parts share it, so no part shadows another part of the same body.
+	driver->setModernShadowObjectId(getModernShadowId());
 	renderIntoSkeletonShadowMap(this, castMat, true);
 }
 

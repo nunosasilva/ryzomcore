@@ -1043,6 +1043,15 @@ public:
 	  */
 	virtual void			setModernShadowDepthPass(bool /* enabled */) {}
 
+	/** Second modern shadow pass: stamp the caster id where the depth pass
+	 *	kept this draw's depth (see CModernShadowState::IdMask).
+	 */
+	virtual void			setModernShadowIdPass(bool /* enabled */) {}
+	/** Id of the object being drawn, for both the id stamp and the receiver's
+	 *	self-shadow test (0 = none).
+	 */
+	virtual void			setModernShadowObjectId(uint32 /* id */) {}
+
 	/** True when the modern shadow state the driver samples is enabled.
 	 *	Used by the debug trace (NLVK_SHADOW_DEBUG) to catch a state that a
 	 *	nested pass overwrote while the opaque pass was still drawing.

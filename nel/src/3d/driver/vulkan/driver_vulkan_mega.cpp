@@ -711,9 +711,15 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	ss << "  vec4 params;" << std::endl;
 	ss << "  vec4 depthBias;" << std::endl;
 	ss << "  vec4 depthSoft;" << std::endl;
+	ss << "  float objectId;       // id of the object being drawn (0 = none)" << std::endl;
 	ss << "} nlShadow;" << std::endl;
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK0 << ") uniform sampler2D nlShadowMask0;" << std::endl;
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK1 << ") uniform sampler2D nlShadowMask1;" << std::endl;
+	// Caster ids of the same texels (nearest filtering): a receiver skips the
+	// depth of its own object, which is what removes the self and cross-part
+	// shadowing of a character's layered parts.
+	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_ID0 << ") uniform sampler2D nlShadowId0;" << std::endl;
+	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_ID1 << ") uniform sampler2D nlShadowId1;" << std::endl;
 	ss << std::endl;
 
 	// NlCamera, NlLightTable, NlModel and NlMaterial blocks are prepended by
@@ -840,21 +846,32 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));" << std::endl;
 		ss << "}" << std::endl;
 		ss << std::endl;
-		ss << "float sampleSunMask(sampler2D smap, vec2 uv, float depth, float bias, float softness, float texel) {" << std::endl;
+		// One tap of the depth mask. If the caster the depth mask kept at that
+		// texel belongs to the receiver's own object (same id), the tap reads
+		// "lit": an object never shadows itself, and since the id is shared by
+		// every part sticked to the same skeleton, it never shadows its own
+		// body either. Another object's id does not match, so the shadow it
+		// casts stays.
+		ss << "float nlTapSunMask(sampler2D smap, sampler2D idm, vec2 uv, float myId) {" << std::endl;
+		ss << "  float id = texture(idm, uv).r;" << std::endl;
+		ss << "  if (id > 0.5 && abs(id - myId) < 0.5)" << std::endl;
+		ss << "    return 1.0;" << std::endl;
+		ss << "  return texture(smap, uv).r;" << std::endl;
+		ss << "}" << std::endl;
+		ss << std::endl;
+		ss << "float sampleSunMask(sampler2D smap, sampler2D idm, vec2 uv, float depth, float bias, float softness, float texel) {" << std::endl;
 		ss << "  float ang = nlMaskIgn(gl_FragCoord.xy) * 6.28318530718;" << std::endl;
 		ss << "  vec2 o = vec2(cos(ang), sin(ang)) * (texel * 0.5);" << std::endl;
 		ss << "  vec2 o2 = vec2(-o.y, o.x);" << std::endl;
-		ss << "  float stored = 0.25 * (texture(smap, uv + o).r + texture(smap, uv - o).r" << std::endl;
-		ss << "                       + texture(smap, uv + o2).r + texture(smap, uv - o2).r);" << std::endl;
+		ss << "  float myId = nlShadow.objectId;" << std::endl;
+		ss << "  float stored = 0.25 * (nlTapSunMask(smap, idm, uv + o, myId) + nlTapSunMask(smap, idm, uv - o, myId)" << std::endl;
+		ss << "                       + nlTapSunMask(smap, idm, uv + o2, myId) + nlTapSunMask(smap, idm, uv - o2, myId));" << std::endl;
 		// Receiver tolerance: the floor (bias) covers the mask's quantisation,
 		// and the slope term covers a surface nearly parallel to the light,
-		// where one mask texel spans a large depth range. There the receiver's
-		// own depth exceeds the texel's stored minimum by much more than a
-		// constant tolerance and the surface shadows itself - the dark bands
-		// across a face or a fence beam. The slope is measured per *texel* (the
-		// depth change over the UV covered by one texel), so the tolerance is
-		// independent of the screen resolution; on a surface facing the light
-		// it stays at the floor, which is what keeps the contact attached.
+		// where one mask texel spans a large depth range. The slope is measured
+		// per *texel* (the depth change over the UV covered by one texel), so
+		// the tolerance is screen-resolution independent; on a surface facing
+		// the light it stays at the floor, which keeps the contact attached.
 		ss << "  float depthPerTexel = fwidth(depth) * texel / max(max(fwidth(uv).x, fwidth(uv).y), 1e-7);" << std::endl;
 		ss << "  float tol = max(bias, depthPerTexel);" << std::endl;
 		// max(): a disabled/zero state must not turn smoothstep's edge0==edge1
@@ -903,9 +920,22 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	// the cascade box (see CMeshInstance::renderModernShadowCaster).
 	if (fogOrPpl)
 	{
-		ss << "  if (nlShadowDepthPass != 0) {" << std::endl;
+		ss << "  if (nlShadowDepthPass == 1) {" << std::endl;
 		ss << "    fragColor = vec4(gl_FragCoord.z);" << std::endl;
 		ss << "    return;" << std::endl;
+		ss << "  }" << std::endl;
+		// Id pass: only the fragment that wrote the depth mask's value for its
+		// texel stamps the caster id, so the id mask names the nearest caster.
+		// nlShadowMask0 is bound to this cascade's depth mask during the pass.
+		ss << "  if (nlShadowDepthPass == 2) {" << std::endl;
+		ss << "    float inv = nlShadow.params.y;" << std::endl;
+		ss << "    if (inv > 0.0) {" << std::endl;
+		ss << "      float stored = texture(nlShadowMask0, gl_FragCoord.xy * inv).r;" << std::endl;
+		ss << "      if (abs(gl_FragCoord.z - stored) > 1e-6)" << std::endl;
+		ss << "        discard;" << std::endl;
+		ss << "      fragColor = vec4(nlShadow.objectId, 0.0, 0.0, 0.0);" << std::endl;
+		ss << "      return;" << std::endl;
+		ss << "    }" << std::endl;
 		ss << "  }" << std::endl;
 		ss << std::endl;
 	}
@@ -950,9 +980,9 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// "behind" the empty clear value (1.0) through float error.
 		ss << "    float sunDepth = clamp(sunP.z, 0.0, 1.0);" << std::endl;
 		ss << "    if (!nlCascade1)" << std::endl;
-		ss << "      nlSunShadow = 1.0 - sampleSunMask(nlShadowMask0, sunUv, sunDepth, nlShadow.depthBias.x, nlShadow.depthSoft.x, nlShadow.params.y);" << std::endl;
+		ss << "      nlSunShadow = 1.0 - sampleSunMask(nlShadowMask0, nlShadowId0, sunUv, sunDepth, nlShadow.depthBias.x, nlShadow.depthSoft.x, nlShadow.params.y);" << std::endl;
 		ss << "    else" << std::endl;
-		ss << "      nlSunShadow = 1.0 - sampleSunMask(nlShadowMask1, sunUv, sunDepth, nlShadow.depthBias.y, nlShadow.depthSoft.y, nlShadow.params.y);" << std::endl;
+		ss << "      nlSunShadow = 1.0 - sampleSunMask(nlShadowMask1, nlShadowId1, sunUv, sunDepth, nlShadow.depthBias.y, nlShadow.depthSoft.y, nlShadow.params.y);" << std::endl;
 		ss << "    if (sunUv.x < 0.0 || sunUv.x > 1.0 || sunUv.y < 0.0 || sunUv.y > 1.0)" << std::endl;
 		ss << "      nlSunShadow = 1.0;" << std::endl;
 		ss << "  }" << std::endl;

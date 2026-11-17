@@ -50,6 +50,12 @@ struct CModernShadowState
 	float			WorldToMask[4][16];
 	/// Depth masks, one render target per cascade.
 	ITexture		*Mask[4];
+	/// Caster-id masks (R32F, nearest), one per cascade. A texel holds the
+	/// id of the caster whose depth the depth mask kept (0 = no caster), so a
+	/// receiver can skip the depth of its *own* object: that is what removes
+	/// the self/cross-part shadowing a character's layered parts produce
+	/// without touching the shadow any *other* object casts on it.
+	ITexture		*IdMask[4];
 	/// Receiver depth bias, in the mask's normalized light-space depth
 	/// (receiverDepth > storedDepth + DepthBias => shadowed). It is the
 	/// comparison tolerance in metres divided by the cascade's depth extent
@@ -75,6 +81,7 @@ struct CModernShadowState
 		{
 			CascadeSplits[i] = 0.f;
 			Mask[i] = NULL;
+			IdMask[i] = NULL;
 			DepthBias[i] = 0.f;
 			DepthSoftness[i] = 0.f;
 			memset(WorldToMask[i], 0, sizeof(WorldToMask[i]));
@@ -142,6 +149,7 @@ private:
 	/// while the shadow depth pass is on.
 	CMaterial				_CasterMaterial;
 	NLMISC::CSmartPtr<ITexture>	_Mask[2];
+	NLMISC::CSmartPtr<ITexture>	_IdMask[2];
 	NLMISC::CMatrix			_WorldToMask[2];
 	float					_Split[2];
 	/// Receiver tolerance and soft-edge width, normalized by the depth extent.

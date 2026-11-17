@@ -212,6 +212,23 @@ public:
 	// Get the ancestor skeleton, (father skeleton that has the least depth in the model tree), or NULL if none
 	CSkeletonModel			*getAncestorSkeletonModel() const { return _AncestorSkeletonModel; }
 
+	/** Stable id of the object this transform belongs to, for the modern sun
+	 *	shadow mask (0 is reserved for "no object").
+	 *
+	 *	Every part sticked to the same skeleton returns the skeleton's id, so a
+	 *	character counts as one object: the mask skips a receiver's own depth,
+	 *	which is what removes the self and cross-part shadowing of its layered
+	 *	body parts without touching the shadow any other object casts on it.
+	 */
+	uint32					getModernShadowId() const
+	{
+		const void *key = _AncestorSkeletonModel ? (const void *)_AncestorSkeletonModel : (const void *)this;
+		uintptr_t v = (uintptr_t)key;
+		v = (v >> 4) ^ (v >> 15) ^ (v >> 26);
+		const uint32 id = (uint32)(v & 0xFFFFFFu);	// 24 bits: exact in a float
+		return id ? id : 1u;
+	}
+
 	/// \name Hierarchy linking
 	// @{
 	/** link son to this in Hierarchy traversal
