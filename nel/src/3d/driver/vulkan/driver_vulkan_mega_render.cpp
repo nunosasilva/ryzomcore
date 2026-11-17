@@ -522,6 +522,15 @@ const CCameraUBOData &CDriverVulkan::stageMegaCameraUBO()
 		CMatrix invView = _ViewMatrix;
 		invView.invert();
 		CVector cwp = invView.getPos();
+		// TEMP: the camera block must describe the scene camera, not a light
+		// camera left over from the shadow mask pass.
+		static CVector lastLogged(1e9f, 1e9f, 1e9f);
+		if ((cwp - lastLogged).norm() > 0.5f)
+		{
+			lastLogged = cwp;
+			nlinfo("MODERNSHADOW camera block: pos=(%.1f %.1f %.1f) viewT=(%.1f %.1f %.1f)",
+				cwp.x, cwp.y, cwp.z, _ViewMatrix.getPos().x, _ViewMatrix.getPos().y, _ViewMatrix.getPos().z);
+		}
 		data.cameraWorldPos[0] = cwp.x;
 		data.cameraWorldPos[1] = cwp.y;
 		data.cameraWorldPos[2] = cwp.z;
