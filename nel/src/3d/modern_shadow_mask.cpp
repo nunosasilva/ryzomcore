@@ -39,6 +39,18 @@ static const uint	NL_MODERN_SHADOW_SIZE = 2048;
 /// Depth margin kept around the casters' light-space extent (fraction of the
 /// cascade box), so a caster whose bbox is slightly off is not clipped.
 static const float	NL_MODERN_SHADOW_DEPTH_MARGIN = 0.02f;
+/// Caster-side depth offset in metres along the sun (the equivalent of a
+/// polygon offset for the depth mask). The casters are drawn with the light
+/// camera's near plane pushed back by this much, so a caster's stored depth is
+/// a centimetre farther from the sun than the surface it stands on. That is
+/// what keeps a lit ground plane from shadowing itself at the contact, without
+/// the half-metre bias the 8-bit mask used to need.
+static const float	NL_MODERN_SHADOW_CASTER_OFFSET = 0.01f;
+/// Receiver tolerance, in mask texels of surface slope along the sun. A
+/// receiver at the same depth as the caster must read lit, and the stored
+/// depth is bilinearly filtered, so the comparison needs a little slack; half
+/// a texel is enough now that the stored depth itself is exact.
+static const float	NL_MODERN_SHADOW_BIAS_TEXELS = 0.5f;
 
 namespace {
 
@@ -64,12 +76,13 @@ void	lightSpaceAABBox(const CMatrix &worldToMask, const CAABBox &world,
 } // anonymous namespace
 
 CModernShadowMask::CModernShadowMask()
-	: _Size(NL_MODERN_SHADOW_SIZE), _Active(false), _NumCascades(0)
+	: _HighPrecision(false), _Size(NL_MODERN_SHADOW_SIZE), _Active(false), _NumCascades(0)
 {
 	for (uint i = 0; i < 2; ++i)
 	{
 		_Split[i] = 0.f;
 		_DepthBias[i] = 0.f;
+		_DepthSoftness[i] = 0.f;
 	}
 
 	_CasterMaterial.initUnlit();
@@ -112,18 +125,21 @@ void CModernShadowMask::reset(CScene *scene)
 		driver->setModernShadowState(CModernShadowState());
 }
 
-bool CModernShadowMask::ensureMasks()
+bool CModernShadowMask::ensureMasks(bool highPrecision)
 {
 	if (_Mask[0] && _Mask[1])
 		return true;
 
 	releaseMasks();
+	_HighPrecision = highPrecision;
 	for (uint i = 0; i < 2; ++i)
 	{
 		const uint32 bytes = 4 * _Size * _Size;
 		uint8 *mem = new uint8[bytes];
 		// White = the far end of the light box = no caster = lit, so a mask
 		// that is sampled before its first caster pass cannot darken anything.
+		// (The driver clears a float target to 1.0 as well; the buffer here is
+		// only the CPU-side placeholder, a render target is never uploaded.)
 		memset(mem, 0xFF, bytes);
 		CTextureMem *tex = new CTextureMem(mem, bytes, true, false, _Size, _Size);
 		tex->setWrapS(ITexture::Clamp);
@@ -132,6 +148,13 @@ bool CModernShadowMask::ensureMasks()
 		tex->generate();
 		tex->setReleasable(false);
 		tex->setRenderTarget(true);
+		// A depth mask needs far more than 8 bits per texel: over a ~100 m
+		// cascade an 8-bit channel steps by ~0.4 m, which forces a half-metre
+		// receiver bias (shadows lifted off their contact) and paints visible
+		// depth steps inside the bands. Drivers that cannot render into a
+		// float format ignore this and report hasHighPrecisionShadowMask()
+		// false, and the bias below stays at the old 8-bit value.
+		tex->setFloatRenderTarget(highPrecision);
 		_Mask[i] = tex;
 	}
 	return true;
@@ -162,7 +185,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// camera. The water reflection pass returns early above: it is a mirrored
 	// view of the same scene and re-using the main cascades is both cheaper
 	// and keeps the published matrices valid for the rest of the pass.
-	if (!ensureMasks())
+	if (!ensureMasks(driver->hasHighPrecisionShadowMask()))
 		return false;
 
 	_Active = false;
@@ -186,6 +209,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	const CVector	camPos = scene->getRenderTrav().CamPos;
 
 	_NumCascades = 2;
+	float	biasMillimetres[2] = { 0.f, 0.f };
 	for (uint i = 0; i < 2; ++i)
 	{
 		// Build the same kind of world -> [0,1]^3 camera the legacy caster
@@ -209,11 +233,11 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		cameraMatrix.translate(boxMin);
 		cameraMatrix.setRot(iAxis * boxSize.x, jAxis * boxSize.y, kAxis * boxSize.z);
 
-		// The mask only stores 8 bits per channel, so the depth axis is fitted
-		// to the casters that actually project into the box (the image axes of
-		// the box are left untouched): a smaller depth extent means a smaller
-		// depth step, and therefore a tighter shadow that starts closer to its
-		// caster.
+		// The depth axis is fitted to the casters that actually project into
+		// the box (the image axes of the box are left untouched). A float mask
+		// no longer needs the fit for precision, but the tighter range still
+		// keeps the far side of the cascade out of the depth comparison, and
+		// the casters of the other cascade cannot leak in.
 		//
 		// The driver inserts its NeL->GL change basis between the projection
 		// and the model-view matrix (mvp = P * _ChangeBasis * MV), so the
@@ -263,6 +287,21 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		else
 			cameraMatrix.setRot(iAxis * boxSize.x, jAxis * boxSize.y, kAxis * boxSize.z);
 
+		// The casters are rendered through a camera whose near plane is pushed
+		// back by NL_MODERN_SHADOW_CASTER_OFFSET, while the receivers keep
+		// cameraMatrix. Both normalise their own depth range, so this adds
+		// offset/extent to every stored depth without touching the receiver:
+		// the depth-mask equivalent of glPolygonOffset. The offset is in metres
+		// along the sun, the unit the masks are built in.
+		const float	depthMetres = boxSize.y * depthSpan;
+		CMatrix		casterMatrix = cameraMatrix;
+		if (depthSpan < 1.f)
+		{
+			casterMatrix.setPos(cameraMatrix.getPos() - jAxis * NL_MODERN_SHADOW_CASTER_OFFSET);
+			casterMatrix.setRot(iAxis * boxSize.x,
+				jAxis * (depthMetres + NL_MODERN_SHADOW_CASTER_OFFSET), kAxis * boxSize.z);
+		}
+
 		// cameraMatrix is the camera-to-world matrix of the light camera (the
 		// same convention as CShadowMap::buildCasterCameraMatrix); the shader
 		// needs world -> mask UV, i.e. its inverse -- with the same axis
@@ -274,13 +313,25 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		xyzToUvw.setRot(CVector::I, CVector::K, CVector::J);
 		_WorldToMask[i] = xyzToUvw * cameraMatrix.inverted();
 		_Split[i] = NL_MODERN_SHADOW_RADIUS[i];
-		// Receiver-side depth bias, in the mask's normalized light-space depth.
-		// The stored depth is the nearest caster rounded to the nearest 8-bit
-		// step (<= 0.5 step of error), and the receiver's surface can slope
-		// about one step over a texel; 1.5 steps covers both. In metres this is
-		// 1.5/255 of the fitted depth extent (see NL_MODERN_SHADOW_DEPTH_MARGIN
-		// above), so the tighter fit above also tightens the shadow contact.
-		_DepthBias[i] = 1.5f / 255.f;
+		// Receiver tolerance and soft-edge width, both in metres converted to
+		// the mask's normalized light-space depth. The texel size is the one of
+		// the box's image plane, which is what the bilinear filter averages.
+		const float	texelMetres = std::max(boxSize.x, boxSize.z) / (float)_Size;
+		if (_HighPrecision)
+		{
+			_DepthBias[i] = (NL_MODERN_SHADOW_BIAS_TEXELS * texelMetres) / depthMetres;
+			_DepthSoftness[i] = texelMetres / depthMetres;
+		}
+		else
+		{
+			// 8-bit mask: the stored depth is rounded to a step of
+			// depthMetres/255 (0.3-0.5 m here), so the receiver needs the old
+			// one-and-a-half-step tolerance, and the edge has to be soft enough
+			// to hide the quantisation itself.
+			_DepthBias[i] = 1.5f / 255.f;
+			_DepthSoftness[i] = 2.f / 255.f;
+		}
+		biasMillimetres[i] = _DepthBias[i] * depthMetres * 1000.f;
 
 		driver->setRenderTarget(_Mask[i], 0, 0, _Size, _Size);
 		CScissor	scissor;
@@ -295,7 +346,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		for (uint c = 0; c < casters.size(); ++c)
 		{
 			if (casters[c])
-				casters[c]->renderModernShadowCaster(driver, cameraMatrix, castMat);
+				casters[c]->renderModernShadowCaster(driver, casterMatrix, castMat);
 		}
 		driver->setModernShadowDepthPass(false);
 	}
@@ -331,8 +382,8 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		state.CascadeSplits[i] = _Split[i];
 		memcpy(state.WorldToMask[i], _WorldToMask[i].get(), sizeof(state.WorldToMask[i]));
 		state.Mask[i] = _Mask[i];
-		state.TexelWorldSize[i] = 1.f / (float)_Size;
 		state.DepthBias[i] = _DepthBias[i];
+		state.DepthSoftness[i] = _DepthSoftness[i];
 	}
 	driver->setModernShadowState(state);
 
@@ -342,8 +393,9 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	if (!logged)
 	{
 		logged = true;
-		nlinfo("MODERNSHADOW: modern sun shadows on: %u cascades, %ux%u masks, split %.1f m, sun=(%.2f %.2f %.2f)",
-			(unsigned)state.NumCascades, _Size, _Size, state.CascadeSplits[0], sun.x, sun.y, sun.z);
+		nlinfo("MODERNSHADOW: modern sun shadows on: %u cascades, %ux%u %s masks, split %.1f m, sun=(%.2f %.2f %.2f), bias %.1f mm",
+			(unsigned)state.NumCascades, _Size, _Size, _HighPrecision ? "R32F" : "RGBA8",
+			state.CascadeSplits[0], sun.x, sun.y, sun.z, (double)biasMillimetres[0]);
 	}
 
 	_Active = true;

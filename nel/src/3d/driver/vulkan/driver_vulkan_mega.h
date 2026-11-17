@@ -178,13 +178,13 @@ struct CShadowUBOData
 	float worldToMask0[16]; // 64
 	float worldToMask1[16]; // 64
 	float splits[4];        // 16 (x = first cascade view distance)
-	float params[4];        // 16 (x = enabled, y = texel uv, z = sun strength)
-	/// Per-cascade receiver bias, in the mask's normalized light-space depth
-	/// (x = cascade 0, y = cascade 1). Covers the 8-bit mask quantization and
-	/// the receiver's own surface slope over one texel.
+	float params[4];        // 16 (x = enabled, y = unused, z = sun strength)
+	/// Per-cascade receiver tolerance and soft-edge width, in the mask's
+	/// normalized light-space depth (x = cascade 0, y = cascade 1).
 	float depthBias[4];     // 16
+	float depthSoft[4];     // 16
 };
-nlctassert(sizeof(CShadowUBOData) == 176);
+nlctassert(sizeof(CShadowUBOData) == 192);
 
 // GLSL headers prepended to the generated mega programs.
 std::string buildVulkanLightTableHeader(sint maxLights);

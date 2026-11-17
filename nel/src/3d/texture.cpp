@@ -41,6 +41,7 @@ ITexture::ITexture()
 	_GoodGenerate= false;
 	_Releasable= true;
 	_RenderTarget= false;
+	_FloatRenderTarget= false;
 	_WrapS= _WrapT= Repeat;
 	_UploadFormat= Auto;
 	_MagFilter= Linear;

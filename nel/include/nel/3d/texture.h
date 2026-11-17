@@ -406,6 +406,21 @@ public:
 	 */
 	bool	getRenderTarget () const { return _RenderTarget; }
 
+	/** Store a single high-precision channel instead of RGBA8.
+	 *
+	 *  Hints a driver that can render into more than one colour format to use
+	 *  a 32-bit float target for this texture. The modern sun shadow masks use
+	 *  it: they hold a light-space depth over ~100 m, so an 8-bit channel would
+	 *  quantise the depth to half a metre and force a matching bias on the
+	 *  receiver. Sampling stays the same (the depth is in the red channel).
+	 *  Drivers with only one render-target format ignore it, and the engine
+	 *  adapts its bias to the precision the driver reports.
+	 */
+	void	setFloatRenderTarget (bool enable) { _FloatRenderTarget = enable; }
+
+	/// True when the driver was asked for a single float channel (see above).
+	bool	getFloatRenderTarget () const { return _FloatRenderTarget; }
+
 	// get the texture category
 	CTextureCategory	*getTextureCategory() const {return _TextureCategory;}
 
@@ -434,6 +449,7 @@ private:
 	bool			_GoodGenerate;
 	bool			_Releasable;
 	bool			_RenderTarget;
+	bool			_FloatRenderTarget;
 	TUploadFormat	_UploadFormat;
 	TWrapMode		_WrapS;
 	TWrapMode		_WrapT;

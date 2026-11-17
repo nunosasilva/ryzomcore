@@ -49,12 +49,15 @@ struct CModernShadowState
 	float			WorldToMask[4][16];
 	/// Depth masks, one render target per cascade.
 	ITexture		*Mask[4];
-	/// World size of a mask texel (for PCF), per cascade.
-	float			TexelWorldSize[4];
 	/// Receiver depth bias, in the mask's normalized light-space depth
-	/// (receiverDepth > storedDepth + DepthBias => shadowed). Covers the 8-bit
-	/// quantization of the stored depth and the receiver slope over a texel.
+	/// (receiverDepth > storedDepth + DepthBias => shadowed). It is the
+	/// comparison tolerance in metres divided by the cascade's depth extent
+	/// (see CModernShadowMask); with a high-precision mask it is a few
+	/// centimetres, with the 8-bit fallback the quantization step dominates.
 	float			DepthBias[4];
+	/// Width of the smoothstep that turns the depth comparison into a soft
+	/// edge, in the same normalized units as DepthBias.
+	float			DepthSoftness[4];
 	/// How much of the scene's light is direct sun (0..1). The shader uses it
 	/// to scale the darkening so shadowed areas keep the sky/ambient part:
 	/// at dusk, when the sun is dim, a full shadow would otherwise paint
@@ -68,8 +71,8 @@ struct CModernShadowState
 		{
 			CascadeSplits[i] = 0.f;
 			Mask[i] = NULL;
-			TexelWorldSize[i] = 0.f;
 			DepthBias[i] = 0.f;
+			DepthSoftness[i] = 0.f;
 			memset(WorldToMask[i], 0, sizeof(WorldToMask[i]));
 		}
 	}
@@ -83,9 +86,10 @@ struct CModernShadowState
  * Each mask texel stores the *nearest* caster's light-space depth; the
  * receiver compares its own light-space depth against it, with a small bias
  * (see CModernShadowState::DepthBias). A texel with no caster holds the far
- * depth (1.0), so it reads lit. The receiver shader samples the mask with
- * PCF, so there are no per-caster maps, no merge of sun/point-light
- * directions and no hard map borders to clip a low-sun shadow.
+ * depth (1.0), so it reads lit. The mask is sampled with linear filtering and
+ * one smoothstep'd comparison (a soft edge of about one texel), so there are
+ * no per-caster maps, no merge of sun/point-light directions and no hard map
+ * borders to clip a low-sun shadow.
  *
  * Enablement is gated by CScene::getShadowsEnabled() (the client's Shadows
  * option) and by the driver capability: the modern path runs only when both
@@ -112,7 +116,7 @@ public:
 	bool					render(CScene *scene, const std::vector<CTransform*> &casters);
 
 private:
-	bool					ensureMasks();
+	bool					ensureMasks(bool highPrecision);
 	void					releaseMasks();
 
 	/// Caster material for the depth mask: unlit, double-sided (several Ryzom
@@ -123,7 +127,11 @@ private:
 	NLMISC::CSmartPtr<ITexture>	_Mask[2];
 	NLMISC::CMatrix			_WorldToMask[2];
 	float					_Split[2];
+	/// Receiver tolerance and soft-edge width, normalized by the depth extent.
 	float					_DepthBias[2];
+	float					_DepthSoftness[2];
+	/// True when the masks are 32-bit float (driver::hasHighPrecisionShadowMask).
+	bool					_HighPrecision;
 	uint					_Size;
 	bool					_Active;
 	uint					_NumCascades;

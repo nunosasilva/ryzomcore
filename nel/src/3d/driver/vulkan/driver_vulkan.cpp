@@ -160,6 +160,8 @@ CDriverVulkan::CDriverVulkan()
 	, _RenderPass(VK_NULL_HANDLE)
 	, _ResumeRenderPass(VK_NULL_HANDLE)
 	, _OffscreenRenderPass(VK_NULL_HANDLE)
+	, _OffscreenShadowRenderPass(VK_NULL_HANDLE)
+	, _ShadowMaskFormat(VK_FORMAT_UNDEFINED)
 	, _RenderTargetTexture(NULL)
 	, _RenderTargetInfo(NULL)
 	, _RenderTargetFace(0)
@@ -1184,7 +1186,36 @@ bool CDriverVulkan::createRenderPass()
 	if (!checkVk(vkCreateRenderPass(_Device, &rpci, NULL, &_OffscreenRenderPass), "vkCreateRenderPass(offscreen)"))
 		return false;
 
+	// Same attachments, one float channel for the modern shadow mask. Only the
+	// colour format differs: the pass is render-pass compatible with the rest
+	// of the offscreen targets in every other respect (load/store ops, depth
+	// attachment, subpass), so the caster pipeline is the only extra state the
+	// pipeline cache has to key on.
+	if (_ShadowMaskFormat != VK_FORMAT_UNDEFINED)
+	{
+		attachments[0].format = _ShadowMaskFormat;
+		if (!checkVk(vkCreateRenderPass(_Device, &rpci, NULL, &_OffscreenShadowRenderPass), "vkCreateRenderPass(shadow mask)"))
+			return false;
+	}
+
 	return true;
+}
+
+VkFormat CDriverVulkan::findShadowMaskFormat() const
+{
+	VkFormatProperties props;
+	vkGetPhysicalDeviceFormatProperties(_PhysicalDevice, NL_VK_SHADOW_MASK_FORMAT, &props);
+	// The caster pass blends with VK_BLEND_OP_MIN (also used for the 8-bit
+	// fallback) and the receiver samples the mask with linear filtering, so
+	// both are required. The preference flags are not: the mask is never a
+	// swapchain image.
+	const VkFormatFeatureFlags needed = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+		VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT |
+		VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+		VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+	if ((props.optimalTilingFeatures & needed) != needed)
+		return VK_FORMAT_UNDEFINED;
+	return NL_VK_SHADOW_MASK_FORMAT;
 }
 
 VkFormat CDriverVulkan::findDepthFormat() const
@@ -1454,6 +1485,14 @@ bool CDriverVulkan::initVulkan()
 		nlwarning("Vulkan: no supported depth format");
 		return false;
 	}
+	// The modern shadow masks want a float depth. Probe once: the masks fall
+	// back to RGBA8 (with the coarse bias that format needs) when the device
+	// cannot blend or linearly filter the format.
+	_ShadowMaskFormat = findShadowMaskFormat();
+	if (_ShadowMaskFormat != VK_FORMAT_UNDEFINED)
+		nlinfo("Vulkan: modern shadow mask format R32F (colour attachment, MIN blend, linear filter)");
+	else
+		nlinfo("Vulkan: modern shadow mask format RGBA8 (no blendable float attachment); the mask keeps its 8-bit depth");
 	if (!createSwapchain())
 		return false;
 	if (!createRenderPass())
@@ -1723,6 +1762,7 @@ void CDriverVulkan::shutdownVulkan()
 
 		// The render passes are kept for the lifetime of the device.
 		if (_OffscreenRenderPass) { vkDestroyRenderPass(_Device, _OffscreenRenderPass, NULL); _OffscreenRenderPass = VK_NULL_HANDLE; }
+		if (_OffscreenShadowRenderPass) { vkDestroyRenderPass(_Device, _OffscreenShadowRenderPass, NULL); _OffscreenShadowRenderPass = VK_NULL_HANDLE; }
 		if (_ResumeRenderPass) { vkDestroyRenderPass(_Device, _ResumeRenderPass, NULL); _ResumeRenderPass = VK_NULL_HANDLE; }
 		if (_RenderPass) { vkDestroyRenderPass(_Device, _RenderPass, NULL); _RenderPass = VK_NULL_HANDLE; }
 		destroyDepthTargets();

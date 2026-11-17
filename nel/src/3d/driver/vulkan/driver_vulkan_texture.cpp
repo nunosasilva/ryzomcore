@@ -509,7 +509,14 @@ bool CDriverVulkan::createRenderTargetImage(ITexture &tex, CTextureVulkan &out)
 
 	const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-	if (!createTextureImage(width, height, 1, usage, NL_VK_TEXTURE_FORMAT, out, cube ? 6 : 1, cube))
+	// A texture that asks for a high-precision target (the modern shadow masks)
+	// gets the one-channel float format and its own render pass; everything
+	// else keeps RGBA8. See NL_VK_SHADOW_MASK_FORMAT and
+	// ITexture::setFloatRenderTarget().
+	VkFormat format = NL_VK_TEXTURE_FORMAT;
+	if (tex.getFloatRenderTarget() && _ShadowMaskFormat != VK_FORMAT_UNDEFINED)
+		format = _ShadowMaskFormat;
+	if (!createTextureImage(width, height, 1, usage, format, out, cube ? 6 : 1, cube))
 	{
 		freeTextureObjects(out);
 		return false;
@@ -520,6 +527,7 @@ bool CDriverVulkan::createRenderTargetImage(ITexture &tex, CTextureVulkan &out)
 	// ends in SHADER_READ_ONLY and ensureRenderTarget() transitions from
 	// whatever layout it is in. Cube targets are written face by face by the
 	// env-map passes; leave their per-face setup to the render target code.
+	// A float mask is cleared to 1.0 (lit) instead of 0.
 	if (!cube)
 		clearTextureImage(out, 1);
 	out.HasAlpha = true;
@@ -1043,6 +1051,12 @@ static bool textureLevelLayout(VkFormat format, uint32 width, uint32 height, VkE
 		extent.height = height;
 		bytes = (VkDeviceSize)width * height * 4;
 		return true;
+	case VK_FORMAT_R32_SFLOAT:
+		// The modern shadow mask: one float channel per texel.
+		extent.width = width;
+		extent.height = height;
+		bytes = (VkDeviceSize)width * height * 4;
+		return true;
 	default:
 		return false;
 	}
@@ -1076,7 +1090,19 @@ bool CDriverVulkan::clearTextureImage(CTextureVulkan &out, uint32 mipCount)
 	STextureStaging staging;
 	if (!allocTextureStaging(levelBytes, staging))
 		return false;
-	memset(staging.Mapped, 0, (size_t)levelBytes);
+	// Zero is black/transparent for every format except the float shadow mask,
+	// where it would read as depth 0 (everything shadowed). The engine clears
+	// the mask to 1.0 before its first caster pass, but a mask sampled in
+	// between must still read lit, so a float target starts at 1.0.
+	if (out.Format == NL_VK_SHADOW_MASK_FORMAT)
+	{
+		uint32 *texels = (uint32 *)staging.Mapped;
+		const uint32 one = 0x3F800000u; // 1.0f
+		for (VkDeviceSize t = 0; t < levelBytes / 4; ++t)
+			texels[t] = one;
+	}
+	else
+		memset(staging.Mapped, 0, (size_t)levelBytes);
 
 	STextureCopy copy;
 	copy.Image = out.Image;

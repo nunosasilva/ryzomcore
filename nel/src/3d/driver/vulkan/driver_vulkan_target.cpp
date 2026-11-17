@@ -363,7 +363,11 @@ bool CDriverVulkan::ensureRenderTarget(ITexture &tex, CTextureVulkan &target)
 	const bool usable = target.Image != VK_NULL_HANDLE &&
 		(target.Usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0 &&
 		target.Width == width && target.Height == height &&
-		target.Cube == cube;
+		target.Cube == cube &&
+		// The attachment format selects the render pass, so a texture whose
+		// float flag changed after its image was created has to be recreated.
+		target.Format == ((tex.getFloatRenderTarget() && _ShadowMaskFormat != VK_FORMAT_UNDEFINED)
+			? _ShadowMaskFormat : NL_VK_TEXTURE_FORMAT);
 
 	if (!usable)
 	{
@@ -392,9 +396,16 @@ bool CDriverVulkan::ensureRenderTarget(ITexture &tex, CTextureVulkan &target)
 				!createCubeFaceFramebuffer(target, face, _OffscreenRenderPass))
 				return false;
 	}
-	else if (target.Framebuffer == VK_NULL_HANDLE &&
-		!createTargetFramebuffer(target, _OffscreenRenderPass))
-		return false;
+	else if (target.Framebuffer == VK_NULL_HANDLE)
+	{
+		// The shadow masks are the only targets with a non-RGBA8 attachment:
+		// they need the pass whose colour format matches their image.
+		VkRenderPass pass = _OffscreenRenderPass;
+		if (_OffscreenShadowRenderPass != VK_NULL_HANDLE && target.Format == _ShadowMaskFormat)
+			pass = _OffscreenShadowRenderPass;
+		if (!createTargetFramebuffer(target, pass))
+			return false;
+	}
 
 	return true;
 }
@@ -466,7 +477,9 @@ void CDriverVulkan::beginOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &targ
 	VkRenderPassBeginInfo rbi;
 	memset(&rbi, 0, sizeof(rbi));
 	rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-	rbi.renderPass = _OffscreenRenderPass;
+	// The framebuffer's pass, which is the float one for a shadow mask.
+	rbi.renderPass = (_OffscreenShadowRenderPass != VK_NULL_HANDLE && target.Format == _ShadowMaskFormat)
+		? _OffscreenShadowRenderPass : _OffscreenRenderPass;
 	rbi.framebuffer = framebuffer;
 	rbi.renderArea.offset.x = 0;
 	rbi.renderArea.offset.y = 0;

@@ -924,7 +924,8 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	pci.pColorBlendState = &colorBlend;
 	pci.pDynamicState = &dynamicState;
 	pci.layout = pipelineLayout;
-	pci.renderPass = key.Target ? _OffscreenRenderPass : _RenderPass;
+	pci.renderPass = key.Target == 2 ? _OffscreenShadowRenderPass
+		: key.Target ? _OffscreenRenderPass : _RenderPass;
 	pci.subpass = 0;
 
 	VkPipeline pipeline = VK_NULL_HANDLE;

@@ -660,6 +660,7 @@ public:
 	virtual void setCursorScale(float scale) override;
 	virtual bool setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel, uint32 cubeFace) override;
 	virtual bool supportsModernShadows() const override { return true; }
+	virtual bool hasHighPrecisionShadowMask() const override { return _ShadowMaskFormat != VK_FORMAT_UNDEFINED; }
 	virtual void setModernShadowState(const CModernShadowState &state) override;
 	virtual void setModernShadowDepthPass(bool enabled) override;
 	virtual bool getRenderTargetSize(uint32 &width, uint32 &height) override;
@@ -914,6 +915,13 @@ private:
 	VkRenderPass			_ResumeRenderPass;
 	/// Colour + depth pass for render targets (RGBA8, same depth format).
 	VkRenderPass			_OffscreenRenderPass;
+	/// Same pass with a one-channel float colour attachment, for the modern
+	/// sun shadow masks (see NL_VK_SHADOW_MASK_FORMAT).
+	VkRenderPass			_OffscreenShadowRenderPass;
+	/// NL_VK_SHADOW_MASK_FORMAT when the device can render into it with MIN
+	/// blending and sample it with linear filtering, VK_FORMAT_UNDEFINED
+	/// otherwise (the masks then stay RGBA8).
+	VkFormat				_ShadowMaskFormat;
 	/// Depth/stencil images shared by offscreen targets of the same size.
 	std::vector<CDepthTargetVulkan>	_DepthTargets;
 
@@ -1118,6 +1126,9 @@ private:
 
 	VkShaderModule			createShaderModule(const std::vector<uint32> &code);
 	VkFormat				findDepthFormat() const;
+	/// NL_VK_SHADOW_MASK_FORMAT when it can be a MIN-blended, linearly sampled
+	/// colour attachment, VK_FORMAT_UNDEFINED otherwise.
+	VkFormat				findShadowMaskFormat() const;
 
 	// --- Rendering (driver_vulkan_render.cpp) ---
 	bool					compileShader(const char *glsl, VkShaderModule *outModule, bool vertex);

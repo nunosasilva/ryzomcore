@@ -710,6 +710,7 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	ss << "  vec4 splits;" << std::endl;
 	ss << "  vec4 params;" << std::endl;
 	ss << "  vec4 depthBias;" << std::endl;
+	ss << "  vec4 depthSoft;" << std::endl;
 	ss << "} nlShadow;" << std::endl;
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK0 << ") uniform sampler2D nlShadowMask0;" << std::endl;
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK1 << ") uniform sampler2D nlShadowMask1;" << std::endl;
@@ -828,15 +829,15 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// caster pass writes gl_FragCoord.z, which the orthographic world ->
 		// [0,1]^3 cascade camera makes exactly the receiver's own depth unit).
 		// Far texels are cleared to 1.0, so an empty texel reads "lit". The
-		// receiver is shadowed where its own depth is greater than the stored
-		// one (+bias); the 3x3 kernel averages the comparisons, which softens
-		// the edge and costs the same nine fetches as the old PCF coverage.
-		ss << "float sampleSunMask(sampler2D smap, vec2 uv, float texel, float depth, float bias) {" << std::endl;
-		ss << "  float lit = 0.0;" << std::endl;
-		ss << "  for (int y = -1; y <= 1; ++y)" << std::endl;
-		ss << "    for (int x = -1; x <= 1; ++x)" << std::endl;
-		ss << "      lit += (depth <= texture(smap, uv + vec2(float(x), float(y)) * texel).r + bias) ? 1.0 : 0.0;" << std::endl;
-		ss << "  return lit / 9.0;" << std::endl;
+		// sampler filters linearly, so one tap already averages the 2x2 texels
+		// around the fragment, and a single smoothstep'd comparison turns that
+		// into a soft edge instead of the binary 3x3 kernel whose independent
+		// comparisons painted the mask's texel lattice on the ground.
+		ss << "float sampleSunMask(sampler2D smap, vec2 uv, float depth, float bias, float softness) {" << std::endl;
+		ss << "  float stored = texture(smap, uv).r;" << std::endl;
+		// max(): a disabled/zero state must not turn smoothstep's edge0==edge1
+		// into a division by zero.
+		ss << "  return smoothstep(stored + bias, stored + bias + max(softness, 1e-6), depth);" << std::endl;
 		ss << "}" << std::endl;
 		ss << std::endl;
 		ss << "void computeLightPP(int lightMode, vec3 dirOrPos, vec4 colDiff, vec4 colSpec," << std::endl;
@@ -923,9 +924,9 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// box to v = 0.
 		ss << "    sunUv.y = 1.0 - sunUv.y;" << std::endl;
 		ss << "    if (!nlCascade1)" << std::endl;
-		ss << "      nlSunShadow = sampleSunMask(nlShadowMask0, sunUv, nlShadow.params.y, sunP.z, nlShadow.depthBias.x);" << std::endl;
+		ss << "      nlSunShadow = 1.0 - sampleSunMask(nlShadowMask0, sunUv, sunP.z, nlShadow.depthBias.x, nlShadow.depthSoft.x);" << std::endl;
 		ss << "    else" << std::endl;
-		ss << "      nlSunShadow = sampleSunMask(nlShadowMask1, sunUv, nlShadow.params.y, sunP.z, nlShadow.depthBias.y);" << std::endl;
+		ss << "      nlSunShadow = 1.0 - sampleSunMask(nlShadowMask1, sunUv, sunP.z, nlShadow.depthBias.y, nlShadow.depthSoft.y);" << std::endl;
 		ss << "    if (sunUv.x < 0.0 || sunUv.x > 1.0 || sunUv.y < 0.0 || sunUv.y > 1.0)" << std::endl;
 		ss << "      nlSunShadow = 1.0;" << std::endl;
 		ss << "  }" << std::endl;

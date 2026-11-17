@@ -1017,6 +1017,12 @@ public:
 	  * legacy CShadowMapManager path and return false.
 	  */
 	virtual bool			supportsModernShadows() const { return false; }
+	/** True when the modern shadow masks hold a high-precision depth (a float
+	  * channel) instead of 8-bit RGBA. The engine then compares the receiver
+	  * with a bias of a few centimetres instead of the half-metre step an 8-bit
+	  * mask needs, which keeps the shadow attached to the caster's contact.
+	  */
+	virtual bool			hasHighPrecisionShadowMask() const { return false; }
 	/// Publish the modern shadow state; ignored by drivers that don't support it.
 	virtual void			setModernShadowState(const CModernShadowState &) {}
 	/** Enable the modern shadow depth mode for the draws that follow: the

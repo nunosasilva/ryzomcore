@@ -119,10 +119,12 @@ bool CDriverVulkan::canUseMegaPath(bool &cube)
 
 void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 {
-	// Pipelines are render-pass specific: the swapchain pass and the offscreen
-	// pass have different colour formats, so the target selector is part of the
-	// key. Every draw path finishes its key here, hence the assignment here.
-	key.Target = _RenderTargetInfo ? 1 : 0;
+	// Pipelines are render-pass specific: the swapchain pass, the offscreen
+	// pass and the float shadow-mask pass have different colour formats, so the
+	// target selector is part of the key. Every draw path finishes its key
+	// here, hence the assignment here.
+	key.Target = _RenderTargetInfo ? (_RenderTargetInfo->Format == _ShadowMaskFormat &&
+		_OffscreenShadowRenderPass != VK_NULL_HANDLE ? 2 : 1) : 0;
 
 	bool cube = false;
 	const bool materialOk = canUseMegaPath(cube);
@@ -987,13 +989,14 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	if (_ModernShadowState.Enabled)
 	{
 		shadowData.params[0] = 1.f;
-		shadowData.params[1] = _ModernShadowState.TexelWorldSize[0];
 		shadowData.params[2] = _ModernShadowState.SunStrength;
 		memcpy(shadowData.worldToMask0, _ModernShadowState.WorldToMask[0], sizeof(shadowData.worldToMask0));
 		memcpy(shadowData.worldToMask1, _ModernShadowState.WorldToMask[1], sizeof(shadowData.worldToMask1));
 		shadowData.splits[0] = _ModernShadowState.CascadeSplits[0];
 		shadowData.depthBias[0] = _ModernShadowState.DepthBias[0];
 		shadowData.depthBias[1] = _ModernShadowState.DepthBias[1];
+		shadowData.depthSoft[0] = _ModernShadowState.DepthSoftness[0];
+		shadowData.depthSoft[1] = _ModernShadowState.DepthSoftness[1];
 	}
 
 	const uint32 cameraOffset = allocUniformBlock(&cameraData, sizeof(cameraData));
