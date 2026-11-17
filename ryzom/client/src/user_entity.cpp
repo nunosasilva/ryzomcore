@@ -25,6 +25,7 @@
 // INCLUDE //
 /////////////
 #include "stdpch.h"
+#include <cstdlib>
 // Misc.
 #include "nel/misc/vectord.h"
 #include "nel/misc/matrix.h"
@@ -3508,9 +3509,26 @@ void CUserEntity::updateVisualDisplay()
 	}
 }// updateVisualDisplay //
 
+/// Development and screenshot hook: RYZOM_FORCE_LIGHT_OFF=1 keeps the personal
+/// light off for the whole session.  The in-game 'l' key is a toggle, which
+/// scripted visual tests cannot drive reliably (window focus, dialogs, timing),
+/// so the state is pinned here instead, exactly like RYZOM_FORCE_LIGHT_HOUR in
+/// weather.cpp.  Read once at the first light call.
+static bool forcedLightOff()
+{
+	static const bool Forced = getenv("RYZOM_FORCE_LIGHT_OFF") != NULL;
+	return Forced;
+}
+
 void CUserEntity::lightOn()
 {
 	_LightOn = false;
+	if (forcedLightOff())
+	{
+		if (!_Light.empty())
+			_Light.hide();
+		return;
+	}
 	light();
 }
 
@@ -3554,7 +3572,10 @@ void CUserEntity::light()
 			nlwarning("UE:light: there is no skeleton or Name Bone to stick the light.");
 	}
 	// Turn On/Off the Light
-	_LightOn = !_LightOn;
+	if (forcedLightOff())
+		_LightOn = false;
+	else
+		_LightOn = !_LightOn;
 	if(!_Light.empty())
 	{
 		if(_LightOn)
