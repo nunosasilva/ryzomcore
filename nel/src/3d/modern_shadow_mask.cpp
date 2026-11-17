@@ -292,7 +292,9 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// Development view toggles; see CModernShadowState::DebugMode.
 	state.FlipU = CFile::isExists("tmp/shadow_flipu");
 	state.FlipV = !CFile::isExists("tmp/shadow_noflipv");
-	if (CFile::isExists("tmp/shadow_magprobe"))
+	if (CFile::isExists("tmp/shadow_depthprobe"))
+		state.DebugMode = 11;
+	else if (CFile::isExists("tmp/shadow_magprobe"))
 		state.DebugMode = 10;
 	else if (CFile::isExists("tmp/shadow_spaceprobe"))
 		state.DebugMode = 9;

@@ -1124,9 +1124,20 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	// otherwise be painted over the world they are meant to show.
 	//   1 coverage factor, 2 cascade block, 3 raw mask texel, 4 mask image,
 	//   5 CPU-computed marker
-	ss << "  if (nlShadow.params.w > 0.5) {" << std::endl;
+	// Fog is enabled for the 3D pass only, which keeps the development views off
+	// the interface and off the fullscreen post-process quad (that quad is drawn
+	// through this same program and would paint the whole frame).
+	ss << "  if (nlFogEnabled != 0 && nlShadow.params.w > 0.5) {" << std::endl;
 	ss << "    bool uvInCascade = all(greaterThanEqual(nlSunUv, vec2(0.0))) && all(lessThanEqual(nlSunUv, vec2(1.0)));" << std::endl;
-	ss << "    if (nlShadow.params.w > 9.5) {" << std::endl;
+	ss << "    if (nlShadow.params.w > 10.5) {" << std::endl;
+	// Fog depth vs eye position vs world distance. Red is the depth the fog
+	// uses (ecPos.y / ecPos.w, metres / 50), green the eye-space length / 50,
+	// blue the world distance to the camera / 50. All three must agree.
+	ss << "      float eyeDepth = abs(ecPos.y / ecPos.w);" << std::endl;
+	ss << "      float eyeLen = length(ecPos.xyz / ecPos.w);" << std::endl;
+	ss << "      float worldDist = length(worldPos.xyz / worldPos.w - cameraWorldPos);" << std::endl;
+	ss << "      fragColor = vec4(clamp(eyeDepth / 50.0, 0.0, 1.0), clamp(eyeLen / 50.0, 0.0, 1.0), clamp(worldDist / 50.0, 0.0, 1.0), 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 9.5) {" << std::endl;
 	// Raw magnitudes: red = |ecPos| (eye space, metres), green =
 	// |cameraWorldPos| / 20000, blue = |shadowWsPos| / 20000.
 	ss << "      fragColor = vec4(clamp(length(ecPos.xyz) / 100.0, 0.0, 1.0)," << std::endl;
