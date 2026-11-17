@@ -1142,6 +1142,16 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	// keep their sky/ambient light and dusk shadows stay soft.
 	if (fogOrPpl)
 		ss << "  fragColor.rgb *= (1.0 - (1.0 - nlSunShadow) * nlShadow.params.z);" << std::endl;
+	ss << std::endl;
+
+	// Distance fog, last: it has to haze the *shaded* colour, exactly like the
+	// legacy GL drivers, which fog after texturing and lighting. Fogging before
+	// the shadow multiply would let a shadow darken the haze, and the fog would
+	// then no longer match the sky it is blended against.
+	// Runtime-gated: fogOrPpl=1 always has the function, but only applies when
+	// fog is enabled for the draw (the interface and additive passes are not).
+	if (fogOrPpl)
+		ss << "  if (nlFogEnabled != 0) fragColor = applyFog(fragColor);" << std::endl;
 
 	ss << "}" << std::endl;
 
