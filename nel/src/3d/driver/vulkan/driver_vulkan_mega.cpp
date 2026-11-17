@@ -882,12 +882,12 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// landscape/vegetation lightmaps, so it is applied to the final lit
 		// colour below rather than to one entry of the light table.
 		ss << "  nlSunShadow = 1.0;" << std::endl;
-		// World position for the shadow lookup. Both vertex program kinds write
-		// worldPos (the mega one when nlWorldSpacePosition is set, the converted
-		// NeL programs unconditionally in their epilogue), so this is the engine's
-		// own idea of where the fragment is.
-		ss << "  bool haveWsPos = worldPos.w != 0.0;" << std::endl;
-		ss << "  vec3 shadowWsPos = haveWsPos ? worldPos.xyz / worldPos.w : vec3(0.0);" << std::endl;
+		// World position for the shadow lookup, rebuilt from eye space. ecPos is
+		// the only position every program provides: landscape tiles build their
+		// vertex position inside the program, so the raw attribute is not the
+		// world position there.
+		ss << "  bool haveWsPos = ecPos.w != 0.0;" << std::endl;
+		ss << "  vec3 shadowWsPos = haveWsPos ? (transpose(mat3(viewMatrix)) * (ecPos.xyz - viewMatrix[3].xyz * ecPos.w)) / ecPos.w : vec3(0.0);" << std::endl;
 		ss << "  if (nlShadow.params.x > 0.5 && haveWsPos) {" << std::endl;
 		ss << "    float sunDist = length(shadowWsPos - cameraWorldPos);" << std::endl;
 		ss << "    vec4 sunP = (sunDist < nlShadow.splits.x) ? (nlShadow.worldToMask0 * vec4(shadowWsPos, 1.0)) : (nlShadow.worldToMask1 * vec4(shadowWsPos, 1.0));" << std::endl;

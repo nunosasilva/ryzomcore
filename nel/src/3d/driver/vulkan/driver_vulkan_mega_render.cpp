@@ -714,10 +714,7 @@ void CDriverVulkan::stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data)
 	// Per-pixel lights need world-space position and normal; the vertex program
 	// emits them when these flags are set (same contract as the GL3 driver).
 	data.worldSpaceNormal = _NumPerPixelLights > 0 ? 1 : 0;
-	// The sun shadow looks the cascades up from world space, so the vertex
-	// program must compute it for every material that can receive shadows,
-	// even the lightmapped ones with no dynamic lights.
-	data.worldSpacePosition = (_NumPerPixelLights > 0 || _ModernShadowState.Enabled) ? 1 : 0;
+	data.worldSpacePosition = _NumPerPixelLights > 0 ? 1 : 0;
 	data.numPerPixelLights = (sint32)_NumPerPixelLights;
 	// Fog is enabled per draw from the engine state. Both paths (the mega
 	// programs and the simple generated shader) use the same camera fog data

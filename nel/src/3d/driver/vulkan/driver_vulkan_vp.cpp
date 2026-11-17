@@ -740,6 +740,9 @@ static bool convertNelvpToGLSL(CVertexProgram *program, std::string &outSource, 
 	ss << "\n";
 	ss << "  // Synthesize the varyings the program itself has no output for\n";
 	ss << "  ecPos = inverseProjectionBasis * gl_Position;\n";
+	// NOTE: v0 is NOT the final position for every program (landscape tiles add
+	// their origin in the program body), so the world position has to come from
+	// gl_Position, through the reconstruction above.
 	ss << "  worldPos = vec4(transpose(mat3(viewMatrix)) * (ecPos.xyz - viewMatrix[3].xyz * ecPos.w), ecPos.w);\n";
 	if (inputUsed[SlotNormal])
 		ss << "  normal = vec4(transpose(mat3(viewMatrix)) * normalize(mat3(modelView) * v" << SlotNormal << ".xyz), 0.0);\n";
