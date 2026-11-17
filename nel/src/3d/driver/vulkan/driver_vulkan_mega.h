@@ -178,7 +178,7 @@ struct CShadowUBOData
 	float worldToMask0[16]; // 64
 	float worldToMask1[16]; // 64
 	float splits[4];        // 16 (x = first cascade view distance)
-	float params[4];        // 16 (x = enabled, y = unused, z = sun strength)
+	float params[4];        // 16 (x = enabled, y = mask texel in UV, z = sun strength)
 	/// Per-cascade receiver tolerance and soft-edge width, in the mask's
 	/// normalized light-space depth (x = cascade 0, y = cascade 1).
 	float depthBias[4];     // 16

@@ -51,6 +51,12 @@ static const float	NL_MODERN_SHADOW_CASTER_OFFSET = 0.01f;
 /// depth is bilinearly filtered, so the comparison needs a little slack; half
 /// a texel is enough now that the stored depth itself is exact.
 static const float	NL_MODERN_SHADOW_BIAS_TEXELS = 0.5f;
+/// Penumbra width, in mask texels. The depth comparison alone has a hard
+/// edge at the receiver's own tolerance, which reads as a staircase along the
+/// mask lattice at close range; stretching the smoothstep over several texels
+/// makes the contact shadow diffuse. Only the softness grows: the bias above
+/// stays at half a texel, so the shadow stays attached at the base.
+static const float	NL_MODERN_SHADOW_SOFTNESS_TEXELS = 4.f;
 
 namespace {
 
@@ -244,11 +250,18 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		cameraMatrix.translate(boxMin);
 		cameraMatrix.setRot(iAxis * boxSize.x, jAxis * boxSize.y, kAxis * boxSize.z);
 
-		// The depth axis is fitted to the casters that actually project into
-		// the box (the image axes of the box are left untouched). A float mask
-		// no longer needs the fit for precision, but the tighter range still
-		// keeps the far side of the cascade out of the depth comparison, and
-		// the casters of the other cascade cannot leak in.
+		// The depth axis must contain every receiver the shader will test,
+		// not just the casters: it is the same box the receiver matrix maps to
+		// [0,1], so the whole box is the range by default. Fitting it to the
+		// casters (as this pass used to) left every receiver beyond the
+		// casters' light-space extent with a depth > 1, which compares greater
+		// than the "empty" clear value (1.0 = lit) and turned whole stretches
+		// of desert into one giant shadow whose extent moved with the camera,
+		// as casters entered and left the fit.
+		//
+		// A caster whose bbox sticks out of the box (a tall cliff above the
+		// cascade) only *extends* the range, so it is not clipped. The image
+		// axes of the box are never touched.
 		//
 		// The driver inserts its NeL->GL change basis between the projection
 		// and the model-view matrix (mvp = P * _ChangeBasis * MV), so the
@@ -257,8 +270,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// -- into the window depth. That is the same naming the legacy path
 		// uses with CShadowMapProjector::_XYZToUWVMatrix.
 		CMatrix	boxToMask = cameraMatrix.inverted();
-		float	depthLo = 1.f, depthHi = 0.f;
-		bool	haveDepth = false;
+		float	depthLo = 0.f, depthHi = 1.f;
 		for (uint c = 0; c < casters.size(); ++c)
 		{
 			CAABBox bb;
@@ -268,35 +280,25 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 			lightSpaceAABBox(boxToMask, bb, lo, hi);
 			if (hi.x < 0.f || lo.x > 1.f || hi.z < 0.f || lo.z > 1.f)
 				continue; // outside the image plane of the box: it draws nothing here
-			depthLo = std::min(depthLo, lo.y);
-			depthHi = std::max(depthHi, hi.y);
-			haveDepth = true;
+			depthLo = std::min(depthLo, lo.y - NL_MODERN_SHADOW_DEPTH_MARGIN);
+			depthHi = std::max(depthHi, hi.y + NL_MODERN_SHADOW_DEPTH_MARGIN);
 		}
-		float	depthSpan = 1.f;
-		if (haveDepth)
+		const float	depthSpan = depthHi - depthLo;
+		if (depthSpan <= 1.f)
 		{
-			depthLo = std::max(0.f, depthLo - NL_MODERN_SHADOW_DEPTH_MARGIN);
-			depthHi = std::min(1.f, depthHi + NL_MODERN_SHADOW_DEPTH_MARGIN);
-			depthSpan = depthHi - depthLo;
-			if (depthSpan < 0.05f)
-			{
-				// Degenerate (everything coplanar along the light): keep the
-				// whole box so the comparison still has a usable range.
-				depthLo = 0.f;
-				depthSpan = 1.f;
-			}
+			// The common case: nothing sticks out, so the range stays exactly
+			// the box (depthLo == 0, depthSpan == 1) and no fit is applied.
+			cameraMatrix.setRot(iAxis * boxSize.x, jAxis * boxSize.y, kAxis * boxSize.z);
 		}
-		if (depthSpan < 1.f)
+		else
 		{
 			// The depth axis is J: put the near plane at depthLo and scale J
-			// by the fitted span. J is a column of the camera rotation, so the
-			// world offset is simply jAxis * metres, and the position must be
-			// set directly (translate() would scale the offset again).
+			// by the extended span. J is a column of the camera rotation, so
+			// the world offset is simply jAxis * metres, and the position must
+			// be set directly (translate() would scale the offset again).
 			cameraMatrix.setPos(cameraMatrix.getPos() + jAxis * (depthLo * boxSize.y));
 			cameraMatrix.setRot(iAxis * boxSize.x, jAxis * (boxSize.y * depthSpan), kAxis * boxSize.z);
 		}
-		else
-			cameraMatrix.setRot(iAxis * boxSize.x, jAxis * boxSize.y, kAxis * boxSize.z);
 
 		// The casters are rendered through a camera whose near plane is pushed
 		// back by NL_MODERN_SHADOW_CASTER_OFFSET, while the receivers keep
@@ -305,13 +307,11 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// the depth-mask equivalent of glPolygonOffset. The offset is in metres
 		// along the sun, the unit the masks are built in.
 		const float	depthMetres = boxSize.y * depthSpan;
+		const float	casterOffset = NL_MODERN_SHADOW_CASTER_OFFSET;
 		CMatrix		casterMatrix = cameraMatrix;
-		if (depthSpan < 1.f)
-		{
-			casterMatrix.setPos(cameraMatrix.getPos() - jAxis * NL_MODERN_SHADOW_CASTER_OFFSET);
-			casterMatrix.setRot(iAxis * boxSize.x,
-				jAxis * (depthMetres + NL_MODERN_SHADOW_CASTER_OFFSET), kAxis * boxSize.z);
-		}
+		casterMatrix.setPos(cameraMatrix.getPos() - jAxis * casterOffset);
+		casterMatrix.setRot(iAxis * boxSize.x,
+			jAxis * (depthMetres + casterOffset), kAxis * boxSize.z);
 
 		// cameraMatrix is the camera-to-world matrix of the light camera (the
 		// same convention as CShadowMap::buildCasterCameraMatrix); the shader
@@ -331,7 +331,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		if (_HighPrecision)
 		{
 			_DepthBias[i] = (NL_MODERN_SHADOW_BIAS_TEXELS * texelMetres) / depthMetres;
-			_DepthSoftness[i] = texelMetres / depthMetres;
+			_DepthSoftness[i] = (NL_MODERN_SHADOW_SOFTNESS_TEXELS * texelMetres) / depthMetres;
 		}
 		else
 		{
@@ -380,6 +380,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	CModernShadowState	state;
 	state.Enabled = true;
 	state.NumCascades = _NumCascades;
+	state.MaskTexelUv = 1.f / (float)_Size;
 	// Sun share of the current lighting: the landscape lightmaps hold both the
 	// sun and the sky, so darkening them by the full shadow at dusk would
 	// remove the ambient light too. Ryzom publishes the sun and ambient colors
@@ -390,7 +391,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		const float sunLum = 0.3f * (float)sun.R + 0.59f * (float)sun.G + 0.11f * (float)sun.B;
 		const float ambLum = 0.3f * (float)amb.R + 0.59f * (float)amb.G + 0.11f * (float)amb.B;
 		const float share = sunLum / std::max(1.f, sunLum + ambLum);
-		state.SunStrength = std::min(0.85f, std::max(0.25f, share));
+		state.SunStrength = std::min(0.50f, std::max(0.25f, share));
 	}
 	for (uint i = 0; i < _NumCascades; ++i)
 	{

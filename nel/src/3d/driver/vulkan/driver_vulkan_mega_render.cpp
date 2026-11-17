@@ -989,6 +989,8 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	if (_ModernShadowState.Enabled)
 	{
 		shadowData.params[0] = 1.f;
+		// One mask texel in UV: the penumbra taps are offset by it.
+		shadowData.params[1] = _ModernShadowState.MaskTexelUv;
 		shadowData.params[2] = _ModernShadowState.SunStrength;
 		memcpy(shadowData.worldToMask0, _ModernShadowState.WorldToMask[0], sizeof(shadowData.worldToMask0));
 		memcpy(shadowData.worldToMask1, _ModernShadowState.WorldToMask[1], sizeof(shadowData.worldToMask1));

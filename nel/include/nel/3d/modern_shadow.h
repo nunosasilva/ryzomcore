@@ -58,6 +58,9 @@ struct CModernShadowState
 	/// Width of the smoothstep that turns the depth comparison into a soft
 	/// edge, in the same normalized units as DepthBias.
 	float			DepthSoftness[4];
+	/// One mask texel in UV units (1/mask size): the shader offsets its
+	/// penumbra taps by this much.
+	float			MaskTexelUv;
 	/// How much of the scene's light is direct sun (0..1). The shader uses it
 	/// to scale the darkening so shadowed areas keep the sky/ambient part:
 	/// at dusk, when the sun is dim, a full shadow would otherwise paint
@@ -65,7 +68,7 @@ struct CModernShadowState
 	float			SunStrength;
 
 	CModernShadowState()
-		: Enabled(false), NumCascades(0), SunStrength(0.f)
+		: Enabled(false), NumCascades(0), MaskTexelUv(0.f), SunStrength(0.f)
 	{
 		for (uint i = 0; i < 4; ++i)
 		{
