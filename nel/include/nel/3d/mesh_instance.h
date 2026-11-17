@@ -102,7 +102,7 @@ protected:
 	virtual	void		renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat) NL_OVERRIDE;
 	virtual	CShadowMap	*getShadowMap() NL_OVERRIDE;
 	virtual bool		computeWorldBBoxForShadow(NLMISC::CAABBox &worldBB) NL_OVERRIDE;
-	virtual void		renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, CMaterial	&castMat) NL_OVERRIDE;
+	virtual void		renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, CMaterial	&castMat, bool worldSpace) NL_OVERRIDE;
 	// @}
 
 private:

@@ -567,8 +567,12 @@ public:
 	 *	setuped Frustum/ViewMatrix.
 	 *	no-op by default, or if hidden in HRC!!
 	 *	\param rootSkeleton the skeleton which is currently rendering its shadowMap
+	 *	\param worldSpace true when the view/projection setup is in world space (the
+	 *		modern cascaded sun masks). The legacy per-caster shadow map lives in the
+	 *		root skeleton's local space, so its model matrices are relative to it; the
+	 *		modern pass must use the plain world matrices instead.
 	 */
-	virtual void		renderIntoSkeletonShadowMap(CSkeletonModel * /* rootSkeleton */, CMaterial	&/* castMat */) { }
+	virtual void		renderIntoSkeletonShadowMap(CSkeletonModel * /* rootSkeleton */, CMaterial	&/* castMat */, bool /* worldSpace */) { }
 
 	/** To limit some problems when the light direction is too on the XY axis.
 	 *	This method set an "angle" threshold for the shadow direction

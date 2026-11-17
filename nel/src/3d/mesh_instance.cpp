@@ -373,7 +373,7 @@ bool	CMeshInstance::computeWorldBBoxForShadow(NLMISC::CAABBox &worldBB)
 }
 
 // ***************************************************************************
-void	CMeshInstance::renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, CMaterial	&castMat)
+void	CMeshInstance::renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, CMaterial	&castMat, bool worldSpace)
 {
 	/*
 		Yoyo: Not Very Robuts here:
@@ -389,11 +389,20 @@ void	CMeshInstance::renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, CM
 	IDriver			*driver= getOwnerScene()->getRenderTrav().getAuxDriver();
 
 	// **** Render the Skeleton Skins
-	// The model Matrix is special here. It must be the Skeleton World Matrix, minus The Root Skeleton pos.
+	// The legacy per-caster shadow map has its camera in the root skeleton's
+	// local space, so the model matrix is the Skeleton World Matrix minus the
+	// Root Skeleton pos. The modern cascaded masks work in world space.
 	CMatrix		localPosMatrix;
-	localPosMatrix.setRot( getWorldMatrix() );
-	// NB: if this==rootSkeleton, then the final pos will be CVector::Null
-	localPosMatrix.setPos( getWorldMatrix().getPos() - rootSkeleton->getWorldMatrix().getPos() );
+	if(worldSpace)
+	{
+		localPosMatrix= getWorldMatrix();
+	}
+	else
+	{
+		localPosMatrix.setRot( getWorldMatrix() );
+		// NB: if this==rootSkeleton, then the final pos will be CVector::Null
+		localPosMatrix.setPos( getWorldMatrix().getPos() - rootSkeleton->getWorldMatrix().getPos() );
+	}
 	driver->setupModelMatrix(localPosMatrix);
 
 	// render the Mesh

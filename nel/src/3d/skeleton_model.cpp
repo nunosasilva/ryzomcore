@@ -2136,7 +2136,7 @@ void		CSkeletonModel::generateShadowMap(const CVector &lightDir)
 
 	// render the Skinned meshs, and also the Sticked Objects/Skeletons
 	CMaterial	&castMat= renderTrav.getShadowMapManager().getCasterShadowMaterial();
-	renderIntoSkeletonShadowMap(this, castMat);
+	renderIntoSkeletonShadowMap(this, castMat, false);
 
 	// Infos.
 	// ****
@@ -2169,7 +2169,7 @@ void		CSkeletonModel::renderModernShadowCaster(IDriver *driver, const NLMISC::CM
 	// world to [0,1]^3 and the skinned vertices are rendered in world space.
 	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
 	driver->setupViewMatrix(cameraMatrix.inverted());
-	renderIntoSkeletonShadowMap(this, castMat);
+	renderIntoSkeletonShadowMap(this, castMat, true);
 	++NLModernShadowCasterMeshes;
 }
 
@@ -2392,7 +2392,7 @@ bool		CSkeletonModel::computeWorldBBoxForShadow(NLMISC::CAABBox &worldBB)
 }
 
 // ***************************************************************************
-void		CSkeletonModel::renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, CMaterial	&castMat)
+void		CSkeletonModel::renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, CMaterial	&castMat, bool worldSpace)
 {
 	// If even not visible, no-op
 	if(!isHrcVisible() || !Shape)
@@ -2402,11 +2402,23 @@ void		CSkeletonModel::renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, 
 	IDriver			*driver= getOwnerScene()->getRenderTrav().getAuxDriver();
 
 	// **** Render the Skeleton Skins
-	// The model Matrix is special here. It must be the Skeleton World Matrix, minus The Root Skeleton pos.
+	// The skinning produces vertices in the skeleton-local space (the bone
+	// skin matrices do not include the root matrix), so the model matrix is
+	// the skeleton's world matrix. The legacy per-caster shadow map builds its
+	// camera in the root skeleton's local space and therefore subtracts the
+	// root position; the modern cascaded masks work in world space and must
+	// keep it (otherwise every avatar is drawn around the world origin).
 	CMatrix		localPosMatrix;
-	localPosMatrix.setRot( getWorldMatrix() );
-	// NB: if this==rootSkeleton, then the final pos will be CVector::Null
-	localPosMatrix.setPos( getWorldMatrix().getPos() - rootSkeleton->getWorldMatrix().getPos() );
+	if(worldSpace)
+	{
+		localPosMatrix= getWorldMatrix();
+	}
+	else
+	{
+		localPosMatrix.setRot( getWorldMatrix() );
+		// NB: if this==rootSkeleton, then the final pos will be CVector::Null
+		localPosMatrix.setPos( getWorldMatrix().getPos() - rootSkeleton->getWorldMatrix().getPos() );
+	}
 	driver->setupModelMatrix(localPosMatrix);
 
 	// render the skins.
@@ -2417,7 +2429,7 @@ void		CSkeletonModel::renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, 
 	for(it= _StickedObjects.begin();it!=_StickedObjects.end();it++)
 	{
 		CTransform	*stickModel= *it;
-		stickModel->renderIntoSkeletonShadowMap(rootSkeleton, castMat);
+		stickModel->renderIntoSkeletonShadowMap(rootSkeleton, castMat, worldSpace);
 	}
 }
 
