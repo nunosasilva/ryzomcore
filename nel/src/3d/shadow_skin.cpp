@@ -70,6 +70,74 @@ void		CShadowSkin::applySkin(CVector *dst, std::vector<CMatrix3x4> &boneMat3x4)
 
 
 // ***************************************************************************
+void		CShadowSkin::applySkin(CVector *dst, const CSkeletonModel &skeleton)
+{
+	if(Vertices.empty())
+		return;
+
+	// One matrix per bone id the hull uses. The array is kept between calls (a
+	// shape's hull always references the same ids), but every entry a call
+	// reads is written by that call: see the header for why the LOD's
+	// influence list is not enough to fill it.
+	static	std::vector<CMatrix3x4>	boneMat3x4;
+	static	std::vector<uint32>		boneStamp;
+	static	uint32					stamp = 0;
+
+	const uint	numBones= (uint)skeleton.Bones.size();
+	if(boneMat3x4.size() < numBones)
+	{
+		boneMat3x4.resize(numBones);
+		boneStamp.resize(numBones, 0);
+	}
+	++stamp;
+	if(stamp == 0)
+	{
+		// Wrapped: every stamp would look current, so start over.
+		std::fill(boneStamp.begin(), boneStamp.end(), 0);
+		stamp = 1;
+	}
+
+	uint	numVerts= (uint)Vertices.size();
+	CShadowVertex	*src= &Vertices[0];
+
+	// Then do the skin
+	for(;numVerts>0;)
+	{
+		// number of vertices to process for this block.
+		uint	nBlockInf= min(NumCacheVertexShadow, numVerts);
+		// next block.
+		numVerts-= nBlockInf;
+
+		// cache the data in L1 cache.
+		CFastMem::precache(src, nBlockInf * sizeof(CShadowVertex));
+
+		for(;nBlockInf>0;nBlockInf--, src++, dst++)
+		{
+			uint	boneId= src->MatrixId;
+			if(boneId >= numBones)
+			{
+				// Bad data (or a hull exported against another skeleton): fall
+				// back to the root bone instead of reading past the skeleton.
+				static bool warned = false;
+				if(!warned)
+				{
+					warned = true;
+					nlwarning("CShadowSkin: hull vertex references bone %u but the skeleton has only %u bones; using bone 0", boneId, numBones);
+				}
+				boneId= 0;
+			}
+			if(boneStamp[boneId] != stamp)
+			{
+				boneMat3x4[boneId].set(skeleton.getActiveBoneSkinMatrix(boneId));
+				boneStamp[boneId]= stamp;
+			}
+			boneMat3x4[boneId].mulSetPoint( src->Vertex, *dst );
+		}
+	}
+}
+
+
+// ***************************************************************************
 bool	CShadowSkin::getRayIntersection(const CMatrix &toRaySpace, CSkeletonModel &skeleton,
 							   const std::vector<uint32> &matrixInfluences, float &dist2D, float &distZ, bool computeDist2D)
 {

@@ -2060,13 +2060,10 @@ sint			CMeshMRMSkinnedGeom::renderShadowSkinGeom(CMeshMRMSkinnedInstance	*mi, ui
 	// Skinning.
 	//===========
 
-	// For all matrix this Mesh use. (the shadow geometry cannot use other Matrix than the mesh use).
-	// NB: take the best lod since the lower lods cannot use other Matrix than the higher one.
-	static	vector<CMatrix3x4>		boneMat3x4;
-	CLod	&lod= _Lods[_Lods.size()-1];
-	computeBoneMatrixes3x4(boneMat3x4, lod.MatrixInfluences, skeleton);
-
-	_ShadowSkin.applySkin((CVector*)vbDest, boneMat3x4);
+	// The hull stores one bone id per vertex; resolve the matrices from those
+	// ids instead of the best LOD's influence list, which only holds the bones
+	// the LOD's own vertices use (see CShadowSkin::applySkin).
+	_ShadowSkin.applySkin((CVector*)vbDest, *skeleton);
 
 
 	// How many vertices are added to the VBuffer ???

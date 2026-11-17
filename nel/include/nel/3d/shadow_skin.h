@@ -75,6 +75,18 @@ public:
 
 	// skinning
 	void		applySkin(NLMISC::CVector *dst, std::vector<CMatrix3x4> &boneMat3x4);
+	/** Skinning with the bone matrices resolved from the hull's own vertices.
+	 *
+	 *	The hull is built from the mesh's whole bone set, while a LOD's
+	 *	MatrixInfluences list only holds the bones that LOD's vertices use, so
+	 *	the two sets are not guaranteed to match. Resolving the matrix of every
+	 *	MatrixId the hull references keeps the skinning correct in that case;
+	 *	computeBoneMatrixes3x4() alone fills an array that is shared between
+	 *	meshes and never cleared, so an id missing from the list used to read a
+	 *	bone matrix left over from another mesh (a hull vertex landing at
+	 *	another limb, i.e. a stretched shadow) or past the array's end.
+	 */
+	void		applySkin(NLMISC::CVector *dst, const class CSkeletonModel &skeleton);
 
 	/** return ray intersection.
  	 *	\return false if no triangles, true if can do the test (even if don't intersect!)
