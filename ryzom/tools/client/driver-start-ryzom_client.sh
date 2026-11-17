@@ -992,8 +992,8 @@ do_light() {
 		return 1
 		;;
 	on)
-		if [ "$FORCE_LIGHT_OFF" = 1 ]; then
-			warn "RYZOM_FORCE_LIGHT_OFF is in the client environment; the hook keeps it off (restart to turn it on)"
+		if [ "$LIGHT_OFF_STATE" = 1 ]; then
+			warn "this client was started with RYZOM_FORCE_LIGHT_OFF=1; restart without REUSE=1 to turn the light on"
 			return 1
 		fi
 		LIGHT_OFF_STATE=0
