@@ -70,6 +70,7 @@ extern EGSPD::CSeason::TSeason	ManualSeasonValue;
 extern bool				ForceTrueWeatherValue;
 extern float			DayNightCycleHour;
 extern float			ForcedDayNightCycleHour;
+extern float			ForcedWeatherValue;
 
 class CWeatherFunctionParamsSheetBase;
 class CWeatherFunction;
