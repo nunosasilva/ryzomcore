@@ -882,11 +882,12 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// landscape/vegetation lightmaps, so it is applied to the final lit
 		// colour below rather than to one entry of the light table.
 		ss << "  nlSunShadow = 1.0;" << std::endl;
-		// World position for the shadow lookup, rebuilt from eye space: the
-		// worldPos varying is only written by vertex programs that ask for it,
-		// and the landscape/village programs do not. ecPos is always there.
-		ss << "  bool haveWsPos = ecPos.w != 0.0;" << std::endl;
-		ss << "  vec3 shadowWsPos = haveWsPos ? (transpose(mat3(viewMatrix)) * (ecPos.xyz - viewMatrix[3].xyz * ecPos.w)) / ecPos.w : vec3(0.0);" << std::endl;
+		// World position for the shadow lookup. Both vertex program kinds write
+		// worldPos (the mega one when nlWorldSpacePosition is set, the converted
+		// NeL programs unconditionally in their epilogue), so this is the engine's
+		// own idea of where the fragment is.
+		ss << "  bool haveWsPos = worldPos.w != 0.0;" << std::endl;
+		ss << "  vec3 shadowWsPos = haveWsPos ? worldPos.xyz / worldPos.w : vec3(0.0);" << std::endl;
 		ss << "  if (nlShadow.params.x > 0.5 && haveWsPos) {" << std::endl;
 		ss << "    float sunDist = length(shadowWsPos - cameraWorldPos);" << std::endl;
 		ss << "    vec4 sunP = (sunDist < nlShadow.splits.x) ? (nlShadow.worldToMask0 * vec4(shadowWsPos, 1.0)) : (nlShadow.worldToMask1 * vec4(shadowWsPos, 1.0));" << std::endl;
@@ -1123,7 +1124,7 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	// otherwise be painted over the world they are meant to show.
 	//   1 coverage factor, 2 cascade block, 3 raw mask texel, 4 mask image,
 	//   5 CPU-computed marker
-	ss << "  if (nlFogEnabled != 0) {" << std::endl;
+	ss << "  if (nlShadow.params.w > 0.5) {" << std::endl;
 	ss << "    if (nlShadow.params.w > 5.5) {" << std::endl;
 	ss << "      vec2 d = abs(nlSunUv - nlShadow.screen.zw);" << std::endl;
 	ss << "      if (d.x < 0.004 || d.y < 0.004) fragColor = vec4(1.0, 0.0, 1.0, 1.0);" << std::endl;
@@ -1131,7 +1132,9 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	ss << "      vec2 muv = gl_FragCoord.xy * nlShadow.screen.xy;" << std::endl;
 	ss << "      fragColor = vec4(vec3(texture(nlShadowMask0, muv).a), 1.0);" << std::endl;
 	ss << "    } else if (nlShadow.params.w > 3.5) {" << std::endl;
-	ss << "      fragColor = vec4(1.0, 0.0, 1.0, 1.0);" << std::endl;
+	ss << "      fragColor = vec4(length(nlShadow.worldToMask0[0].xyz) * 100.0," << std::endl;
+	ss << "                      length(nlShadow.worldToMask0[1].xyz) * 100.0," << std::endl;
+	ss << "                      length(nlShadow.worldToMask0[2].xyz) * 100.0, 1.0);" << std::endl;
 	ss << "    } else if (nlShadow.params.w > 2.5) {" << std::endl;
 	ss << "      vec4 raw = texture(nlShadowMask0, nlSunUv);" << std::endl;
 	ss << "      fragColor = vec4(raw.a, raw.r, 0.0, 1.0);" << std::endl;
