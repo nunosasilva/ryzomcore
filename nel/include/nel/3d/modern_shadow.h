@@ -101,6 +101,11 @@ public:
 	/// True when the scene wants shadows and the driver can take the modern path.
 	bool					isEnabled(CScene *scene) const;
 
+	/** Stop sampling the masks (the Shadows option was turned off): publish a
+	 *	disabled state once, so the shader does not keep using the last masks.
+	 */
+	void					reset(CScene *scene);
+
 	/** Render the cascades for this pass. Returns true when the modern path
 	 *	handled generation and the legacy renderGenerate() must be skipped.
 	 */

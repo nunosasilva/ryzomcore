@@ -251,7 +251,10 @@ void			CShadowMapManager::addShadowReceiver(CTransform *model)
 bool			CShadowMapManager::renderModernShadowMasks(CScene *scene)
 {
 	if( !_ModernShadow.isEnabled(scene) )
+	{
+		_ModernShadow.reset(scene);
 		return false;
+	}
 
 	// The per-view _ShadowCasters list is filled by the clip traversal, which
 	// runs after this early pass. Use the scene's registered caster list
@@ -264,7 +267,11 @@ bool			CShadowMapManager::renderModernShadowMasks(CScene *scene)
 		casters.push_back(*it);
 	}
 	if( casters.empty() )
+	{
+		// Nothing to encode this frame: stop sampling the previous masks.
+		_ModernShadow.reset(scene);
 		return false;
+	}
 	return _ModernShadow.render(scene, casters);
 }
 

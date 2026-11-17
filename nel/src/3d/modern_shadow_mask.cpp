@@ -102,6 +102,16 @@ bool CModernShadowMask::isEnabled(CScene *scene) const
 	return driver && driver->supportsModernShadows();
 }
 
+void CModernShadowMask::reset(CScene *scene)
+{
+	if (!_Active)
+		return;
+	_Active = false;
+	IDriver *driver = scene ? scene->getRenderTrav().getAuxDriver() : NULL;
+	if (driver)
+		driver->setModernShadowState(CModernShadowState());
+}
+
 bool CModernShadowMask::ensureMasks()
 {
 	if (_Mask[0] && _Mask[1])
@@ -131,15 +141,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 {
 	if (!isEnabled(scene))
 	{
-		// Publish the disabled state once, so turning the Shadows option off
-		// in game stops the shader from sampling the last rendered masks.
-		if (_Active)
-		{
-			_Active = false;
-			IDriver *driver = scene ? scene->getRenderTrav().getAuxDriver() : NULL;
-			if (driver)
-				driver->setModernShadowState(CModernShadowState());
-		}
+		reset(scene);
 		return false;
 	}
 
