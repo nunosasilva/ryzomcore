@@ -139,7 +139,11 @@ struct CMaterialUBOData
 	sint32 nlTextureActive;        // 4 (from materialSetup)
 	sint32 nlAlphaTest;            // 4 (from materialSetup)
 	float nlLightMapScale;         // 4 (default 1.0f, only used in lightmap material UBO)
-	sint32 _pad[2];                // 8
+	/// 1 while the modern shadow caster pass is drawing (see
+	/// IDriver::setModernShadowDepthPass): the pixel program then writes the
+	/// fragment's light-space depth instead of its lit colour.
+	sint32 nlShadowDepthPass;      // 4
+	sint32 _pad0;                  // 4
 	// TexEnv block (from setupNormalPass / setupLightmapPass)
 	uint32 nlTexEnvMode[4];        // 16 (4 separate uint in GLSL, not an array -- avoids std140 vec4 padding)
 	// constant[0-3]: TexEnv constant colors (Normal/UserColor shaders)
@@ -165,18 +169,23 @@ struct CWaterUBOData
 nlctassert(sizeof(CWaterUBOData) == 48);
 
 // ***************************************************************************
-// Modern sun shadow block (binding 7, std140). Two cascade coverage masks
-// with their world -> mask UV matrices; params.x enables sampling, params.y
-// is the mask texel size in UV units.
+// Modern sun shadow block (binding 7, std140). Two cascade depth masks with
+// their world -> mask matrices; params.x enables sampling, params.y is the
+// mask texel size in UV units. The masks hold the nearest caster's light-space
+// depth (1 = no caster = lit).
 struct CShadowUBOData
 {
 	float worldToMask0[16]; // 64
 	float worldToMask1[16]; // 64
 	float splits[4];        // 16 (x = first cascade view distance)
-	float params[4];        // 16 (x = enabled, y = texel uv)
+	float params[4];        // 16 (x = enabled, y = texel uv, z = sun strength, w = debug)
 	float screen[4];        // 16 (development: 1/w, 1/h of the current target)
+	/// Per-cascade receiver bias, in the mask's normalized light-space depth
+	/// (x = cascade 0, y = cascade 1). Covers the 8-bit mask quantization and
+	/// the receiver's own surface slope over one texel.
+	float depthBias[4];     // 16
 };
-nlctassert(sizeof(CShadowUBOData) == 176);
+nlctassert(sizeof(CShadowUBOData) == 192);
 
 // GLSL headers prepended to the generated mega programs.
 std::string buildVulkanLightTableHeader(sint maxLights);

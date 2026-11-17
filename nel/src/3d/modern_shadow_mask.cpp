@@ -41,12 +41,41 @@ uint32	NLModernShadowCasterMeshes = 0;
 // readable one near the player; the second covers the visible mid distance.
 static const float	NL_MODERN_SHADOW_RADIUS[2] = { 40.f, 80.f };
 static const uint	NL_MODERN_SHADOW_SIZE = 2048;
+/// Depth margin kept around the casters' light-space extent (fraction of the
+/// cascade box), so a caster whose bbox is slightly off is not clipped.
+static const float	NL_MODERN_SHADOW_DEPTH_MARGIN = 0.02f;
+
+namespace {
+
+/** Light-space AABB of a world AABB under an affine map to the cascade box.
+  * Fills lo/hi with the box-space bounds of the 8 transformed corners.
+  */
+void	lightSpaceAABBox(const CMatrix &worldToMask, const CAABBox &world,
+	CVector &lo, CVector &hi)
+{
+	const CVector	center = worldToMask * world.getCenter();
+	const CVector	half = world.getHalfSize();
+	const CVector	i = worldToMask.getI();
+	const CVector	j = worldToMask.getJ();
+	const CVector	k = worldToMask.getK();
+	CVector	extent;
+	extent.x = fabsf(i.x) * half.x + fabsf(j.x) * half.y + fabsf(k.x) * half.z;
+	extent.y = fabsf(i.y) * half.x + fabsf(j.y) * half.y + fabsf(k.y) * half.z;
+	extent.z = fabsf(i.z) * half.x + fabsf(j.z) * half.y + fabsf(k.z) * half.z;
+	lo = center - extent;
+	hi = center + extent;
+}
+
+} // anonymous namespace
 
 CModernShadowMask::CModernShadowMask(CShadowMapManager *owner)
 	: _Owner(owner), _Size(NL_MODERN_SHADOW_SIZE), _Active(false), _NumCascades(0)
 {
 	for (uint i = 0; i < 2; ++i)
+	{
 		_Split[i] = 0.f;
+		_DepthBias[i] = 0.f;
+	}
 
 	_CasterMaterial.initUnlit();
 	_CasterMaterial.setColor(CRGBA::White);
@@ -56,6 +85,10 @@ CModernShadowMask::CModernShadowMask(CShadowMapManager *owner)
 	// are single-layer shells whose only faces point away from the light, and
 	// culling them would leave the mask empty.
 	_CasterMaterial.setDoubleSided(true);
+	// The mask stores a depth, not a coverage: while the depth pass is on the
+	// driver ignores these blend factors and blends with MIN, which is what
+	// keeps the nearest caster per texel. They are kept as the plain
+	// additive fallback for a driver without the depth pass.
 	_CasterMaterial.setBlend(true);
 	_CasterMaterial.setBlendFunc(CMaterial::one, CMaterial::one);
 }
@@ -97,7 +130,9 @@ bool CModernShadowMask::ensureMasks()
 	{
 		const uint32 bytes = 4 * _Size * _Size;
 		uint8 *mem = new uint8[bytes];
-		memset(mem, 0, bytes);
+		// White = the far end of the light box = no caster = lit, so a mask
+		// that is sampled before its first caster pass cannot darken anything.
+		memset(mem, 0xFF, bytes);
 		CTextureMem *tex = new CTextureMem(mem, bytes, true, false, _Size, _Size);
 		tex->setWrapS(ITexture::Clamp);
 		tex->setWrapT(ITexture::Clamp);
@@ -122,10 +157,19 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	if (!driver)
 		return false;
 
-	// Every opaque pass rebuilds the cascades around its own camera. The main
-	// pass is what the player sees; the water env map renders the same scene
-	// with a reflected camera from time to time, which costs one extra mask
-	// render but is immediately replaced by the next frame's main pass.
+	// The cascades are fitted to the player's camera. The water reflection
+	// renders the whole scene again through a mirrored camera *inside* the
+	// same opaque pass; rebuilding the masks there would cost a full caster
+	// pass and publish matrices that no longer match the main view, which the
+	// rest of the pass would then sample. Keep the main view's masks: the
+	// mirrored scene is only seen through moving water.
+	if (scene->getWaterReflectionManager().isRenderingReflection())
+		return _Active;
+
+	// Every opaque pass of the main view rebuilds the cascades around its own
+	// camera. The water reflection pass returns early above: it is a mirrored
+	// view of the same scene and re-using the main cascades is both cheaper
+	// and keeps the published matrices valid for the rest of the pass.
 	if (!ensureMasks())
 		return false;
 
@@ -139,32 +183,6 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	{
 		lastLoggedCasters = (uint)casters.size();
 		nlinfo("MODERNSHADOW casters now=%u size=%u", (unsigned)casters.size(), (unsigned)_Size);
-	}
-
-	// TEMP: what the casters are and where they land in cascade 0.
-	{
-		static bool loggedBoxes = false;
-		if (!loggedBoxes && !casters.empty())
-		{
-			loggedBoxes = true;
-			const CMatrix &w2m = _WorldToMask[0];
-			for (uint c = 0; c < casters.size() && c < 6; ++c)
-			{
-				CAABBox bb;
-				if (!casters[c] || !casters[c]->computeWorldBBoxForShadow(bb))
-				{
-					nlinfo("MODERNSHADOW caster %u: no bbox (no-op caster)", c);
-					continue;
-				}
-				const CVector cc = bb.getCenter(), hs = bb.getHalfSize();
-				const CVector p0 = w2m * (cc - hs);
-				const CVector p1 = w2m * (cc + hs);
-				nlinfo("MODERNSHADOW caster %u: center=(%.1f %.1f %.1f) half=(%.1f %.1f %.1f) uv=(%.3f..%.3f, %.3f..%.3f)",
-					c, cc.x, cc.y, cc.z, hs.x, hs.y, hs.z,
-					std::min(p0.x, p1.x), std::max(p0.x, p1.x),
-					std::min(p0.y, p1.y), std::max(p0.y, p1.y));
-			}
-		}
 	}
 
 	CMaterial	&castMat = _CasterMaterial;
@@ -183,19 +201,6 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	driver->setModernShadowState(CModernShadowState());
 
 	const CVector	sun = scene->getSunDirection();
-	// TEMP: which space is the driver working in?
-	{
-		static bool logged = false;
-		if (!logged)
-		{
-			logged = true;
-			const CMatrix view = driver->getViewMatrix();
-			const CVector vt = view.getPos();
-			const CVector cp = scene->getRenderTrav().CamPos;
-			nlinfo("MODERNSHADOW space: camPos=(%.2f %.2f %.2f) viewT=(%.2f %.2f %.2f)",
-				cp.x, cp.y, cp.z, vt.x, vt.y, vt.z);
-		}
-	}
 	// TEMP: the mask is only right for the sun direction it was built with.
 	{
 		static CVector lastSun(0.f, 0.f, 0.f);
@@ -216,21 +221,103 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// transformed into light space.
 		CMatrix		cameraMatrix;
 		cameraMatrix.setArbitraryRotJ(sun);
+		const CVector	iAxis = cameraMatrix.getI();
+		const CVector	jAxis = cameraMatrix.getJ();
+		const CVector	kAxis = cameraMatrix.getK();
 		CAABBox		worldBox;
 		worldBox.setCenter(camPos);
 		worldBox.setHalfSize(CVector(NL_MODERN_SHADOW_RADIUS[i], NL_MODERN_SHADOW_RADIUS[i], NL_MODERN_SHADOW_RADIUS[i]));
 		CAABBox		localBox = CAABBox::transformAABBox(cameraMatrix.inverted(), worldBox);
-		cameraMatrix.translate(localBox.getMin());
-		cameraMatrix.setRot(
-			cameraMatrix.getI() * localBox.getSize().x,
-			cameraMatrix.getJ() * localBox.getSize().y,
-			cameraMatrix.getK() * localBox.getSize().z);
+		const CVector	boxMin = localBox.getMin();
+		const CVector	boxSize = localBox.getSize();
+		// translate() moves along the camera's own basis, so this puts the
+		// light camera at the box corner in light space (see the inverse
+		// below: boxToMask maps the box exactly to [0,1]^3).
+		cameraMatrix.translate(boxMin);
+		cameraMatrix.setRot(iAxis * boxSize.x, jAxis * boxSize.y, kAxis * boxSize.z);
+
+		// The mask only stores 8 bits per channel, so the depth axis is fitted
+		// to the casters that actually project into the box (the image axes of
+		// the box are left untouched): a smaller depth extent means a smaller
+		// depth step, and therefore a tighter shadow that starts closer to its
+		// caster.
+		//
+		// The driver inserts its NeL->GL change basis between the projection
+		// and the model-view matrix (mvp = P * _ChangeBasis * MV), so the
+		// caster pass rasterises the box's x into the image U, its z into the
+		// image V, and its y -- the axis along the sun, i.e. cameraMatrix's J
+		// -- into the window depth. That is the same naming the legacy path
+		// uses with CShadowMapProjector::_XYZToUWVMatrix.
+		CMatrix	boxToMask = cameraMatrix.inverted();
+		float	depthLo = 1.f, depthHi = 0.f;
+		bool	haveDepth = false;
+		for (uint c = 0; c < casters.size(); ++c)
+		{
+			CAABBox bb;
+			if (!casters[c] || !casters[c]->computeWorldBBoxForShadow(bb))
+				continue;
+			CVector lo, hi;
+			lightSpaceAABBox(boxToMask, bb, lo, hi);
+			if (hi.x < 0.f || lo.x > 1.f || hi.z < 0.f || lo.z > 1.f)
+				continue; // outside the image plane of the box: it draws nothing here
+			depthLo = std::min(depthLo, lo.y);
+			depthHi = std::max(depthHi, hi.y);
+			haveDepth = true;
+		}
+		float	depthSpan = 1.f;
+		if (haveDepth)
+		{
+			depthLo = std::max(0.f, depthLo - NL_MODERN_SHADOW_DEPTH_MARGIN);
+			depthHi = std::min(1.f, depthHi + NL_MODERN_SHADOW_DEPTH_MARGIN);
+			depthSpan = depthHi - depthLo;
+			if (depthSpan < 0.05f)
+			{
+				// Degenerate (everything coplanar along the light): keep the
+				// whole box so the comparison still has a usable range.
+				depthLo = 0.f;
+				depthSpan = 1.f;
+			}
+		}
+		if (depthSpan < 1.f)
+		{
+			// The depth axis is J: put the near plane at depthLo and scale J
+			// by the fitted span. J is a column of the camera rotation, so the
+			// world offset is simply jAxis * metres, and the position must be
+			// set directly (translate() would scale the offset again).
+			cameraMatrix.setPos(cameraMatrix.getPos() + jAxis * (depthLo * boxSize.y));
+			cameraMatrix.setRot(iAxis * boxSize.x, jAxis * (boxSize.y * depthSpan), kAxis * boxSize.z);
+		}
+		else
+			cameraMatrix.setRot(iAxis * boxSize.x, jAxis * boxSize.y, kAxis * boxSize.z);
 
 		// cameraMatrix is the camera-to-world matrix of the light camera (the
 		// same convention as CShadowMap::buildCasterCameraMatrix); the shader
-		// needs world -> mask UV, i.e. its inverse.
-		_WorldToMask[i] = cameraMatrix.inverted();
+		// needs world -> mask UV, i.e. its inverse -- with the same axis
+		// permutation the rasteriser applies: (x,y,z) -> (x,z,y), the legacy
+		// CShadowMapProjector::_XYZToUWVMatrix. Then sunP.xy is the mask's
+		// image plane and sunP.z is exactly the depth the caster pass wrote
+		// with gl_FragCoord.z.
+		CMatrix	xyzToUvw;
+		xyzToUvw.setRot(CVector::I, CVector::K, CVector::J);
+		_WorldToMask[i] = xyzToUvw * cameraMatrix.inverted();
 		_Split[i] = NL_MODERN_SHADOW_RADIUS[i];
+		// Receiver-side depth bias, in the mask's normalized light-space depth.
+		// The stored depth is the nearest caster rounded to the nearest 8-bit
+		// step (<= 0.5 step of error), and the receiver's surface can slope
+		// about one step over a texel; 1.5 steps covers both. In metres this is
+		// 1.5/255 of the fitted depth extent (see NL_MODERN_SHADOW_DEPTH_MARGIN
+		// above), so the tighter fit above also tightens the shadow contact.
+		_DepthBias[i] = 1.5f / 255.f;
+		if (i == 0)
+		{
+			static float lastLoggedSpan = -1.f;
+			if (fabsf(depthSpan - lastLoggedSpan) > 0.05f)
+			{
+				lastLoggedSpan = depthSpan;
+				nlinfo("MODERNSHADOW cascade 0 depth: span=%.3f of the box (%.1f m) bias=%.1f m",
+					depthSpan, boxSize.y * depthSpan, _DepthBias[0] * boxSize.y * depthSpan);
+			}
+		}
 
 		driver->setRenderTarget(_Mask[i], 0, 0, _Size, _Size);
 		CScissor	scissor;
@@ -239,19 +326,21 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// TEMP probe: fill cascade 0 with white and cascade 1 with black to
 		// tell "the mask is never written" from "the casters write nothing".
 		static const bool testFill = getenv("NLVK_SHADOW_TESTFILL") != NULL;
+		// Far (white) = no caster in this texel = lit. The caster draws blend
+		// with a MIN op, so they only ever replace it with a nearer depth.
+		driver->setColorMask(true, true, true, true);
 		if (testFill)
-		{
-			driver->setColorMask(true, true, true, true);
 			driver->clear2D(i == 0 ? CRGBA(255, 255, 255, 255) : CRGBA(0, 0, 0, 255));
-		}
-		driver->setColorMask(false, false, false, true);
-		driver->clear2D(CRGBA(0, 0, 0, 0));
+		else
+			driver->clear2D(CRGBA(255, 255, 255, 255));
 
+		driver->setModernShadowDepthPass(true);
 		for (uint c = 0; c < casters.size(); ++c)
 		{
 			if (casters[c])
 				casters[c]->renderModernShadowCaster(driver, cameraMatrix, castMat);
 		}
+		driver->setModernShadowDepthPass(false);
 	}
 
 	driver->setRenderTarget(previousTarget);
@@ -292,7 +381,17 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// Development view toggles; see CModernShadowState::DebugMode.
 	state.FlipU = CFile::isExists("tmp/shadow_flipu");
 	state.FlipV = !CFile::isExists("tmp/shadow_noflipv");
-	if (CFile::isExists("tmp/shadow_depthprobe"))
+	if (CFile::isExists("tmp/shadow_cascades"))
+		state.DebugMode = 18;
+	else if (CFile::isExists("tmp/shadow_masklookup"))
+		state.DebugMode = 17;
+	else if (CFile::isExists("tmp/shadow_maskamp"))
+		state.DebugMode = 16;
+	else if (CFile::isExists("tmp/shadow_depthnum"))
+		state.DebugMode = 15;
+	else if (CFile::isExists("tmp/shadow_depthdiff"))
+		state.DebugMode = 12;
+	else if (CFile::isExists("tmp/shadow_depthprobe"))
 		state.DebugMode = 11;
 	else if (CFile::isExists("tmp/shadow_magprobe"))
 		state.DebugMode = 10;
@@ -325,6 +424,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		memcpy(state.WorldToMask[i], _WorldToMask[i].get(), sizeof(state.WorldToMask[i]));
 		state.Mask[i] = _Mask[i];
 		state.TexelWorldSize[i] = 1.f / (float)_Size;
+		state.DepthBias[i] = _DepthBias[i];
 	}
 	// Development marker: the cascade 0 UV of a caster base that can be seen on
 	// screen (the largest registered caster, usually the tent at the camp). The
@@ -368,8 +468,10 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 				ahead.x, ahead.y, ahead.z, bsz.x, bsz.y, bsz.z);
 		}
 		const CVector uv = _WorldToMask[0] * ahead;
+		// The shader flips V (the negative-height viewport of the mask pass),
+		// so compare against the flipped value.
 		state.Screen[2] = uv.x;
-		state.Screen[3] = uv.y;
+		state.Screen[3] = 1.f - uv.y;
 		static bool logged = false;
 		if (!logged)
 		{

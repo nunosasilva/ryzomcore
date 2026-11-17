@@ -1216,6 +1216,11 @@ void CDriverVulkan::setModernShadowState(const CModernShadowState &state)
 	}
 }
 
+void CDriverVulkan::setModernShadowDepthPass(bool enabled)
+{
+	_ModernShadowDepthPass = enabled;
+}
+
 ITexture *CDriverVulkan::getRenderTarget() const
 {
 	return _RenderTargetTexture;

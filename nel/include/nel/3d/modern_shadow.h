@@ -52,6 +52,10 @@ struct CModernShadowState
 	ITexture		*Mask[4];
 	/// World size of a mask texel (for PCF), per cascade.
 	float			TexelWorldSize[4];
+	/// Receiver depth bias, in the mask's normalized light-space depth
+	/// (receiverDepth > storedDepth + DepthBias => shadowed). Covers the 8-bit
+	/// quantization of the stored depth and the receiver slope over a texel.
+	float			DepthBias[4];
 	/// Development: [0]/[1] are filled by the driver with 1/width, 1/height of
 	/// the current target; [2]/[3] carry a mask UV computed on the CPU (see
 	/// CModernShadowMask::render) for the marker debug view.
@@ -62,8 +66,14 @@ struct CModernShadowState
 	/// ambient-lit ground black.
 	float			SunStrength;
 	/// Development views, toggled at runtime by creating files (see
-	/// CModernShadowMask::render): 1 paints the sun coverage (black = lit,
-	/// white = shadowed), 2 paints the cascade block read by the shader.
+	/// CModernShadowMask::render):
+	///  1 = the shadow factor (white = shadowed), 2 = the cascade block,
+	///  3 = the stored mask depth at the lookup, 4 = the mask image,
+	///  6 = the CPU-computed marker, 12 = receiver minus stored depth
+	///  (red = behind the caster), 15 = the depths as colours
+	///  (red = receiver, green = stored), 16 = the contrast-stretched mask
+	///  image, 17 = the mask at the lookup (the shadow painted on the world),
+	///  18 = the cascade split (red = far cascade).
 	uint			DebugMode;
 	/// Development probe: mirror the mask lookup along U, to find the mask's
 	/// handedness on this driver.
@@ -82,6 +92,7 @@ struct CModernShadowState
 			CascadeSplits[i] = 0.f;
 			Mask[i] = NULL;
 			TexelWorldSize[i] = 0.f;
+			DepthBias[i] = 0.f;
 			memset(WorldToMask[i], 0, sizeof(WorldToMask[i]));
 		}
 	}
@@ -91,10 +102,13 @@ struct CModernShadowState
  * Cascaded sun shadow masks.
  *
  * The engine renders the visible shadow casters (the same list the legacy
- * manager receives) as coverage into a small set of cascades fitted around
- * the camera. The receiver shader samples the coverage with PCF, so there
- * are no per-caster maps, no merge of sun/point-light directions and no
- * hard map borders to clip a low-sun shadow.
+ * manager receives) into a small set of cascades fitted around the camera.
+ * Each mask texel stores the *nearest* caster's light-space depth; the
+ * receiver compares its own light-space depth against it, with a small bias
+ * (see CModernShadowState::DepthBias). A texel with no caster holds the far
+ * depth (1.0), so it reads lit. The receiver shader samples the mask with
+ * PCF, so there are no per-caster maps, no merge of sun/point-light
+ * directions and no hard map borders to clip a low-sun shadow.
  *
  * Enablement is gated by CScene::getShadowsEnabled() (the client's Shadows
  * option) and by the driver capability. NLVK_MODERN_SHADOWS is a
@@ -125,14 +139,15 @@ private:
 	void					releaseMasks();
 
 	CShadowMapManager		*_Owner;
-	/// Single-sided coverage material: culling front faces keeps the far
-	/// silhouettes of buildings/characters and drops up-facing ground planes
-	/// (the village shape contains ground geometry that would otherwise cover
-	/// the whole mask).
+	/// Caster material for the depth mask: unlit, double-sided (several Ryzom
+	/// shapes are single-layer shells whose only faces point away from the
+	/// light). The driver turns the draw into a depth write with a MIN blend
+	/// while the shadow depth pass is on.
 	CMaterial				_CasterMaterial;
 	NLMISC::CSmartPtr<ITexture>	_Mask[2];
 	NLMISC::CMatrix			_WorldToMask[2];
 	float					_Split[2];
+	float					_DepthBias[2];
 	uint					_Size;
 	bool					_Active;
 	uint					_NumCascades;

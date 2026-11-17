@@ -341,8 +341,8 @@ const char *VulkanMaterialHeader =
 	"    int   nlTextureActive;\n"
 	"    int   nlAlphaTest;\n"
 	"    float nlLightMapScale;\n"
+	"    int   nlShadowDepthPass;\n" // 1 = modern shadow caster pass: write the light-space depth
 	"    int   _matPad0;\n"
-	"    int   _matPad1;\n"
 	"    uint  nlTexEnvMode0;\n"
 	"    uint  nlTexEnvMode1;\n"
 	"    uint  nlTexEnvMode2;\n"
@@ -702,7 +702,7 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	}
 	ss << std::endl;
 
-	// Modern sun shadow: two coverage masks and their cascade block. Bind a
+	// Modern sun shadow: two depth masks and their cascade block. Bind a
 	// white texture and params.x = 0 while the modern path is disabled.
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW << ") uniform NlShadow {" << std::endl;
 	ss << "  mat4 worldToMask0;" << std::endl;
@@ -710,6 +710,7 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	ss << "  vec4 splits;" << std::endl;
 	ss << "  vec4 params;" << std::endl;
 	ss << "  vec4 screen;" << std::endl;
+	ss << "  vec4 depthBias;" << std::endl;
 	ss << "} nlShadow;" << std::endl;
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK0 << ") uniform sampler2D nlShadowMask0;" << std::endl;
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK1 << ") uniform sampler2D nlShadowMask1;" << std::endl;
@@ -825,12 +826,19 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	{
 		ss << "float nlSunShadow = 1.0;" << std::endl;
 		ss << "vec2 nlSunUv = vec2(-1.0);" << std::endl;
-		ss << "float sampleSunMask(sampler2D smap, vec2 uv, float texel) {" << std::endl;
-		ss << "  float sum = 0.0;" << std::endl;
+		// The masks hold the nearest caster's light-space depth per texel (the
+		// caster pass writes gl_FragCoord.z, which the orthographic world ->
+		// [0,1]^3 cascade camera makes exactly the receiver's own depth unit).
+		// Far texels are cleared to 1.0, so an empty texel reads "lit". The
+		// receiver is shadowed where its own depth is greater than the stored
+		// one (+bias); the 3x3 kernel averages the comparisons, which softens
+		// the edge and costs the same nine fetches as the old PCF coverage.
+		ss << "float sampleSunMask(sampler2D smap, vec2 uv, float texel, float depth, float bias) {" << std::endl;
+		ss << "  float lit = 0.0;" << std::endl;
 		ss << "  for (int y = -1; y <= 1; ++y)" << std::endl;
 		ss << "    for (int x = -1; x <= 1; ++x)" << std::endl;
-		ss << "      sum += texture(smap, uv + vec2(float(x), float(y)) * texel).a;" << std::endl;
-		ss << "  return clamp(1.0 - sum / 9.0, 0.0, 1.0);" << std::endl;
+		ss << "      lit += (depth <= texture(smap, uv + vec2(float(x), float(y)) * texel).r + bias) ? 1.0 : 0.0;" << std::endl;
+		ss << "  return lit / 9.0;" << std::endl;
 		ss << "}" << std::endl;
 		ss << std::endl;
 		ss << "void computeLightPP(int lightMode, vec3 dirOrPos, vec4 colDiff, vec4 colSpec," << std::endl;
@@ -867,6 +875,20 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	// --- main ---
 	ss << "void main(void) {" << std::endl;
 
+	// Modern shadow caster pass: the mask stores depth, not colour. This is a
+	// uniform branch so it costs nothing in the normal path and needs no extra
+	// shader variant. gl_FragCoord.z is the light-space depth because the
+	// caster pass draws with an orthographic camera whose near/far planes are
+	// the cascade box (see CMeshInstance::renderModernShadowCaster).
+	if (fogOrPpl)
+	{
+		ss << "  if (nlShadowDepthPass != 0) {" << std::endl;
+		ss << "    fragColor = vec4(gl_FragCoord.z);" << std::endl;
+		ss << "    return;" << std::endl;
+		ss << "  }" << std::endl;
+		ss << std::endl;
+	}
+
 	ss << "  fragColor = diffuseColor;" << std::endl;
 	ss << std::endl;
 
@@ -888,9 +910,15 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// world position there.
 		ss << "  bool haveWsPos = ecPos.w != 0.0;" << std::endl;
 		ss << "  vec3 shadowWsPos = haveWsPos ? (transpose(mat3(viewMatrix)) * (ecPos.xyz - viewMatrix[3].xyz * ecPos.w)) / ecPos.w : vec3(0.0);" << std::endl;
+		// Cascade selection: the eye-space depth of the fragment (`ecPos.y`,
+		// the same value the fog uses) rather than the distance to
+		// cameraWorldPos, which made every fragment fall into the far cascade
+		// whenever the camera block read zero.
+		ss << "  float nlCascadeDepth = abs(ecPos.y / ecPos.w);" << std::endl;
+		ss << "  bool nlCascade1 = nlCascadeDepth >= nlShadow.splits.x;" << std::endl;
+		ss << "  vec4 sunP = vec4(0.0);" << std::endl;
 		ss << "  if (nlShadow.params.x > 0.5 && haveWsPos) {" << std::endl;
-		ss << "    float sunDist = length(shadowWsPos - cameraWorldPos);" << std::endl;
-		ss << "    vec4 sunP = (sunDist < nlShadow.splits.x) ? (nlShadow.worldToMask0 * vec4(shadowWsPos, 1.0)) : (nlShadow.worldToMask1 * vec4(shadowWsPos, 1.0));" << std::endl;
+		ss << "    sunP = nlCascade1 ? (nlShadow.worldToMask1 * vec4(shadowWsPos, 1.0)) : (nlShadow.worldToMask0 * vec4(shadowWsPos, 1.0));" << std::endl;
 		ss << "    vec2 sunUv = sunP.xy;" << std::endl;
 		// The masks are render targets: their row 0 is the top of the light
 		// camera image, while the cascade matrix maps the bottom of the light
@@ -898,10 +926,10 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "    if (nlShadow.splits.z > 0.5) sunUv.x = 1.0 - sunUv.x;" << std::endl;
 		ss << "    if (nlShadow.splits.w > 0.5) sunUv.y = 1.0 - sunUv.y;" << std::endl;
 		ss << "    nlSunUv = sunUv;" << std::endl;
-		ss << "    if (sunDist < nlShadow.splits.x)" << std::endl;
-		ss << "      nlSunShadow = sampleSunMask(nlShadowMask0, sunUv, nlShadow.params.y);" << std::endl;
+		ss << "    if (!nlCascade1)" << std::endl;
+		ss << "      nlSunShadow = sampleSunMask(nlShadowMask0, sunUv, nlShadow.params.y, sunP.z, nlShadow.depthBias.x);" << std::endl;
 		ss << "    else" << std::endl;
-		ss << "      nlSunShadow = sampleSunMask(nlShadowMask1, sunUv, nlShadow.params.y);" << std::endl;
+		ss << "      nlSunShadow = sampleSunMask(nlShadowMask1, sunUv, nlShadow.params.y, sunP.z, nlShadow.depthBias.y);" << std::endl;
 		ss << "    if (sunUv.x < 0.0 || sunUv.x > 1.0 || sunUv.y < 0.0 || sunUv.y > 1.0)" << std::endl;
 		ss << "      nlSunShadow = 1.0;" << std::endl;
 		ss << "  }" << std::endl;
@@ -1122,14 +1150,39 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	// Development views, see CModernShadowState::DebugMode. They are gated on
 	// fog because the interface is drawn through the same program and would
 	// otherwise be painted over the world they are meant to show.
-	//   1 coverage factor, 2 cascade block, 3 raw mask texel, 4 mask image,
-	//   5 CPU-computed marker
 	// Fog is enabled for the 3D pass only, which keeps the development views off
 	// the interface and off the fullscreen post-process quad (that quad is drawn
 	// through this same program and would paint the whole frame).
+	if (fogOrPpl)
+	{
 	ss << "  if (nlFogEnabled != 0 && nlShadow.params.w > 0.5) {" << std::endl;
 	ss << "    bool uvInCascade = all(greaterThanEqual(nlSunUv, vec2(0.0))) && all(lessThanEqual(nlSunUv, vec2(1.0)));" << std::endl;
-	ss << "    if (nlShadow.params.w > 10.5) {" << std::endl;
+	ss << "    if (nlShadow.params.w > 17.5) {" << std::endl;
+	// Cascade split: red = the far cascade, green = eye-space depth / 80 m.
+	ss << "      fragColor = vec4(nlCascade1 ? 1.0 : 0.0, clamp(nlCascadeDepth / 80.0, 0.0, 1.0), 0.0, 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 16.5) {" << std::endl;
+	// Contrast-stretched mask sampled at the receiver's own lookup UV: this is
+	// what the depth test sees, painted on the world.
+	ss << "      fragColor = vec4(vec3(clamp((1.0 - texture(nlShadowMask0, nlSunUv).r) * 4.0, 0.0, 1.0)), 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 15.5) {" << std::endl;
+	// Contrast-stretched mask image (near = bright), top-down, for comparing
+	// the stored silhouette with the world.
+	ss << "      vec2 muv = gl_FragCoord.xy * nlShadow.screen.xy;" << std::endl;
+	ss << "      fragColor = vec4(vec3(clamp((1.0 - texture(nlShadowMask0, muv).r) * 4.0, 0.0, 1.0)), 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 14.5) {" << std::endl;
+	// Numeric readout: red = the receiver's own light-space depth, green = the
+	// nearest stored caster depth at its lookup texel (blue = 0).
+	ss << "      float ndStored = !nlCascade1 ? texture(nlShadowMask0, nlSunUv).r : texture(nlShadowMask1, nlSunUv).r;" << std::endl;
+	ss << "      fragColor = vec4(sunP.z, ndStored, 0.0, 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 11.5) {" << std::endl;
+	// Signed depth difference against the nearest stored caster at the lookup
+	// texel: red = the receiver is behind the caster (would be shadowed),
+	// green = the receiver is in front (lit). Grey means equal, which is what
+	// a caster's own lit surface must read.
+	ss << "      float storedDepth = !nlCascade1 ? texture(nlShadowMask0, nlSunUv).r : texture(nlShadowMask1, nlSunUv).r;" << std::endl;
+	ss << "      float depthDelta = sunP.z - storedDepth;" << std::endl;
+	ss << "      fragColor = vec4(clamp(depthDelta * 25.0, 0.0, 1.0), clamp(-depthDelta * 25.0, 0.0, 1.0), 0.0, 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 10.5) {" << std::endl;
 	// Fog depth vs eye position vs world distance. Red is the depth the fog
 	// uses (ecPos.y / ecPos.w, metres / 50), green the eye-space length / 50,
 	// blue the world distance to the camera / 50. All three must agree.
@@ -1161,15 +1214,16 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	ss << "      vec2 d = abs(nlSunUv - nlShadow.screen.zw);" << std::endl;
 	ss << "      if (uvInCascade && (d.x < 0.004 || d.y < 0.004)) fragColor = vec4(1.0, 0.0, 1.0, 1.0);" << std::endl;
 	ss << "    } else if (nlShadow.params.w > 4.5) {" << std::endl;
+	// Mask image, top-down: the stored nearest depth (white = no caster).
 	ss << "      vec2 muv = gl_FragCoord.xy * nlShadow.screen.xy;" << std::endl;
-	ss << "      fragColor = vec4(vec3(texture(nlShadowMask0, muv).a), 1.0);" << std::endl;
+	ss << "      fragColor = vec4(vec3(texture(nlShadowMask0, muv).r), 1.0);" << std::endl;
 	ss << "    } else if (nlShadow.params.w > 3.5) {" << std::endl;
 	ss << "      fragColor = vec4(length(nlShadow.worldToMask0[0].xyz) * 100.0," << std::endl;
 	ss << "                      length(nlShadow.worldToMask0[1].xyz) * 100.0," << std::endl;
 	ss << "                      length(nlShadow.worldToMask0[2].xyz) * 100.0, 1.0);" << std::endl;
 	ss << "    } else if (nlShadow.params.w > 2.5) {" << std::endl;
 	ss << "      vec4 raw = texture(nlShadowMask0, nlSunUv);" << std::endl;
-	ss << "      fragColor = vec4(raw.a, raw.r, 0.0, 1.0);" << std::endl;
+	ss << "      fragColor = vec4(vec3(raw.r), 1.0);" << std::endl;
 	ss << "    } else if (nlShadow.params.w > 1.5) {" << std::endl;
 	ss << "      fragColor = vec4(nlShadow.params.x, nlShadow.params.z, nlShadow.splits.x / 100.0, 1.0);" << std::endl;
 	ss << "    } else if (nlShadow.params.w > 0.5) {" << std::endl;
@@ -1177,6 +1231,7 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	ss << "    }" << std::endl;
 	ss << "  }" << std::endl;
 	ss << std::endl;
+	}
 
 	ss << "}" << std::endl;
 

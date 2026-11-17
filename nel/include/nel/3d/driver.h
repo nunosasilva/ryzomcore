@@ -1019,6 +1019,14 @@ public:
 	virtual bool			supportsModernShadows() const { return false; }
 	/// Publish the modern shadow state; ignored by drivers that don't support it.
 	virtual void			setModernShadowState(const CModernShadowState &) {}
+	/** Enable the modern shadow depth mode for the draws that follow: the
+	  * generated pixel program writes the fragment's light-space depth instead
+	  * of its lit colour, and the driver blends it with a MIN blend so the
+	  * nearest caster wins each mask texel. CModernShadowMask uses it around
+	  * the caster draws only; drivers that don't support the modern path
+	  * ignore it.
+	  */
+	virtual void			setModernShadowDepthPass(bool /* enabled */) {}
 
 	/** Trick method : copy the current texture target into another texture without updating the current texture.
 	  *

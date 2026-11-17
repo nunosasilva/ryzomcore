@@ -243,6 +243,8 @@ CDriverVulkan::CDriverVulkan()
 	_BlendEnabled = false;
 	_SrcBlend = VK_BLEND_FACTOR_ONE;
 	_DstBlend = VK_BLEND_FACTOR_ZERO;
+	_BlendOp = VK_BLEND_OP_ADD;
+	_ModernShadowDepthPass = false;
 	_DepthTestEnabled = true;
 	_DepthWriteEnabled = true;
 	_DepthFunc = VK_COMPARE_OP_LESS_OR_EQUAL;

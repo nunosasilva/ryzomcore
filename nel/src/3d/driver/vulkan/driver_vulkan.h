@@ -661,6 +661,7 @@ public:
 	virtual bool setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel, uint32 cubeFace) override;
 	virtual bool supportsModernShadows() const override { return true; }
 	virtual void setModernShadowState(const CModernShadowState &state) override;
+	virtual void setModernShadowDepthPass(bool enabled) override;
 	virtual bool getRenderTargetSize(uint32 &width, uint32 &height) override;
 	virtual bool copyTargetToTexture(ITexture *tex, uint32 offsetx, uint32 offsety, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel) override;
 	virtual bool textureCoordinateAlternativeMode() const override;
@@ -932,6 +933,9 @@ private:
 	/// Modern shadow state pushed by the engine each frame (inactive until the
 	/// Vulkan shader samples the masks).
 	CModernShadowState		_ModernShadowState;
+	/// True only around the modern shadow caster draws: the pixel program
+	/// writes the light-space depth and the blend keeps the nearest caster.
+	bool					_ModernShadowDepthPass;
 
 	VkFormat				_DepthFormat;
 	// One depth/stencil image per swapchain image: frames in flight must never
@@ -1730,6 +1734,7 @@ private:
 	bool					_BlendEnabled;
 	uint32					_SrcBlend;
 	uint32					_DstBlend;
+	uint32					_BlendOp;
 	bool					_DepthTestEnabled;
 	bool					_DepthWriteEnabled;
 	uint32					_DepthFunc;

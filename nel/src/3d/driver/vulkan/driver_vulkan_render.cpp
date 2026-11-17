@@ -891,10 +891,10 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	blendAttachment.blendEnable = k.BlendEnable ? VK_TRUE : VK_FALSE;
 	blendAttachment.srcColorBlendFactor = (VkBlendFactor)k.SrcBlend;
 	blendAttachment.dstColorBlendFactor = (VkBlendFactor)k.DstBlend;
-	blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+	blendAttachment.colorBlendOp = (VkBlendOp)k.BlendOp;
 	blendAttachment.srcAlphaBlendFactor = (VkBlendFactor)k.SrcBlend;
 	blendAttachment.dstAlphaBlendFactor = (VkBlendFactor)k.DstBlend;
-	blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+	blendAttachment.alphaBlendOp = (VkBlendOp)k.BlendOp;
 	blendAttachment.colorWriteMask = k.ColorWriteMask ? k.ColorWriteMask : 0xF;
 
 	VkPipelineColorBlendStateCreateInfo colorBlend;
@@ -1818,6 +1818,23 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 	_DepthWriteEnabled = (mat.getFlags() & IDRV_MAT_ZWRITE) != 0;
 	_DepthTestEnabled = true;
 	_DepthFunc = toVkCompare(mat.getZFunc());
+	_BlendOp = VK_BLEND_OP_ADD;
+	// Modern shadow depth pass (see CModernShadowMask::render): the caster
+	// writes the nearest light-space depth into the mask per texel. MIN keeps
+	// the nearest value regardless of draw order, so the pass needs neither a
+	// depth attachment to test against nor an ordering of the casters. The
+	// factors are ignored by MIN/MAX blend ops but are set to ONE/ONE anyway,
+	// which is what the Vulkan spec recommends for those ops.
+	if (_ModernShadowDepthPass)
+	{
+		_BlendEnabled = true;
+		_SrcBlend = VK_BLEND_FACTOR_ONE;
+		_DstBlend = VK_BLEND_FACTOR_ONE;
+		_BlendOp = VK_BLEND_OP_MIN;
+		_DepthTestEnabled = false;
+		_DepthWriteEnabled = false;
+		_FogColorOverrideBlack = false;
+	}
 	_MaterialTwoSided = (mat.getFlags() & IDRV_MAT_DOUBLE_SIDED) != 0;
 	_MaterialLighting = (mat.getFlags() & IDRV_MAT_LIGHTING) != 0;
 	_MaterialLightedVertexColor = (mat.getFlags() & IDRV_MAT_LIGHTED_VERTEX_COLOR) != 0;
@@ -2552,6 +2569,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	key.BlendEnable = _BlendEnabled ? 1 : 0;
 	key.SrcBlend = _SrcBlend;
 	key.DstBlend = _DstBlend;
+	key.BlendOp = _BlendOp;
 	key.DepthTest = _DepthTestEnabled ? 1 : 0;
 	key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 	key.DepthCompare = _DepthFunc;
@@ -2626,6 +2644,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	key.BlendEnable = _BlendEnabled ? 1 : 0;
 	key.SrcBlend = _SrcBlend;
 	key.DstBlend = _DstBlend;
+	key.BlendOp = _BlendOp;
 	key.DepthTest = _DepthTestEnabled ? 1 : 0;
 	key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 	key.DepthCompare = _DepthFunc;
@@ -2864,6 +2883,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 			key.BlendEnable = _BlendEnabled ? 1 : 0;
 			key.SrcBlend = _SrcBlend;
 			key.DstBlend = _DstBlend;
+			key.BlendOp = _BlendOp;
 			key.DepthTest = _DepthTestEnabled ? 1 : 0;
 			key.DepthWrite = _DepthWriteEnabled ? 1 : 0;
 			key.DepthCompare = _DepthFunc;
