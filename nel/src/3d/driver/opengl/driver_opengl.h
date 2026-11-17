@@ -424,6 +424,8 @@ public:
 
 	virtual CMatrix			getViewMatrix() const;
 
+	virtual CMatrix			getModelMatrix() const;
+
 	virtual	void			forceNormalize(bool normalize)
 	{
 		_ForceNormalize= normalize;
@@ -907,6 +909,9 @@ private:
 
 	// Current View matrix, in NEL basis. This is the parameter passed in setupViewMatrix*().
 	CMatrix					_UserViewMtx;
+	// Current model matrix, in NEL basis. This is the parameter passed in
+	// setupModelMatrix(); kept so a pass that borrows the matrix can restore it.
+	CMatrix					_UserModelMtx;
 	// Current (OpenGL basis) View matrix.
 	// NB: if setuped with setupViewMatrixEx(), _ViewMtx.Pos()==(0,0,0)
 	CMatrix					_ViewMtx;

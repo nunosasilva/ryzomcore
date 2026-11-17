@@ -195,6 +195,17 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	CViewport	bkupViewport;
 	driver->getViewport(bkupViewport);
 	const bool	bkupFog = driver->fogEnabled();
+	// The casters borrow the driver camera and the model matrix: each of them
+	// calls setFrustum()/setupViewMatrix() and then setupModelMatrix() with its
+	// own world matrix (see renderModernShadowCaster). setupDriverCamera() puts
+	// the camera back below, but the model matrix has no such restore point, so
+	// the last caster's world matrix stayed active for the rest of the pass and
+	// any later draw that relies on the current matrix inherited it. Save the
+	// caller's matrix here and restore it once the camera is back. The cull mode
+	// is borrowed the same way: the caster material is double sided, and the
+	// next draw must not inherit that either.
+	const CMatrix	bkupModelMatrix = driver->getModelMatrix();
+	const IDriver::TCullMode	bkupCullMode = driver->getCullMode();
 
 	driver->enableFog(false);
 	driver->setColorMask(false, false, false, true);
@@ -355,10 +366,14 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	driver->setColorMask(true, true, true, true);
 	driver->setupViewport(bkupViewport);
 	driver->enableFog(bkupFog);
+	driver->setCullMode(bkupCullMode);
 	CScissor	scissor;
 	scissor.initFullScreen();
 	driver->setupScissor(scissor);
 	scene->getRenderTrav().setupDriverCamera();
+	// setupDriverCamera() re-set the view matrix, so the model matrix has to be
+	// re-set up after it (setupModelMatrix() must follow the camera).
+	driver->setupModelMatrix(bkupModelMatrix);
 
 	// Publish the masks before the opaque pass samples them. The masks are
 	// already back in SHADER_READ_ONLY layout (setRenderTarget(previous)).

@@ -560,6 +560,15 @@ public:
 	virtual void			setupModelMatrix(const CMatrix &mtx) = 0;
 
 	virtual CMatrix			getViewMatrix() const = 0;
+
+	/** return the model matrix currently set up.
+	 *
+	 * A pass that borrows the model matrix (the modern shadow mask draws every
+	 * caster with its own world matrix) needs this to put the caller's matrix
+	 * back. Driver code must not change the model matrix behind the caller's
+	 * back: the very next draw that relies on the current matrix inherits it.
+	 */
+	virtual CMatrix			getModelMatrix() const = 0;
 	// @}
 
 

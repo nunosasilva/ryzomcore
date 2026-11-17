@@ -3192,6 +3192,11 @@ CMatrix CDriverVulkan::getViewMatrix() const
 	return _ViewMatrix;
 }
 
+CMatrix CDriverVulkan::getModelMatrix() const
+{
+	return _ModelMatrix;
+}
+
 // ---------------------------------------------------------------------------
 // User clip planes (water reflection passes, item 6)
 // ---------------------------------------------------------------------------

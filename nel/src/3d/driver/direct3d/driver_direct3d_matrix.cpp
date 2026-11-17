@@ -250,6 +250,14 @@ CMatrix CDriverD3D::getViewMatrix() const
 
 // ***************************************************************************
 
+CMatrix CDriverD3D::getModelMatrix() const
+{
+	H_AUTO_D3D(CDriverD3D_getModelMatrix)
+	return _UserModelMtx;
+}
+
+// ***************************************************************************
+
 void CDriverD3D::forceNormalize(bool normalize)
 {
 	H_AUTO_D3D(CDriverD3D_forceNormalize)

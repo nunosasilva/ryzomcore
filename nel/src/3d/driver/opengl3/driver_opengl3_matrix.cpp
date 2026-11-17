@@ -100,11 +100,21 @@ CMatrix CDriverGL3::getViewMatrix(void) const
 }
 
 // ***************************************************************************
+CMatrix CDriverGL3::getModelMatrix(void) const
+{
+	H_AUTO_OGL(CDriverGL3_getModelMatrix)
+	return _UserModelMtx;
+}
+
+// ***************************************************************************
 void CDriverGL3::setupModelMatrix(const CMatrix& mtx)
 {
 	H_AUTO_OGL(CDriverGL3_setupModelMatrix)
 	// profiling
 	_NbSetupModelMatrixCall++;
+
+	// Remember the model matrix as the caller gave it
+	_UserModelMtx = mtx;
 
 	// Put the matrix in the opengl eye space, and store it.
 	CMatrix		mat= mtx;

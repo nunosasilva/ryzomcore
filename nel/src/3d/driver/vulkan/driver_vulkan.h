@@ -599,6 +599,7 @@ public:
 	virtual void setupViewMatrixEx(const CMatrix &mtx, const CVector &cameraPos) override;
 	virtual void setupModelMatrix(const CMatrix &mtx) override;
 	virtual CMatrix getViewMatrix() const override;
+	virtual CMatrix getModelMatrix() const override;
 	virtual void forceNormalize(bool normalize) override;
 	virtual bool isForceNormalize() const override;
 	virtual bool supportVertexBufferHard() const override;

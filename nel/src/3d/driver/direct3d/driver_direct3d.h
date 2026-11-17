@@ -982,6 +982,7 @@ public:
 	virtual void			setupViewMatrixEx(const CMatrix& mtx, const CVector &cameraPos);
 	virtual void			setupModelMatrix(const CMatrix& mtx);
 	virtual CMatrix			getViewMatrix() const;
+	virtual CMatrix			getModelMatrix() const;
 	virtual	void			forceNormalize(bool normalize);
 	virtual	bool			isForceNormalize() const;
 	virtual void			setupScissor (const class CScissor& scissor);

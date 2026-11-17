@@ -161,12 +161,21 @@ CMatrix CDriverGL::getViewMatrix(void) const
 }
 
 // ***************************************************************************
+CMatrix CDriverGL::getModelMatrix(void) const
+{
+	H_AUTO_OGL(CDriverGL_getModelMatrix)
+	return _UserModelMtx;
+}
+
+// ***************************************************************************
 void CDriverGL::setupModelMatrix(const CMatrix& mtx)
 {
 	H_AUTO_OGL(CDriverGL_setupModelMatrix)
 	// profiling
 	_NbSetupModelMatrixCall++;
 
+	// Remember the model matrix as the caller gave it
+	_UserModelMtx = mtx;
 
 	// Dirt flags.
 	_ModelViewMatrixDirty= true;
