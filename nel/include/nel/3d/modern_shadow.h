@@ -52,6 +52,10 @@ struct CModernShadowState
 	ITexture		*Mask[4];
 	/// World size of a mask texel (for PCF), per cascade.
 	float			TexelWorldSize[4];
+	/// Development: [0]/[1] are filled by the driver with 1/width, 1/height of
+	/// the current target; [2]/[3] carry a mask UV computed on the CPU (see
+	/// CModernShadowMask::render) for the marker debug view.
+	float			Screen[4];
 	/// How much of the scene's light is direct sun (0..1). The shader uses it
 	/// to scale the darkening so shadowed areas keep the sky/ambient part:
 	/// at dusk, when the sun is dim, a full shadow would otherwise paint
@@ -74,6 +78,7 @@ struct CModernShadowState
 	{
 		for (uint i = 0; i < 4; ++i)
 		{
+			Screen[i] = 0.f;
 			CascadeSplits[i] = 0.f;
 			Mask[i] = NULL;
 			TexelWorldSize[i] = 0.f;

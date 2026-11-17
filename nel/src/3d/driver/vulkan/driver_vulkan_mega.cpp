@@ -709,6 +709,7 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	ss << "  mat4 worldToMask1;" << std::endl;
 	ss << "  vec4 splits;" << std::endl;
 	ss << "  vec4 params;" << std::endl;
+	ss << "  vec4 screen;" << std::endl;
 	ss << "} nlShadow;" << std::endl;
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK0 << ") uniform sampler2D nlShadowMask0;" << std::endl;
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK1 << ") uniform sampler2D nlShadowMask1;" << std::endl;
@@ -1117,27 +1118,30 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	if (fogOrPpl)
 		ss << "  fragColor.rgb *= (1.0 - (1.0 - nlSunShadow) * nlShadow.params.z);" << std::endl;
 
-	// Development views, see CModernShadowState::DebugMode. Mode 2 shows the
-	// cascade block as the shader reads it: r = enabled, g = sun strength,
-	// b = first split / 100.
-	if (fogOrPpl)
-	{
-		// The interface is drawn through the same program, and painting it with
-		// the debug views hides the world they are meant to show. Fog is only
-		// enabled for the 3D pass, so it separates the two.
-		ss << "  if (nlFogEnabled != 0 && nlShadow.params.w > 3.5) fragColor = vec4(1.0, 0.0, 1.0, 1.0);" << std::endl;
-		ss << "  else if (nlFogEnabled != 0 && nlShadow.params.w > 2.5) {" << std::endl;
-		ss << "    vec4 raw = texture(nlShadowMask0, nlSunUv);" << std::endl;
-		ss << "    fragColor = vec4(raw.a, raw.r, 0.0, 1.0);" << std::endl;
-		ss << "  }" << std::endl;
-		ss << "  else if (nlFogEnabled != 0 && nlShadow.params.w > 1.5) fragColor = vec4(nlShadow.params.x, nlShadow.params.z, nlShadow.splits.x / 100.0, 1.0);" << std::endl;
-		ss << "  else if (nlFogEnabled != 0 && nlShadow.params.w > 0.5) fragColor = vec4(vec3(1.0 - nlSunShadow), 1.0);" << std::endl;
-	}
+	// Development views, see CModernShadowState::DebugMode. They are gated on
+	// fog because the interface is drawn through the same program and would
+	// otherwise be painted over the world they are meant to show.
+	//   1 coverage factor, 2 cascade block, 3 raw mask texel, 4 mask image,
+	//   5 CPU-computed marker
+	ss << "  if (nlFogEnabled != 0) {" << std::endl;
+	ss << "    if (nlShadow.params.w > 5.5) {" << std::endl;
+	ss << "      vec2 d = abs(nlSunUv - nlShadow.screen.zw);" << std::endl;
+	ss << "      if (d.x < 0.004 || d.y < 0.004) fragColor = vec4(1.0, 0.0, 1.0, 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 4.5) {" << std::endl;
+	ss << "      vec2 muv = gl_FragCoord.xy * nlShadow.screen.xy;" << std::endl;
+	ss << "      fragColor = vec4(vec3(texture(nlShadowMask0, muv).a), 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 3.5) {" << std::endl;
+	ss << "      fragColor = vec4(1.0, 0.0, 1.0, 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 2.5) {" << std::endl;
+	ss << "      vec4 raw = texture(nlShadowMask0, nlSunUv);" << std::endl;
+	ss << "      fragColor = vec4(raw.a, raw.r, 0.0, 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 1.5) {" << std::endl;
+	ss << "      fragColor = vec4(nlShadow.params.x, nlShadow.params.z, nlShadow.splits.x / 100.0, 1.0);" << std::endl;
+	ss << "    } else if (nlShadow.params.w > 0.5) {" << std::endl;
+	ss << "      fragColor = vec4(vec3(1.0 - nlSunShadow), 1.0);" << std::endl;
+	ss << "    }" << std::endl;
+	ss << "  }" << std::endl;
 	ss << std::endl;
-
-	// Fog (runtime-gated: fogOrPpl=1 always has the function, but only applies when fog is enabled)
-	if (fogOrPpl)
-		ss << "  if (nlFogEnabled != 0) fragColor = applyFog(fragColor);" << std::endl;
 
 	ss << "}" << std::endl;
 

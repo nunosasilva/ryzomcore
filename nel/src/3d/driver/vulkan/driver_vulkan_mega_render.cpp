@@ -996,6 +996,15 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		// probe reads it (see megavkPPGenerate).
 		shadowData.splits[2] = _ModernShadowState.FlipU ? 1.f : 0.f;
 		shadowData.splits[3] = _ModernShadowState.FlipV ? 1.f : 0.f;
+		uint32 screenW = 0, screenH = 0;
+		getRenderTargetSize(screenW, screenH);
+		if (screenW && screenH)
+		{
+			shadowData.screen[0] = 1.f / (float)screenW;
+			shadowData.screen[1] = 1.f / (float)screenH;
+		}
+		shadowData.screen[2] = _ModernShadowState.Screen[2];
+		shadowData.screen[3] = _ModernShadowState.Screen[3];
 	}
 
 	const uint32 cameraOffset = allocUniformBlock(&cameraData, sizeof(cameraData));

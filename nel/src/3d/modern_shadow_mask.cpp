@@ -292,7 +292,11 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// Development view toggles; see CModernShadowState::DebugMode.
 	state.FlipU = CFile::isExists("tmp/shadow_flipu");
 	state.FlipV = !CFile::isExists("tmp/shadow_noflipv");
-	if (CFile::isExists("tmp/shadow_magenta"))
+	if (CFile::isExists("tmp/shadow_cross"))
+		state.DebugMode = 6;
+	else if (CFile::isExists("tmp/shadow_maskview"))
+		state.DebugMode = 4;
+	else if (CFile::isExists("tmp/shadow_magenta"))
 		state.DebugMode = 4;
 	else if (CFile::isExists("tmp/shadow_raw"))
 		state.DebugMode = 3;
@@ -311,6 +315,26 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		memcpy(state.WorldToMask[i], _WorldToMask[i].get(), sizeof(state.WorldToMask[i]));
 		state.Mask[i] = _Mask[i];
 		state.TexelWorldSize[i] = 1.f / (float)_Size;
+	}
+	// Development marker: the cascade 0 UV of a ground point five metres in
+	// front of the camera. The shader draws a cross where it sees that UV, so
+	// the published matrix can be compared with the CPU's own projection.
+	{
+		const CVector look = scene->getRenderTrav().CamLook;
+		CVector ahead = scene->getRenderTrav().CamPos + look * 5.f;
+		ahead.z = 0.f;
+		const CVector uv = _WorldToMask[0] * ahead;
+		state.Screen[2] = uv.x;
+		state.Screen[3] = uv.y;
+		static bool logged = false;
+		if (!logged)
+		{
+			logged = true;
+			nlinfo("MODERNSHADOW w2m: |I|=%.5f |J|=%.5f |K|=%.5f camPosUV=(%.3f %.3f) aheadUV=(%.3f %.3f)",
+				_WorldToMask[0].getI().norm(), _WorldToMask[0].getJ().norm(), _WorldToMask[0].getK().norm(),
+				_WorldToMask[0].get() ? (_WorldToMask[0] * scene->getRenderTrav().CamPos).x : 0.f,
+				(_WorldToMask[0] * scene->getRenderTrav().CamPos).y, uv.x, uv.y);
+		}
 	}
 	driver->setModernShadowState(state);
 	static uint32 lastLoggedTris = 0xFFFFFFFFu;

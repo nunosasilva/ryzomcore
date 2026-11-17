@@ -174,8 +174,9 @@ struct CShadowUBOData
 	float worldToMask1[16]; // 64
 	float splits[4];        // 16 (x = first cascade view distance)
 	float params[4];        // 16 (x = enabled, y = texel uv)
+	float screen[4];        // 16 (development: 1/w, 1/h of the current target)
 };
-nlctassert(sizeof(CShadowUBOData) == 160);
+nlctassert(sizeof(CShadowUBOData) == 176);
 
 // GLSL headers prepended to the generated mega programs.
 std::string buildVulkanLightTableHeader(sint maxLights);
