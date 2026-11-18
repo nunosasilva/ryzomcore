@@ -1089,6 +1089,13 @@ void		CSkeletonModel::traverseRender()
 	if (entityClip)
 		wrm.selectClipBias(getOwnerScene()->getRenderTrav().getDriver(), CWaterReflectionManager::ClipBiasEntity);
 
+	// Which object the draws below belong to. A skeleton overrides
+	// CTransformShape::traverseRender(), so the base hook never runs for it:
+	// without this the skinned parts were drawn with whatever id the last
+	// static object left, the modern shadow lookup could not recognise the
+	// character's own caster depth, and the body banded itself.
+	getOwnerScene()->getRenderTrav().getDriver()->setModernShadowObjectId(getModernShadowId());
+
 	// render as CLod, or render Skins.
 	if(isDisplayedAsLodCharacter())
 		renderCLod();

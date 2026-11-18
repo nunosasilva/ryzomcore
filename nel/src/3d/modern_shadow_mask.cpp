@@ -495,6 +495,16 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// shadow itself, and a character's layered parts must not band its
 		// body). Every caster takes part: a static mesh's own lit face is in
 		// the mask now that both faces are drawn, and it must skip it too.
+		//
+		// Only cascade 0 (the near 40 m box) gets ids: that is where the
+		// artefact is visible, and it is the pass that costs a caster draw per
+		// caster. Cascade 1 publishes no id mask, so its taps are all treated
+		// as cross-object (depth-only), which is the previous behaviour.
+		if (i != 0)
+		{
+			driver->setModernShadowDepthPass(false);
+			continue;
+		}
 		driver->setRenderTarget(_IdMask[i], 0, 0, _Size, _Size);
 		driver->clear2D(CRGBA(0, 0, 0, 0));
 		{
@@ -564,7 +574,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		state.CascadeSplits[i] = _Split[i];
 		memcpy(state.WorldToMask[i], _WorldToMask[i].get(), sizeof(state.WorldToMask[i]));
 		state.Mask[i] = _Mask[i];
-		state.IdMask[i] = _IdMask[i];
+		state.IdMask[i] = (i == 0) ? _IdMask[0] : NULL;
 		state.DepthBias[i] = _DepthBias[i];
 		state.DepthSoftness[i] = _DepthSoftness[i];
 	}

@@ -1156,6 +1156,9 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		shadowMaskInfos[i].imageView = maskTex ? maskTex->View : getWhiteTexture();
 		shadowMaskInfos[i].sampler = maskTex ? maskTex->Sampler : _WhiteTexture.Sampler;
 	}
+	// An id mask that is not published (cascade 1) falls back to *black*:
+	// black means "no object" (0), so no tap matches a live id and the cascade
+	// behaves as depth-only. White here would be id 1.0 and could match.
 	VkDescriptorImageInfo shadowIdInfos[2];
 	for (uint i = 0; i < 2; ++i)
 	{
@@ -1163,8 +1166,8 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		if (_ModernShadowState.IdMask[i])
 			idTex = getTextureVulkan(*_ModernShadowState.IdMask[i]);
 		shadowIdInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		shadowIdInfos[i].imageView = idTex ? idTex->View : getWhiteTexture();
-		shadowIdInfos[i].sampler = idTex ? idTex->Sampler : _WhiteTexture.Sampler;
+		shadowIdInfos[i].imageView = idTex ? idTex->View : getBlackTexture();
+		shadowIdInfos[i].sampler = idTex ? idTex->Sampler : _BlackTexture.Sampler;
 	}
 
 	VkDescriptorSet descriptorSet = allocDescriptorSet(_MegaDescriptorSetLayout);

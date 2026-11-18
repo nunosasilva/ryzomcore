@@ -773,6 +773,12 @@ void			CLodCharacterManager::endRender()
 		// Render the VBuffer and the primitives.
 		if(_CurrentTriId>0)
 		{
+			// The batch merges several characters into one draw, so it cannot
+			// carry one object id: clear it rather than leave the id of the
+			// last object drawn before the batch, which would make the modern
+			// shadow lookup skip some unrelated object's caster depth.
+			driver->setModernShadowObjectId(0);
+
 			// setup matrix.
 			CMatrix		managerMatrix;
 			managerMatrix.setPos(_ManagerMatrixPos);
