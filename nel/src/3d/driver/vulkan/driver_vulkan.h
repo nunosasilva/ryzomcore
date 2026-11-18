@@ -986,12 +986,12 @@ private:
 	/// NLVK_STATS: one more timestamp pair per frame slot for each modern
 	/// shadow cascade, plus the caster draws and passes recorded, so the mask
 	/// pass' GPU time and draw count can be separated from the main pass.
-	/// Query layout: slot * 6 + {0,1} frame, + {2,3} cascade 0, + {4,5} cascade 1.
-	static const uint32		NL_VK_GPU_QUERIES_PER_SLOT = 6;
+	/// Query layout: slot * 8 + {0,1} frame, + {2,3}/{4,5}/{6,7} cascades 0/1/2.
+	static const uint32		NL_VK_GPU_QUERIES_PER_SLOT = 8;
 	uint64					_StatsShadowDraws;
 	uint64					_StatsShadowPasses;
-	uint64					_StatsShadowGpuNs[2];
-	uint64					_StatsShadowGpuSamples[2];
+	uint64					_StatsShadowGpuNs[3];
+	uint64					_StatsShadowGpuSamples[3];
 	/// Mask passes recorded in each frame slot of the frame being recorded, and
 	/// the timestamp pair of the mask pass currently open (-1 outside one).
 	uint8					_ShadowPassCount[2];

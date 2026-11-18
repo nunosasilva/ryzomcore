@@ -161,12 +161,15 @@ private:
 	/// light). The driver turns the draw into a depth write with a MAX blend
 	/// while the shadow depth pass is on.
 	CMaterial				_CasterMaterial;
-	NLMISC::CSmartPtr<ITexture>	_Mask[2];
-	NLMISC::CMatrix			_WorldToMask[2];
-	float					_Split[2];
+	/// One mask per cascade. The published CModernShadowState also carries
+	/// four, so a level can add a cascade without touching the driver
+	/// container; three is the most any level uses today.
+	NLMISC::CSmartPtr<ITexture>	_Mask[3];
+	NLMISC::CMatrix			_WorldToMask[3];
+	float					_Split[3];
 	/// Receiver tolerance and soft-edge width, normalized by the depth extent.
-	float					_DepthBias[2];
-	float					_DepthSoftness[2];
+	float					_DepthBias[3];
+	float					_DepthSoftness[3];
 	/// Published sun share and whether it has a previous value yet (the
 	/// per-frame change is limited to NL_MODERN_SHADOW_SUN_SLEW).
 	float					_SunStrength;
@@ -174,20 +177,20 @@ private:
 	/// True when the masks are 32-bit float (driver::hasHighPrecisionShadowMask).
 	bool					_HighPrecision;
 	/// Mask texture size of each cascade (the balanced level's far cascade is
-	/// smaller). Cascade 1 is unused at the single-cascade level.
-	uint					_Size[2];
+	/// smaller). An unused cascade has size 0.
+	uint					_Size[3];
 	bool					_Active;
 	uint					_NumCascades;
-	/// Quality level currently rendered (0..2, see NL_MODERN_SHADOW_LEVELS),
+	/// Quality level currently rendered (0..3, see NL_MODERN_SHADOW_LEVELS),
 	/// and a frame counter for the half-rate far cascade. A level change
 	/// recreates the masks before anything is published.
 	uint					_Quality;
 	uint					_FrameCounter;
-	/// True once cascade 1 has been rendered with the current level. On a
-	/// frame that skips the far cascade, the last published matrix, split,
-	/// bias and texture are kept, so the mask content and the matrix the
-	/// receiver uses still agree.
-	bool					_FarValid;
+	/// True once each cascade has been rendered with the current level. On a
+	/// frame that skips a cascade, the last published matrix, split, bias and
+	/// texture are kept, so the mask content and the matrix the receiver uses
+	/// still agree. Cascade 0 is always rebuilt.
+	bool					_CascadeValid[3];
 	/// Driver the masks were last published to. Kept so the destructor can
 	/// disable the published state: the client destroys scenes while the
 	/// driver lives on, and the driver samples the state on every draw.

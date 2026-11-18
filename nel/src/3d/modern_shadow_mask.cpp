@@ -38,12 +38,13 @@ using namespace NLMISC;
 namespace NL3D {
 
 // Modern sun-shadow quality levels, selected by the client's ShadowsQuality
-// option (0 = performance, 1 = balanced, 2 = quality). Each level names its
-// cascades, their world half size around the camera, their mask texture sizes
-// and how often the far cascade is rebuilt. The shader reads the cascade
-// count, the split and one mask texel size per cascade from the published
-// state, so a level can change the mask sizes freely; only the far-cascade
-// skip needs the last published matrix to be kept (see _FarValid).
+// option (0 = performance, 1 = balanced, 2 = quality, 3 = ultra). Each level
+// names its cascades, their world half size around the camera, their mask
+// texture sizes and how often each cascade is rebuilt. The shader reads the
+// cascade count, the splits and one mask texel size per cascade from the
+// published state, so a level can change the mask sizes freely; only a
+// skipped cascade needs the last published matrix to be kept (see
+// _CascadeValid).
 namespace {
 
 struct CModernShadowLevel
@@ -51,30 +52,39 @@ struct CModernShadowLevel
 	/// Number of cascades built and sampled.
 	uint	NumCascades;
 	/// World-space half size of each cascade's box around the camera.
-	float	Radius[2];
+	float	Radius[3];
 	/// Mask texture size of each cascade.
-	uint	Size[2];
-	/// Refresh period of cascade 1, in frames (1 = every frame).
-	uint	FarPeriod;
+	uint	Size[3];
+	/// Rebuild period of each cascade, in frames (1 = every frame).
+	uint	Period[3];
 	/// Drop a caster whose light-space image is smaller than this many mask
 	/// texels of the cascade: it cannot paint a readable shadow.
-	float	MinTexels[2];
+	float	MinTexels[3];
 };
 
 const CModernShadowLevel	NL_MODERN_SHADOW_LEVELS[] =
 {
 	// 0 = performance: one 48 m cascade, every frame, no far cascade at all.
 	// Outside its box the shader reads lit.
-	{ 1, { 48.f, 0.f }, { 2048, 0 }, 1, { 1.f, 0.f } },
+	{ 1, { 48.f, 0.f, 0.f }, { 2048, 0, 0 }, { 1, 1, 1 }, { 1.f, 0.f, 0.f } },
 	// 1 = balanced: 40 m near at full rate and 70 m far at quarter the texel
 	// count, rebuilt every other frame. The far box is camera-centred, so a
 	// one-frame-old far matrix and mask stay valid at 40-70 m; the far mask's
 	// coarser texels also drop the sub-2-texel casters that cost draws and
 	// paint nothing readable at that distance.
-	{ 2, { 40.f, 70.f }, { 2048, 1024 }, 2, { 1.f, 2.f } },
+	{ 2, { 40.f, 70.f, 0.f }, { 2048, 1024, 0 }, { 1, 2, 1 }, { 1.f, 2.f, 0.f } },
 	// 2 = quality: the reference implementation (40 + 80 m, 2048² each,
 	// every frame).
-	{ 2, { 40.f, 80.f }, { 2048, 2048 }, 1, { 1.f, 1.f } },
+	{ 2, { 40.f, 80.f, 0.f }, { 2048, 2048, 0 }, { 1, 1, 1 }, { 1.f, 1.f, 0.f } },
+	// 3 = ultra: a third 160 m cascade so the dynamic shadows reach far past
+	// the play area and the baked/dynamic boundary in the landscape is out of
+	// sight. The near two cascades are the quality level's, so the cost of
+	// this level is entirely the far box. The mask's image plane is the AABB
+	// of the camera-centred cube, not the cube itself, so a texel of the far
+	// mask covers ~22 cm (about twice the quality level's far cascade): the
+	// far shadows are soft and coarse, which is what a 160 m boundary needs
+	// them to be.
+	{ 3, { 40.f, 90.f, 160.f }, { 2048, 2048, 2048 }, { 1, 1, 1 }, { 1.f, 1.f, 1.f } },
 };
 const uint	NL_MODERN_SHADOW_LEVEL_COUNT =
 	sizeof(NL_MODERN_SHADOW_LEVELS) / sizeof(NL_MODERN_SHADOW_LEVELS[0]);
@@ -255,14 +265,15 @@ void	lightSpaceAABBox(const CMatrix &worldToMask, const CAABBox &world,
 CModernShadowMask::CModernShadowMask()
 	: _SunStrength(0.f), _HaveSunStrength(false), _HighPrecision(false),
 	  _Active(false), _NumCascades(0), _Quality(1), _FrameCounter(0),
-	  _FarValid(false), _Driver(NULL)
+	  _Driver(NULL)
 {
-	for (uint i = 0; i < 2; ++i)
+	for (uint i = 0; i < 3; ++i)
 	{
 		_Size[i] = 0;
 		_Split[i] = 0.f;
 		_DepthBias[i] = 0.f;
 		_DepthSoftness[i] = 0.f;
+		_CascadeValid[i] = false;
 	}
 
 	_CasterMaterial.initUnlit();
@@ -322,9 +333,10 @@ void CModernShadowMask::reset(CScene *scene)
 	if (!_Active)
 		return;
 	_Active = false;
-	// The far cascade of the balanced level may be skipped on the next frame;
-	// make it rebuild after the masks were not published for a while.
-	_FarValid = false;
+	// A cascade with a rebuild period may be skipped on the next frame; make
+	// every one rebuild after the masks were not published for a while.
+	for (uint i = 0; i < 3; ++i)
+		_CascadeValid[i] = false;
 	IDriver *driver = scene ? scene->getRenderTrav().getAuxDriver() : NULL;
 	if (driver)
 	{
@@ -341,11 +353,14 @@ bool CModernShadowMask::ensureMasks(bool highPrecision)
 	// (ShadowsQuality edited at runtime) drops the old textures and creates the
 	// new ones; the driver's published state is disabled first so it never
 	// samples or rebinds a freed texture.
-	bool	sizesMatch = _Mask[0] != NULL && _Size[0] == level.Size[0];
-	if (sizesMatch && level.NumCascades > 1)
-		sizesMatch = _Mask[1] != NULL && _Size[1] == level.Size[1];
-	if (sizesMatch && level.NumCascades == 1)
-		sizesMatch = _Mask[1] == NULL;
+	bool	sizesMatch = true;
+	for (uint i = 0; i < 3; ++i)
+	{
+		if (i < level.NumCascades)
+			sizesMatch = sizesMatch && _Mask[i] != NULL && _Size[i] == level.Size[i];
+		else
+			sizesMatch = sizesMatch && _Mask[i] == NULL;
+	}
 	if (sizesMatch)
 		return true;
 
@@ -376,8 +391,8 @@ bool CModernShadowMask::ensureMasks(bool highPrecision)
 		tex->setFloatRenderTarget(highPrecision);
 		_Mask[i] = tex;
 	}
-	if (level.NumCascades < 2)
-		_Size[1] = 0;
+	for (uint i = level.NumCascades; i < 3; ++i)
+		_Size[i] = 0;
 	return true;
 }
 
@@ -422,7 +437,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// The quality level comes from the client's ShadowsQuality option. It is
 	// clamped here so a hand-edited cfg cannot index outside the table, and a
 	// change drops the old masks first: the driver must not keep sampling a
-	// texture that is about to be freed, and the far cascade has to be rebuilt
+	// texture that is about to be freed, and every cascade has to be rebuilt
 	// before it is published with the new matrix.
 	const sint	requestedQuality = scene->getModernShadowsQuality();
 	const uint	quality = requestedQuality <= 0 ? 0 :
@@ -430,7 +445,8 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	if (quality != _Quality)
 	{
 		_Quality = quality;
-		_FarValid = false;
+		for (uint i = 0; i < 3; ++i)
+			_CascadeValid[i] = false;
 		releaseMasks();
 	}
 	const CModernShadowLevel	&level = NL_MODERN_SHADOW_LEVELS[_Quality];
@@ -446,15 +462,16 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// new matrix, split or bias paired with the previous mask content: the
 	// driver keeps the last published state, and the next frame publishes
 	// these members, so they have to describe the last *complete* pass.
-	CMatrix	bkupWorldToMask[2];
-	float	bkupSplit[2], bkupBias[2], bkupSoft[2];
-	bool	bkupFarValid = _FarValid;
-	for (uint i = 0; i < 2; ++i)
+	CMatrix	bkupWorldToMask[3];
+	float	bkupSplit[3], bkupBias[3], bkupSoft[3];
+	bool	bkupCascadeValid[3];
+	for (uint i = 0; i < 3; ++i)
 	{
 		bkupWorldToMask[i] = _WorldToMask[i];
 		bkupSplit[i] = _Split[i];
 		bkupBias[i] = _DepthBias[i];
 		bkupSoft[i] = _DepthSoftness[i];
+		bkupCascadeValid[i] = _CascadeValid[i];
 	}
 
 	_Active = false;
@@ -571,14 +588,17 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	}
 
 	_NumCascades = level.NumCascades;
-	// The far cascade is rebuilt every level.FarPeriod frames. On a skipped
-	// frame nothing of cascade 1 is touched: its last published matrix, split,
-	// bias and mask content stay paired, which is what keeps the far shadows
-	// from swimming when the camera moves between two rebuilds.
+	// A cascade whose level.Period is greater than one is rebuilt on every
+	// Period-th frame. On a skipped frame nothing of that cascade is touched:
+	// its last published matrix, split, bias and mask content stay paired,
+	// which is what keeps its shadows from swimming when the camera moves
+	// between two rebuilds.
 	++_FrameCounter;
-	const bool	rebuildFar = level.FarPeriod <= 1 || !_FarValid ||
-		(_FrameCounter % level.FarPeriod) == 0;
-	float	biasMillimetres[2] = { 0.f, 0.f };
+	bool	rebuildCascade[3] = { true, true, true };
+	for (uint i = 0; i < _NumCascades; ++i)
+		rebuildCascade[i] = level.Period[i] <= 1 || !_CascadeValid[i] ||
+			(_FrameCounter % level.Period[i]) == 0;
+	float	biasMillimetres[3] = { 0.f, 0.f, 0.f };
 	// Debug trace for cascade 0: how many casters project into the box, the
 	// light-space span the range actually used and whether a caster bbox had
 	// to be rejected as degenerate.
@@ -591,7 +611,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	bool	maskPassOk = true;
 	for (uint i = 0; i < _NumCascades; ++i)
 	{
-		if (i == 1 && !rebuildFar)
+		if (!rebuildCascade[i])
 			continue;
 		// Build the same kind of world -> [0,1]^3 camera the legacy caster
 		// maps use, but fitted to a box around the camera instead of a single
@@ -777,23 +797,26 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// re-set up after it (setupModelMatrix() must follow the camera).
 	driver->setupModelMatrix(bkupModelMatrix);
 
-	// A half-written pair of cascades must not be published: the driver keeps
-	// last frame's state, which still points at both valid masks. The cascade
-	// parameters go back to the ones that state was built with.
+	// A half-written set of cascades must not be published: the driver keeps
+	// last frame's state, which still points at the masks that state was built
+	// with. The cascade parameters go back to the ones it was built with.
 	if (!maskPassOk)
 	{
-		_FarValid = bkupFarValid;
-		for (uint i = 0; i < 2; ++i)
+		for (uint i = 0; i < 3; ++i)
 		{
 			_WorldToMask[i] = bkupWorldToMask[i];
 			_Split[i] = bkupSplit[i];
 			_DepthBias[i] = bkupBias[i];
 			_DepthSoftness[i] = bkupSoft[i];
+			_CascadeValid[i] = bkupCascadeValid[i];
 		}
 		return false;
 	}
-	if (rebuildFar)
-		_FarValid = true;
+	for (uint i = 0; i < _NumCascades; ++i)
+	{
+		if (rebuildCascade[i])
+			_CascadeValid[i] = true;
+	}
 
 	// Publish the masks before the opaque pass samples them. The masks are
 	// already back in SHADER_READ_ONLY layout (setRenderTarget(previous)).
@@ -850,17 +873,26 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	if (loggedQuality != (sint)_Quality)
 	{
 		loggedQuality = (sint)_Quality;
-		char	cascades[96];
-		if (state.NumCascades > 1)
-			snprintf(cascades, sizeof(cascades), "%u cascades %.0f+%.0f m, %ux%u + %ux%u",
-				(unsigned)state.NumCascades, level.Radius[0], level.Radius[1],
-				_Size[0], _Size[0], _Size[1], _Size[1]);
-		else
-			snprintf(cascades, sizeof(cascades), "%u cascade %.0f m, %ux%u",
-				(unsigned)state.NumCascades, level.Radius[0], _Size[0], _Size[0]);
-		nlinfo("MODERNSHADOW: modern sun shadows on: quality %u, %s (%s masks, far every %u frame(s)), split %.1f m, sun=(%.2f %.2f %.2f), bias %.1f mm",
+		// "40+90+160 m, 2048x2048 x3", built from the level so it cannot
+		// describe a different configuration than the one running.
+		char	cascades[128];
+		char	radii[48], sizes[64];
+		radii[0] = sizes[0] = 0;
+		for (uint i = 0; i < state.NumCascades; ++i)
+		{
+			char	item[32];
+			snprintf(item, sizeof(item), "%s%.0f", i ? "+" : "", level.Radius[i]);
+			strncat(radii, item, sizeof(radii) - strlen(radii) - 1);
+			snprintf(item, sizeof(item), "%s%ux%u", i ? " " : "", _Size[i], _Size[i]);
+			strncat(sizes, item, sizeof(sizes) - strlen(sizes) - 1);
+		}
+		snprintf(cascades, sizeof(cascades), "%u cascade%s %s m, %s",
+			(unsigned)state.NumCascades, state.NumCascades > 1 ? "s" : "",
+			radii, sizes);
+		nlinfo("MODERNSHADOW: modern sun shadows on: quality %u, %s (%s masks, rebuild every %u/%u/%u frame(s)), split %.1f m, sun=(%.2f %.2f %.2f), bias %.1f mm",
 			(unsigned)_Quality, cascades, _HighPrecision ? "R32F" : "RGBA8",
-			level.FarPeriod, state.CascadeSplits[0], sun.x, sun.y, sun.z,
+			level.Period[0], level.Period[1], level.Period[2],
+			state.CascadeSplits[0], sun.x, sun.y, sun.z,
 			(double)biasMillimetres[0]);
 	}
 
@@ -875,7 +907,7 @@ void CModernShadowMask::releaseMasks()
 	// nothing published, so it is safe both from the destructor and from a
 	// future re-creation path.
 	publishDisabled();
-	for (uint i = 0; i < 2; ++i)
+	for (uint i = 0; i < 3; ++i)
 	{
 		_Mask[i] = NULL;
 	}

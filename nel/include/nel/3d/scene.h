@@ -660,10 +660,10 @@ public:
 	bool			getModernShadowsEnabled() const {return _ModernShadowsEnabled;}
 
 	/** Quality level of the modern sun shadows, from the client's
-	 *	ShadowsQuality option: 0 = performance, 1 = balanced, 2 = quality.
-	 *	It selects the cascade count, radii, mask sizes and the far cascade's
-	 *	refresh rate (see CModernShadowMask); the value is clamped there. The
-	 *	legacy OpenGL path does not read it.
+	 *	ShadowsQuality option: 0 = performance, 1 = balanced, 2 = quality,
+	 *	3 = ultra. It selects the cascade count, radii, mask sizes and each
+	 *	cascade's refresh rate (see CModernShadowMask); the value is clamped
+	 *	there. The legacy OpenGL path does not read it.
 	 */
 	void			setModernShadowsQuality(sint quality) {_ModernShadowsQuality = quality;}
 	sint			getModernShadowsQuality() const {return _ModernShadowsQuality;}

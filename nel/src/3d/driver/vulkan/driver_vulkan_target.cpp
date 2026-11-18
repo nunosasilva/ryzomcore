@@ -444,7 +444,7 @@ void CDriverVulkan::beginOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &targ
 	{
 		if (_StatsEnabled)
 			_ShadowDrawsBaseline = _StatsDraws;
-		if (_GpuTimeEnabled && _ShadowPassCount[_FrameIndex] < 2)
+		if (_GpuTimeEnabled && _ShadowPassCount[_FrameIndex] < 3)
 		{
 			_ShadowPassQuery = (sint32)(_FrameIndex * NL_VK_GPU_QUERIES_PER_SLOT + 2 +
 				2 * _ShadowPassCount[_FrameIndex]);

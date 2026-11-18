@@ -181,7 +181,7 @@ bool CDriverVulkan::initMega()
 {
 	// Descriptor set layout. Binding 7 is the modern shadow block; the sampler
 	// block starts at the same index as the GL3 sampler numbering.
-	VkDescriptorSetLayoutBinding bindings[18];
+	VkDescriptorSetLayoutBinding bindings[19];
 	memset(bindings, 0, sizeof(bindings));
 	uint count = 0;
 	for (uint i = 0; i < 4; ++i)
@@ -208,13 +208,13 @@ bool CDriverVulkan::initMega()
 		bindings[count].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 		++count;
 	}
-	// Modern sun shadow block and the two cascade masks.
+	// Modern sun shadow block and the three cascade masks.
 	bindings[count].binding = NL_VK_MEGA_BINDING_SHADOW;
 	bindings[count].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	bindings[count].descriptorCount = 1;
 	bindings[count].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	++count;
-	for (uint i = 0; i < 2; ++i)
+	for (uint i = 0; i < 3; ++i)
 	{
 		bindings[count].binding = NL_VK_MEGA_BINDING_SHADOW_MASK0 + i;
 		bindings[count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -959,13 +959,14 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 
 	CShadowUBOData shadowData;
 	memset(&shadowData, 0, sizeof(shadowData));
-	// The mask texel sizes and the receiver flag are *draw* state, not shadow
-	// *view* state: stage them even while the state is disabled, as the mask
-	// pass publishes a disabled state.
+	// The mask texel sizes, the cascade count and the receiver flag are *draw*
+	// state, not shadow *view* state: stage them even while the state is
+	// disabled, as the mask pass publishes a disabled state.
 	shadowData.receiveParams[0] = _ModernShadowReceiver ? 1.f : 0.f;
 	shadowData.receiveParams[1] = _ModernShadowState.MaskTexelUv[0];
 	shadowData.receiveParams[2] = _ModernShadowState.MaskTexelUv[1];
-	shadowData.receiveParams[3] = _ModernShadowState.NumCascades > 1 ? 1.f : 0.f;
+	shadowData.receiveParams[3] = _ModernShadowState.MaskTexelUv[2];
+	shadowData.cascadeParams[0] = (float)_ModernShadowState.NumCascades;
 	// Dev hook (temporary): false-colour the mask comparison on receivers.
 	{
 		static const bool debugView = getenv("NLVK_SHADOW_DEBUG_VIEW") != NULL;
@@ -978,13 +979,15 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		shadowData.params[2] = _ModernShadowState.SunStrength;
 		memcpy(shadowData.worldToMask0, _ModernShadowState.WorldToMask[0], sizeof(shadowData.worldToMask0));
 		memcpy(shadowData.worldToMask1, _ModernShadowState.WorldToMask[1], sizeof(shadowData.worldToMask1));
+		memcpy(shadowData.worldToMask2, _ModernShadowState.WorldToMask[2], sizeof(shadowData.worldToMask2));
 		shadowData.splits[0] = _ModernShadowState.CascadeSplits[0];
-		shadowData.depthBias[0] = _ModernShadowState.DepthBias[0];
-		shadowData.depthBias[1] = _ModernShadowState.DepthBias[1];
-		shadowData.depthSoft[0] = _ModernShadowState.DepthSoftness[0];
-		shadowData.depthSoft[1] = _ModernShadowState.DepthSoftness[1];
-		// params[1] is unused since the texel sizes moved to receiveParams
-		// (they differ per cascade at the balanced level).
+		shadowData.splits[1] = _ModernShadowState.CascadeSplits[1];
+		shadowData.splits[2] = _ModernShadowState.CascadeSplits[2];
+		for (uint i = 0; i < 3; ++i)
+		{
+			shadowData.depthBias[i] = _ModernShadowState.DepthBias[i];
+			shadowData.depthSoft[i] = _ModernShadowState.DepthSoftness[i];
+		}
 	}
 
 	const uint32 cameraOffset = allocUniformBlock(&cameraData, sizeof(cameraData));
@@ -1115,8 +1118,8 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		imageInfos[stage].sampler = tex ? tex->Sampler : (cubeStage ? _WhiteCubeTexture.Sampler : _WhiteTexture.Sampler);
 	}
 
-	VkDescriptorImageInfo shadowMaskInfos[2];
-	for (uint i = 0; i < 2; ++i)
+	VkDescriptorImageInfo shadowMaskInfos[3];
+	for (uint i = 0; i < 3; ++i)
 	{
 		// Only an enabled state owns live masks; a disabled one (including the
 		// last publish of a destroyed scene) must bind the white fallback. The
@@ -1134,7 +1137,7 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	if (_StatsEnabled)
 		++_StatsDescriptorSets;
 
-	VkWriteDescriptorSet writes[18];
+	VkWriteDescriptorSet writes[19];
 	memset(writes, 0, sizeof(writes));
 	uint writeCount = 0;
 	for (uint i = 0; i < 8; ++i)
@@ -1157,7 +1160,7 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		writes[writeCount].pImageInfo = &imageInfos[i];
 		++writeCount;
 	}
-	for (uint i = 0; i < 2; ++i)
+	for (uint i = 0; i < 3; ++i)
 	{
 		writes[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[writeCount].dstSet = descriptorSet;

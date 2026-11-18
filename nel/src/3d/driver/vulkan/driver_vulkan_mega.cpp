@@ -702,21 +702,25 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	}
 	ss << std::endl;
 
-	// Modern sun shadow: two depth masks and their cascade block. Bind a
+	// Modern sun shadow: three depth masks and their cascade block. Bind a
 	// white texture and params.x = 0 while the modern path is disabled.
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW << ") uniform NlShadow {" << std::endl;
 	ss << "  mat4 worldToMask0;" << std::endl;
 	ss << "  mat4 worldToMask1;" << std::endl;
+	ss << "  mat4 worldToMask2;" << std::endl;
 	ss << "  vec4 splits;" << std::endl;
 	ss << "  vec4 params;" << std::endl;
 	ss << "  vec4 depthBias;" << std::endl;
 	ss << "  vec4 depthSoft;" << std::endl;
-	// x = this object receives the sun shadow, y/z = one mask texel of cascade
-	// 0/1 in UV units, w = 1 when a far cascade exists.
+	// x = this object receives the sun shadow, y/z/w = one mask texel of
+	// cascade 0/1/2 in UV units.
 	ss << "  vec4 receiveParams;" << std::endl;
+	// x = number of cascades built and sampled.
+	ss << "  vec4 cascadeParams;" << std::endl;
 	ss << "} nlShadow;" << std::endl;
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK0 << ") uniform sampler2D nlShadowMask0;" << std::endl;
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK1 << ") uniform sampler2D nlShadowMask1;" << std::endl;
+	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK2 << ") uniform sampler2D nlShadowMask2;" << std::endl;
 
 	ss << std::endl;
 
@@ -957,11 +961,13 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// cameraWorldPos, which made every fragment fall into the far cascade
 		// whenever the camera block read zero.
 		ss << "  float nlCascadeDepth = abs(ecPos.y / ecPos.w);" << std::endl;
-		// A single-cascade quality level sets receiveParams.w = 0: every
-		// fragment then samples cascade 0, and no fragment ever reads the
-		// unbound far mask.
-		ss << "  bool nlCascade1 = nlShadow.receiveParams.w > 0.5 && nlCascadeDepth >= nlShadow.splits.x;" << std::endl;
-		ss << "  float nlMaskTexelUv = nlCascade1 ? nlShadow.receiveParams.z : nlShadow.receiveParams.y;" << std::endl;
+		// Cascade selection, from the published count: a single-cascade level
+		// only samples cascade 0, and no fragment ever reads an unbound mask.
+		// The near/far splits are view distances (splits.x, .y, .z).
+		ss << "  float nlCascadeCount = nlShadow.cascadeParams.x;" << std::endl;
+		ss << "  bool nlCascade1 = nlCascadeCount > 1.5 && nlCascadeDepth >= nlShadow.splits.x;" << std::endl;
+		ss << "  bool nlCascade2 = nlCascadeCount > 2.5 && nlCascadeDepth >= nlShadow.splits.y;" << std::endl;
+		ss << "  float nlMaskTexelUv = nlCascade2 ? nlShadow.receiveParams.w : (nlCascade1 ? nlShadow.receiveParams.z : nlShadow.receiveParams.y);" << std::endl;
 		ss << "  vec4 sunP = vec4(0.0);" << std::endl;
 		// params.x and receive are uniform UBO values, identical for every
 		// fragment of the draw, so the fwidth() below runs in uniform control
@@ -969,7 +975,7 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// branch). haveWsPos stays a per-fragment test after them: it guards
 		// the *sample*, which needs no derivative.
 		ss << "  if (nlShadow.params.x > 0.5 && nlShadow.receiveParams.x > 0.5) {" << std::endl;
-		ss << "    sunP = nlCascade1 ? (nlShadow.worldToMask1 * vec4(shadowWsPos, 1.0)) : (nlShadow.worldToMask0 * vec4(shadowWsPos, 1.0));" << std::endl;
+		ss << "    sunP = nlCascade2 ? (nlShadow.worldToMask2 * vec4(shadowWsPos, 1.0)) : (nlCascade1 ? (nlShadow.worldToMask1 * vec4(shadowWsPos, 1.0)) : (nlShadow.worldToMask0 * vec4(shadowWsPos, 1.0)));" << std::endl;
 		ss << "    float nlDepthPerTexel = fwidth(sunP.z) * nlMaskTexelUv / max(max(fwidth(sunP.xy).x, fwidth(sunP.xy).y), 1e-7);" << std::endl;
 		ss << "    if (haveWsPos) {" << std::endl;
 		ss << "      vec2 sunUv = sunP.xy;" << std::endl;
@@ -981,18 +987,24 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// always maps to [0,1]. clamp() keeps the edge texels from testing as
 		// "behind" the empty clear value (0 = lit) through float error.
 		ss << "      float sunDepth = clamp(sunP.z, 0.0, 1.0);" << std::endl;
-		ss << "      if (!nlCascade1)" << std::endl;
-		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask0, sunUv, sunDepth, nlShadow.depthBias.x, nlShadow.depthSoft.x, nlDepthPerTexel);" << std::endl;
-		ss << "      else" << std::endl;
+		ss << "      if (nlCascade2)" << std::endl;
+		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask2, sunUv, sunDepth, nlShadow.depthBias.z, nlShadow.depthSoft.z, nlDepthPerTexel);" << std::endl;
+		ss << "      else if (nlCascade1)" << std::endl;
 		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask1, sunUv, sunDepth, nlShadow.depthBias.y, nlShadow.depthSoft.y, nlDepthPerTexel);" << std::endl;
+		ss << "      else" << std::endl;
+		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask0, sunUv, sunDepth, nlShadow.depthBias.x, nlShadow.depthSoft.x, nlDepthPerTexel);" << std::endl;
 		ss << "      if (sunUv.x < 0.0 || sunUv.x > 1.0 || sunUv.y < 0.0 || sunUv.y > 1.0)" << std::endl;
 		ss << "        nlSunShadow = 1.0;" << std::endl;
 		// A single-cascade level covers one camera-centred box and nothing
 		// else: outside it, the result must be lit. The mask's light-space
 		// box is a superset of that world box (it is the AABB of the rotated
 		// box), so without this test its outer edge would sample clamped
-		// depths and paint a hard shadow band where no cascade exists.
-		ss << "      if (nlShadow.receiveParams.w < 0.5) {" << std::endl;
+		// depths and paint a hard shadow band where no cascade exists. A
+		// multi-cascade level leaves the last cascade's samples in place
+		// beyond its box: those come from the same sun rays the mask holds,
+		// so a long shadow still reaches past the split instead of being cut
+		// at a line (the existing UV test makes the light-space AABB edge lit).
+		ss << "      if (nlCascadeCount < 1.5) {" << std::endl;
 		ss << "        vec3 nlBoxDist = abs(shadowWsPos - cameraWorldPos);" << std::endl;
 		ss << "        if (max(max(nlBoxDist.x, nlBoxDist.y), nlBoxDist.z) > nlShadow.splits.x)" << std::endl;
 		ss << "          nlSunShadow = 1.0;" << std::endl;

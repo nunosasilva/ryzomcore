@@ -60,6 +60,7 @@ const uint NL_VK_MEGA_SAMPLER_COUNT = NL3D::IDRV_PROGRAM_MAXSAMPLERS; // 8
 const uint NL_VK_MEGA_BINDING_SHADOW = 7;
 const uint NL_VK_MEGA_BINDING_SHADOW_MASK0 = 16;
 const uint NL_VK_MEGA_BINDING_SHADOW_MASK1 = 17;
+const uint NL_VK_MEGA_BINDING_SHADOW_MASK2 = 18;
 const uint NL_VK_MEGA_MAX_LIGHT_TABLE = 128;
 // Same upper bound as the GL3 driver's NL3D_DRV_MAX_LIGHTMAP.
 const uint NL_VK_MAX_LIGHTMAP = 256;
@@ -169,29 +170,33 @@ struct CWaterUBOData
 nlctassert(sizeof(CWaterUBOData) == 48);
 
 // ***************************************************************************
-// Modern sun shadow block (binding 7, std140). Two cascade depth masks with
-// their world -> mask matrices; params.x enables sampling, params.y is the
-// mask texel size in UV units. The masks hold the farthest caster's light-space
-// depth per texel (0 = no caster = lit).
+// Modern sun shadow block (binding 7, std140). Three cascade depth masks with
+// their world -> mask matrices; params.x enables sampling, params.z is the sun
+// strength. The masks hold the farthest caster's light-space depth per texel
+// (0 = no caster = lit).
 struct CShadowUBOData
 {
 	float worldToMask0[16]; // 64
 	float worldToMask1[16]; // 64
-	float splits[4];        // 16 (x = first cascade view distance)
-	float params[4];        // 16 (x = enabled, y = mask texel in UV, z = sun strength)
+	float worldToMask2[16]; // 64
+	float splits[4];        // 16 (cascade end distances: x, y, z)
+	float params[4];        // 16 (x = enabled, z = sun strength, w = debug view)
 	/// Per-cascade receiver tolerance and soft-edge width, in the mask's
-	/// normalized light-space depth (x = cascade 0, y = cascade 1).
+	/// normalized light-space depth (x = cascade 0, y = cascade 1,
+	/// z = cascade 2).
 	float depthBias[4];     // 16
 	float depthSoft[4];     // 16
 	/// Per-cascade mask texel size and the receiver flag, in one std140 vec4:
-	/// x = 1 when the object being drawn receives the modern sun shadow (0 for
-	/// a shadow caster), y = one mask texel of cascade 0 in UV units, z = the
-	/// same for cascade 1 (the balanced level's far mask is 1024x1024),
-	/// w = 1 when the far cascade exists (0 at the single-cascade level, which
-	/// then samples cascade 0 only and reads lit outside its box).
+	/// x = 1 when the object being drawn receives the modern sun shadow,
+	/// y/z/w = one mask texel of cascade 0/1/2 in UV units (all cascades may
+	/// have different mask sizes).
 	float receiveParams[4]; // 16
+	/// x = number of cascades built and sampled (1..3). The shader needs it
+	/// to know which split ends the last cascade and which sampler exists;
+	/// the vectors keep the block 16-byte aligned.
+	float cascadeParams[4]; // 16
 };
-nlctassert(sizeof(CShadowUBOData) == 208);
+nlctassert(sizeof(CShadowUBOData) == 288);
 
 // GLSL headers prepended to the generated mega programs.
 std::string buildVulkanLightTableHeader(sint maxLights);

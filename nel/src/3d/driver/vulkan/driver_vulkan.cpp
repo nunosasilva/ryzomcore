@@ -427,8 +427,8 @@ CDriverVulkan::CDriverVulkan()
 	_MainPassClearStencil = 0;
 	_StatsShadowDraws = 0;
 	_StatsShadowPasses = 0;
-	_StatsShadowGpuNs[0] = _StatsShadowGpuNs[1] = 0;
-	_StatsShadowGpuSamples[0] = _StatsShadowGpuSamples[1] = 0;
+	_StatsShadowGpuNs[0] = _StatsShadowGpuNs[1] = _StatsShadowGpuNs[2] = 0;
+	_StatsShadowGpuSamples[0] = _StatsShadowGpuSamples[1] = _StatsShadowGpuSamples[2] = 0;
 	_ShadowPassCount[0] = _ShadowPassCount[1] = 0;
 	_ShadowPassQuery = -1;
 	_ShadowDrawsBaseline = 0;
@@ -642,10 +642,10 @@ bool CDriverVulkan::pickPhysicalDevice()
 static const uint32 NL_VK_DESCRIPTOR_POOL_SETS = 4096;
 /// Descriptors one set of either layout can use: the simple layout allocates
 /// 1 UBO and 4 samplers, the mega layout 8 UBOs (camera, light table, object,
-/// material, three user blocks and the modern shadow block) and 10 samplers
-/// (8 material stages + 2 shadow masks). Sizing the pool for the larger one
+/// material, three user blocks and the modern shadow block) and 11 samplers
+/// (8 material stages + 3 shadow masks). Sizing the pool for the larger one
 /// lets both layouts share it.
-static const uint32 NL_VK_DESCRIPTOR_SET_SAMPLERS = (uint32)NL_VK_MEGA_SAMPLER_COUNT + 2;
+static const uint32 NL_VK_DESCRIPTOR_SET_SAMPLERS = (uint32)NL_VK_MEGA_SAMPLER_COUNT + 3;
 static const uint32 NL_VK_DESCRIPTOR_SET_UNIFORMS = 8;
 
 bool CDriverVulkan::createDescriptorPool(uint32 frame, uint32 maxSets)
@@ -2254,7 +2254,7 @@ bool CDriverVulkan::beginFrame()
 			++_StatsGpuSamples;
 		}
 		// The cascades of this frame, one pair each, when the mask pass ran.
-		for (uint32 cascade = 0; cascade < _ShadowPassCount[frame] && cascade < 2; ++cascade)
+		for (uint32 cascade = 0; cascade < _ShadowPassCount[frame] && cascade < 3; ++cascade)
 		{
 			const uint64 maskTimes[2] = { 0, 0 };
 			const VkResult maskQuery = vkGetQueryPoolResults(_Device, _GpuTimeQuery,
@@ -2809,11 +2809,12 @@ bool CDriverVulkan::swapBuffers()
 				(unsigned long long)(_StatsVertexBindRepeats / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				_StatsVertexBinds ? 100.0 * (double)_StatsVertexBindRepeats / (double)_StatsVertexBinds : 0.0,
 				(unsigned long long)(_StatsMegaDescWrites / (_StatsWindowFrames ? _StatsWindowFrames : 1)));
-			nlinfo("Vulkan stats: shadow mask: %llu caster draws/frame in %llu passes/frame, gpu %.2f ms cascade0 + %.2f ms cascade1; %llu empty main-pass re-clears/frame",
+			nlinfo("Vulkan stats: shadow mask: %llu caster draws/frame in %llu passes/frame, gpu %.2f ms cascade0 + %.2f ms cascade1 + %.2f ms cascade2; %llu empty main-pass re-clears/frame",
 				(unsigned long long)(_StatsShadowDraws / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				(unsigned long long)(_StatsShadowPasses / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				_StatsShadowGpuSamples[0] ? (double)_StatsShadowGpuNs[0] / 1e6 / (double)_StatsShadowGpuSamples[0] : 0.0,
 				_StatsShadowGpuSamples[1] ? (double)_StatsShadowGpuNs[1] / 1e6 / (double)_StatsShadowGpuSamples[1] : 0.0,
+				_StatsShadowGpuSamples[2] ? (double)_StatsShadowGpuNs[2] / 1e6 / (double)_StatsShadowGpuSamples[2] : 0.0,
 				(unsigned long long)(_StatsMainPassReclears / (_StatsWindowFrames ? _StatsWindowFrames : 1)));
 			{
 				char formats[512];
@@ -2897,8 +2898,8 @@ bool CDriverVulkan::swapBuffers()
 			_StatsMegaDescWrites = 0;
 			_StatsShadowDraws = 0;
 			_StatsShadowPasses = 0;
-			_StatsShadowGpuNs[0] = _StatsShadowGpuNs[1] = 0;
-			_StatsShadowGpuSamples[0] = _StatsShadowGpuSamples[1] = 0;
+			_StatsShadowGpuNs[0] = _StatsShadowGpuNs[1] = _StatsShadowGpuNs[2] = 0;
+			_StatsShadowGpuSamples[0] = _StatsShadowGpuSamples[1] = _StatsShadowGpuSamples[2] = 0;
 			_StatsMainPassReclears = 0;
 			memset(_StatsVertexFormats, 0, sizeof(_StatsVertexFormats));
 			_StatsVertexFormatCount = 0;
