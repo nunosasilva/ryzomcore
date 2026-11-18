@@ -1089,11 +1089,10 @@ void		CSkeletonModel::traverseRender()
 	if (entityClip)
 		wrm.selectClipBias(getOwnerScene()->getRenderTrav().getDriver(), CWaterReflectionManager::ClipBiasEntity);
 
-	// A skeleton overrides CTransformShape::traverseRender(), so the base hook
-	// never runs for it: set the receiver policy here too. A character is a
-	// shadow caster, so its body does not receive the sun shadow (it keeps
-	// casting); that is what removes the bands on its face, torso and arms.
-	getOwnerScene()->getRenderTrav().getDriver()->setModernShadowReceiver(modelCanCastShadowMap() == 0);
+	// A skeleton overrides CTransformShape::traverseRender(), so if receiving
+	// ever needs to be decided per class again, this is the second site. Today
+	// the scene render part owns the flag and every scene draw receives
+	// (second-depth masks make self-shadowing impossible inside a texel).
 
 	// render as CLod, or render Skins.
 	if(isDisplayedAsLodCharacter())

@@ -296,6 +296,12 @@ void		CMeshInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMa
 	if (!Shape)
 		return;
 
+	// A prop sticked to a skeleton (a weapon, a shield, a rider's gear) is
+	// already drawn by the skeleton's shadow hull. Drawing it standalone as
+	// well would write it into the mask twice (the legacy walk skips ancestors
+	// for the same reason).
+	if (getAncestorSkeletonModel() != NULL)
+		return;
 
 	// The cascade camera is world -> [0,1]^3; the mesh vertices are local, so
 	// the world matrix brings them into the same space as the receiver.
@@ -309,11 +315,43 @@ void		CMeshInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMa
 	{
 		for(uint rp=0;rp<mesh->getNbRdrPass(mb);rp++)
 		{
+			// Cast the pass' true silhouette. A cut-out (leaf card, grille,
+			// banner) carries its texture and alpha test into the mask pass;
+			// a genuinely blended pass (glass, glow, additive overlay) is not
+			// an occluder and is skipped instead of writing a solid slab.
+			const uint32	matId = mesh->getRdrPassMaterial(mb, rp);
+			const bool		haveMat = matId < mesh->getNbMaterial();
+			if (haveMat)
+			{
+				const CMaterial	&mat = mesh->getMaterial(matId);
+				if (mat.getBlend() && !mat.getAlphaTest())
+					continue;
+				if (mat.getAlphaTest() && mat.getTexture(0) != NULL)
+				{
+					castMat.setTexture(0, mat.getTexture(0));
+					castMat.setAlphaTest(true);
+					castMat.setAlphaTestThreshold(mat.getAlphaTestThreshold());
+				}
+				else
+				{
+					castMat.setTexture(0, NULL);
+					castMat.setAlphaTest(false);
+				}
+			}
+			else
+			{
+				castMat.setTexture(0, NULL);
+				castMat.setAlphaTest(false);
+			}
 			const CIndexBuffer	&pb= mesh->getRdrPassPrimitiveBlock(mb, rp);
 			driver->activeIndexBuffer(const_cast<CIndexBuffer&>(pb));
 			driver->renderTriangles(castMat, 0, pb.getNumIndexes()/3);
 		}
 	}
+	// The caster material is shared by every caster of the pass: leave it
+	// untextured and without an alpha test for the next one.
+	castMat.setTexture(0, NULL);
+	castMat.setAlphaTest(false);
 }
 
 // ***************************************************************************

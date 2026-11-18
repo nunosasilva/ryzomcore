@@ -912,6 +912,16 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	if (fogOrPpl)
 	{
 		ss << "  if (nlShadowDepthPass != 0) {" << std::endl;
+		// Alpha-tested casters must write their true cut-out shape, not the
+		// quad: the caster material carries stage 0's texture and alpha test
+		// from the engine (CMeshInstance::renderModernShadowCaster). An
+		// untextured caster keeps the solid silhouette (the skeleton shadow
+		// hull has no UVs, for instance).
+		ss << "    if (nlAlphaTest != 0 && (nlTextureActive & 1) != 0) {" << std::endl;
+		ss << "      vec2 dtc = texCoord0.st;" << std::endl;
+		ss << "      if ((nlRtFlipMask & 1) != 0) dtc.y = 1.0 - dtc.y;" << std::endl;
+		ss << "      if (texture(sampler0, dtc).a <= alphaRef) discard;" << std::endl;
+		ss << "    }" << std::endl;
 		ss << "    fragColor = vec4(gl_FragCoord.z);" << std::endl;
 		ss << "    return;" << std::endl;
 		ss << "  }" << std::endl;

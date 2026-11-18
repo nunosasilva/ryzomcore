@@ -459,7 +459,10 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 			}
 		}
 
-		// Render the decals
+		// Render the decals. Decals are overlays, not world geometry: they are
+		// not shadow receivers (the legacy path never projected onto them
+		// either). Set explicitly so they cannot inherit the landscape's flag.
+		getDriver()->setModernShadowReceiver(false);
 		_DecalManager.flush(Scene);
 
 
@@ -525,9 +528,11 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 	{
 		// Render all transparent stuffs including flares.
 		// =============================
-		// Water, particles and glows are not shadow casters: they all receive,
-		// whatever the last opaque draw (a caster) left in the flag.
-		getDriver()->setModernShadowReceiver(true);
+		// Water, particles, ribbons and flares are not reproductions of world
+		// geometry: water's pixel program has no shadow term at all, and the
+		// additive/self-lit passes must not be multiplied by the sun mask.
+		// Set explicitly (never inherit the last opaque draw's flag).
+		getDriver()->setModernShadowReceiver(false);
 		 // Render transparent materials (draw higher priority last, because their appear in front)
 		_CurrentPassOpaque = false;
 		for(std::vector<CLayeredOrderingTable<CTransform> >::iterator it = _OrderTransparentListByPriority.begin(); it != _OrderTransparentListByPriority.end(); ++it)
@@ -570,6 +575,8 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 		// Render all transparent stuffs, don't render flares
 		// =============================
 		_CurrentPassOpaque = false;
+		// Same explicit non-receiver policy as the combined branch above.
+		getDriver()->setModernShadowReceiver(false);
 		for(std::vector<CLayeredOrderingTable<CTransform> >::iterator it = _OrderTransparentListByPriority.begin(); it != _OrderTransparentListByPriority.end(); ++it)
 		{
 			it->begin(_LayersRenderingOrder);
@@ -616,6 +623,8 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 		// Render flares only
 		// =============================
 		_CurrentPassOpaque = false;
+		// Flares are overlays, never shadow receivers (see the branch above).
+		getDriver()->setModernShadowReceiver(false);
 		for(std::vector<CLayeredOrderingTable<CTransform> >::iterator it = _OrderTransparentListByPriority.begin(); it != _OrderTransparentListByPriority.end(); ++it)
 		{
 			it->begin(_LayersRenderingOrder);

@@ -172,13 +172,12 @@ void	CTransformShape::traverseRender()
 {
 	H_AUTO( NL3D_TrShape_Render );
 
-	// A shadow caster does not receive the modern sun shadow: the mask holds
-	// its own caster depth, and comparing a surface against its own (or its own
-	// body's) depth is what paints the dark bands on a face, torso or beam.
-	// It still casts. The landscape and every non-caster keep receiving.
-	if(getOwnerScene() != nullptr)
-		getOwnerScene()->getRenderTrav().getDriver()->setModernShadowReceiver(modelCanCastShadowMap() == 0);
-
+	// Receiving is no longer decided per model class: the scene render part
+	// sets it for the whole pass (see CScene::renderPart), and only the
+	// explicit non-receivers (water, particles, flares, decals, the 2D
+	// interface and the post-process) turn it off. With the second-depth
+	// (MAX) mask a caster cannot self-shadow inside a texel, so a mesh or a
+	// skeleton receives like any other surface.
 
 	// Compute the current lighting setup for this instance
 	//===================
