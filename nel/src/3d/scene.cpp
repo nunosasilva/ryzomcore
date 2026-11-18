@@ -586,6 +586,13 @@ void	CScene::renderPart(UScene::TRenderPart rp, bool	doHrcPass, bool doTrav, boo
 	if(rp==UScene::RenderNothing)
 		return;
 
+	// The modern sun shadow receiver flag is per draw, and everything that is
+	// not a shadow caster must receive. A caster leaves it at 0 (its own body
+	// must not self-shadow), so every render part starts from "receives" and
+	// the passes below (landscape, water, sky, transparent, decals, the UI and
+	// each reflection pass) reset it again after the caster draws.
+	RenderTrav.getDriver()->setModernShadowReceiver(true);
+
 	// If part asked already rendered, abort
 	nlassert((rp & _RenderedPart) == 0); // cannot render the same part twice during a render
 

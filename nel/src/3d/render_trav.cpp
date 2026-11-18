@@ -391,7 +391,9 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 		if (generateShadows && !modernShadows && !modernDriver)
 			_ShadowMapManager.renderGenerate(Scene);
 
-		// Render the Landscape
+		// Render the Landscape. It is the main receiver: the last opaque draw
+		// may have been a caster, which left the receiver flag at 0.
+		getDriver()->setModernShadowReceiver(true);
 		renderLandscapes();
 
 		// Project ShadowMaps. Not in water reflection renders: dynamic
@@ -477,6 +479,9 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 	{
 		// Render all transparent stuffs including flares.
 		// =============================
+		// Water, particles and glows are not shadow casters: they all receive,
+		// whatever the last opaque draw (a caster) left in the flag.
+		getDriver()->setModernShadowReceiver(true);
 		 // Render transparent materials (draw higher priority last, because their appear in front)
 		_CurrentPassOpaque = false;
 		for(std::vector<CLayeredOrderingTable<CTransform> >::iterator it = _OrderTransparentListByPriority.begin(); it != _OrderTransparentListByPriority.end(); ++it)
