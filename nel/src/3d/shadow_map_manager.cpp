@@ -271,6 +271,10 @@ bool			CShadowMapManager::renderModernShadowMasks(CScene *scene,
 	IDriver *driver = scene->getRenderTrav().getDriver();
 	if( !driver || !driver->supportsModernShadows() )
 		return false;
+	// A scene that did not opt in (the sky, the canopy) cannot use the masks:
+	// return before building the caster union, not after.
+	if( !scene->getModernShadowsEnabled() )
+		return false;
 
 	// Prefer the opaque pass's models: every opaque object casts, whether or
 	// not the game registered it as a shadow caster. The registered list is

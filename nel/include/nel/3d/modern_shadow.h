@@ -48,7 +48,9 @@ struct CModernShadowState
 	float			CascadeSplits[4];
 	/// World -> mask UV matrix for each cascade (CMatrix::get() layout).
 	float			WorldToMask[4][16];
-	/// Depth masks, one render target per cascade.
+	/// Depth masks, one render target per cascade. Only valid while Enabled:
+	/// the driver ignores (and clears) these pointers in a disabled state, so
+	/// a destroyed scene can never leave a dangling mask behind.
 	ITexture		*Mask[4];
 
 	/// Receiver depth bias, in the mask's normalized light-space depth
@@ -100,20 +102,20 @@ void	modernShadowDebugLog(const char *event, const char *reason,
 /**
  * Cascaded sun shadow masks.
  *
- * The engine renders the visible shadow casters (the same list the legacy
- * manager receives) into a small set of cascades fitted around the camera.
- * Each mask texel stores the *nearest* caster's light-space depth; the
- * receiver compares its own light-space depth against it, with a small bias
- * (see CModernShadowState::DepthBias). A texel with no caster holds the far
- * depth (1.0), so it reads lit. The mask is sampled with linear filtering and
- * one smoothstep'd comparison (a soft edge of about one texel), so there are
- * no per-caster maps, no merge of sun/point-light directions and no hard map
- * borders to clip a low-sun shadow.
+ * The engine renders the visible shadow casters (every opaque model of the
+ * scene) into a small set of cascades fitted around the camera. Each mask
+ * texel stores the *farthest* caster's light-space depth (a second-depth,
+ * MAX-blended map); the receiver compares its own light-space depth against
+ * it, with a small bias (see CModernShadowState::DepthBias). A texel with no
+ * caster holds the clear value 0, which reads lit. The mask is sampled with
+ * linear filtering and one smoothstep'd comparison (a soft edge of a few
+ * texels), so there are no per-caster maps, no merge of sun/point-light
+ * directions and no hard map borders to clip a low-sun shadow.
  *
  * Enablement is gated by CScene::getShadowsEnabled() (the client's Shadows
- * option) and by the driver capability: the modern path runs only when both
- * are true, so `Shadows = 0` disables all shadows and OpenGL keeps the legacy
- * CShadowMapManager path.
+ * option), by the scene's modern opt-in and by the driver capability: the
+ * modern path runs only when all are true, so `Shadows = 0` disables all
+ * shadows and OpenGL keeps the legacy CShadowMapManager path.
  */
 class CModernShadowMask
 {
@@ -137,10 +139,13 @@ public:
 private:
 	bool					ensureMasks(bool highPrecision);
 	void					releaseMasks();
+	/// Publish a disabled state before the mask textures are dropped, so the
+	/// driver never keeps a pointer to a freed ITexture.
+	void					publishDisabled();
 
 	/// Caster material for the depth mask: unlit, double-sided (several Ryzom
 	/// shapes are single-layer shells whose only faces point away from the
-	/// light). The driver turns the draw into a depth write with a MIN blend
+	/// light). The driver turns the draw into a depth write with a MAX blend
 	/// while the shadow depth pass is on.
 	CMaterial				_CasterMaterial;
 	NLMISC::CSmartPtr<ITexture>	_Mask[2];
@@ -158,6 +163,10 @@ private:
 	uint					_Size;
 	bool					_Active;
 	uint					_NumCascades;
+	/// Driver the masks were last published to. Kept so the destructor can
+	/// disable the published state: the client destroys scenes while the
+	/// driver lives on, and the driver samples the state on every draw.
+	IDriver					*_Driver;
 };
 
 } // NL3D

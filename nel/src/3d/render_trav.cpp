@@ -238,26 +238,43 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 		bool modernShadows = false;
 		if (generateShadows)
 		{
-			// Every opaque model casts. The per-entity CastShadow registration
-			// leaves objects out (some planks, a building's walls), and an
-			// object that is not in the mask neither blocks a shadow (an NPC's
-			// shadow then lands on the wall behind him) nor stops being
-			// shadowed by its neighbours. The opaque ordering table holds
-			// exactly the opaque models of this pass: no landscape, no
-			// transparent/additive material, no particle, flare or interface
-			// draw, and the sky is a separate scene.
-			_ModernShadowCasterScratch.clear();
-			OrderOpaqueList.begin();
-			while (OrderOpaqueList.get() != NULL)
+			// Only a scene that opted in and has the Shadows option on can use
+			// the caster union; the sky and the canopy reached this point and
+			// built (then discarded) the whole union every frame. The one-line
+			// gate also skips the ordering-table walk with `Shadows = 0`.
+			const bool wantModern = modernDriver && Scene->getShadowsEnabled() &&
+				Scene->getModernShadowsEnabled();
+			if (wantModern)
 			{
-				_ModernShadowCasterScratch.push_back(OrderOpaqueList.get());
-				OrderOpaqueList.next();
+				// Every opaque model casts. The per-entity CastShadow registration
+				// leaves objects out (some planks, a building's walls), and an
+				// object that is not in the mask neither blocks a shadow (an NPC's
+				// shadow then lands on the wall behind him) nor stops being
+				// shadowed by its neighbours. The opaque ordering table holds
+				// exactly the opaque models of this pass: no landscape, no
+				// transparent/additive material, no particle, flare or interface
+				// draw, and the sky is a separate scene.
+				_ModernShadowCasterScratch.clear();
+				OrderOpaqueList.begin();
+				while (OrderOpaqueList.get() != NULL)
+				{
+					_ModernShadowCasterScratch.push_back(OrderOpaqueList.get());
+					OrderOpaqueList.next();
+				}
 			}
-			modernShadows = _ShadowMapManager.renderModernShadowMasks(Scene, &_ModernShadowCasterScratch);
-			if (modernShadows)
-				_ShadowMapManager.clearAllShadowCasters();
+			// The manager must still see the pass with `Shadows = 0`: that is
+			// where it publishes the disabled state which stops the shader
+			// sampling the last masks. With no union to hand over it returns
+			// before walking anything (see renderModernShadowMasks).
+			if (modernDriver)
+			{
+				modernShadows = _ShadowMapManager.renderModernShadowMasks(Scene,
+					wantModern ? &_ModernShadowCasterScratch : NULL);
+				if (modernShadows)
+					_ShadowMapManager.clearAllShadowCasters();
+			}
 		}
-		else if (modernDriver && Scene->getShadowsEnabled())
+		else if (modernDriver && Scene->getShadowsEnabled() && Scene->getModernShadowsEnabled())
 		{
 			// No traversal this pass (water/env-map re-render): the masks and
 			// the published state stay as they are. Logged because a skip of
@@ -366,13 +383,24 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 			Some Meshs may be render per block. Interesting to remove VertexBuffer and Material setup overhead.
 			Faster if rendered before lods, for ZBuffer optimisation: render first near objects then far.
 			Lods are usually far objects.
+			This batched path bypasses traverseRender(), so it must set the
+			receiver flag explicitly: it would otherwise inherit the last
+			single draw's value (a stale 0 for a whole frame of props).
 		*/
+		getDriver()->setModernShadowReceiver(Scene->getModernShadowsEnabled());
 		MeshBlockManager.flush(Driver, Scene, this);
 
 
 		// End LodCharacter Manager render.
 		if(clodMngr)
+		{
+			// Same for the merged CLod character batch: it is drawn after the
+			// ordering table, so its receive flag would depend on whichever
+			// model happened to be last. Characters receive with the rest of
+			// the scene (the MAX mask cannot self-shadow them inside a texel).
+			getDriver()->setModernShadowReceiver(Scene->getModernShadowsEnabled());
 			clodMngr->endRender();
+		}
 
 
 		/* Render Scene CoarseMeshManager.
@@ -380,7 +408,10 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 			this model opaque rendering pass.
 		*/
 		if( Scene->getCoarseMeshManager() )
+		{
+			getDriver()->setModernShadowReceiver(Scene->getModernShadowsEnabled());
 			Scene->getCoarseMeshManager()->flushRender(Driver);
+		}
 
 		/* Render ShadowMaps.
 			Important to render them at end of Opaque rendering, because alphaBlended objects must blend with opaque
@@ -407,8 +438,8 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 			_ShadowMapManager.renderGenerate(Scene);
 
 		// Render the Landscape. It is the main receiver: the last opaque draw
-		// may have been a caster, which left the receiver flag at 0.
-		getDriver()->setModernShadowReceiver(true);
+		// may have been a batched pass, which used the scene's own flag.
+		getDriver()->setModernShadowReceiver(Scene->getModernShadowsEnabled());
 		renderLandscapes();
 
 		// Project ShadowMaps. Not in water reflection renders: dynamic

@@ -1219,6 +1219,16 @@ void CDriverVulkan::checkTextureBlitTest()
 void CDriverVulkan::setModernShadowState(const CModernShadowState &state)
 {
 	_ModernShadowState = state;
+	if (!state.Enabled)
+	{
+		// A disabled state publishes no usable masks. The engine frees the
+		// textures of a destroyed scene right after disabling the state, so
+		// the driver must never keep a pointer from it: the draw path would
+		// dereference freed memory. Clear them here, not only at the publish
+		// site, so no caller can leave a stale mask behind.
+		for (uint i = 0; i < 4; ++i)
+			_ModernShadowState.Mask[i] = NULL;
+	}
 }
 
 void CDriverVulkan::setModernShadowDepthPass(bool enabled)

@@ -32,12 +32,10 @@
 #include "driver_vulkan.h"
 
 #include "nel/3d/light.h"
-#include "nel/misc/file.h"
 #include "nel/misc/string_conversion.h"
 #include "nel/3d/texture_bump.h"
 
 #include <algorithm>
-#include <set>
 
 using namespace std;
 using namespace NLMISC;
@@ -180,8 +178,8 @@ void CDriverVulkan::fillMegaPipelineKey(CPipelineKey &key)
 
 bool CDriverVulkan::initMega()
 {
-	// Descriptor set layout. Binding 7 stays unused so the sampler block starts
-	// at the same index as the GL3 sampler numbering.
+	// Descriptor set layout. Binding 7 is the modern shadow block; the sampler
+	// block starts at the same index as the GL3 sampler numbering.
 	VkDescriptorSetLayoutBinding bindings[18];
 	memset(bindings, 0, sizeof(bindings));
 	uint count = 0;
@@ -438,17 +436,6 @@ VkShaderModule CDriverVulkan::getMegaPixelShader(bool cube, bool specular)
 		return VK_NULL_HANDLE;
 	}
 	nlinfo("Vulkan: compiled mega pixel program (cube=%d, specular=%d)", cube ? 1 : 0, specular ? 1 : 0);
-	// Development: keep the generated GLSL for inspection (NLVK_DUMP_SHADERS=1).
-	if (getenv("NLVK_DUMP_SHADERS"))
-	{
-		std::string name = "tmp/shadervk/pixel_" + NLMISC::toString((uint)key) + ".glsl";
-		COFile file;
-		if (file.open(name, false, false))
-		{
-			file.serialBuffer((uint8 *)source.c_str(), (uint32)source.size());
-			file.close();
-		}
-	}
 	_MegaPixelShaderVariants[key] = module;
 	return module;
 }
@@ -925,22 +912,6 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	const bool lightMapDyn = isLightMapDraw() && _LightMapDynamicLightEnabled;
 	const uint32 lightTableBytes = NL_VK_MEGA_MAX_LIGHT_TABLE * sizeof(CLightTableUBOEntry);
 
-	// TEMP: one-shot diagnosis of what the sun contributes to each draw kind.
-	{
-		static std::set<uint32> seen;
-		const uint32 key = ((uint32)_CurrentMaterial->getShader() << 9) |
-			((uint32)objectData.numPerPixelLights & 0xFF) | (lightMapDyn ? 0x100u : 0u);
-		if (seen.insert(key).second)
-		{
-			const int firstMode = _LightTableMode ? _LightTable[0].Mode : _Lights[0].Mode;
-			const CRGBA d = _LightTableMode ? _LightTable[0].Diffuse : _Lights[0].Diffuse;
-			nlinfo("SHADOWDIAG shader=%d numPPL=%u lmDyn=%d tblMode=%d tblSize=%u light0=(mode=%d rgb=%u,%u,%u)",
-				(int)_CurrentMaterial->getShader(), (unsigned)objectData.numPerPixelLights,
-				(int)lightMapDyn, (int)_LightTableMode, (unsigned)_LightTableSize,
-				firstMode, (uint)d.R, (uint)d.G, (uint)d.B);
-		}
-	}
-
 	// The four per-draw blocks are bound as one group with their own offsets, so
 	// they must not straddle a ring growth: reserve the whole group (light
 	// table included) before any of them is allocated. A growth here also
@@ -1136,12 +1107,11 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	VkDescriptorImageInfo shadowMaskInfos[2];
 	for (uint i = 0; i < 2; ++i)
 	{
-		// Mask[i] is non-null while the mask pass itself runs (the id pass
-		// samples the depth mask it just wrote), so bind it regardless of
-		// Enabled; the shader only samples these when its pass or the shadow
-		// state asks for them.
+		// Only an enabled state owns live masks; a disabled one (including the
+		// last publish of a destroyed scene) must bind the white fallback. The
+		// shader does not sample these while params.x is 0.
 		CTextureVulkan *maskTex = NULL;
-		if (_ModernShadowState.Mask[i])
+		if (_ModernShadowState.Enabled && _ModernShadowState.Mask[i])
 			maskTex = getTextureVulkan(*_ModernShadowState.Mask[i]);
 		shadowMaskInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		shadowMaskInfos[i].imageView = maskTex ? maskTex->View : getWhiteTexture();

@@ -1501,7 +1501,7 @@ bool CDriverVulkan::initVulkan()
 	// cannot blend or linearly filter the format.
 	_ShadowMaskFormat = findShadowMaskFormat();
 	if (_ShadowMaskFormat != VK_FORMAT_UNDEFINED)
-		nlinfo("Vulkan: modern shadow mask format R32F (colour attachment, MIN blend, linear filter)");
+		nlinfo("Vulkan: modern shadow mask format R32F (colour attachment, MAX blend, linear filter)");
 	else
 		nlinfo("Vulkan: modern shadow mask format RGBA8 (no blendable float attachment); the mask keeps its 8-bit depth");
 	if (!createSwapchain())

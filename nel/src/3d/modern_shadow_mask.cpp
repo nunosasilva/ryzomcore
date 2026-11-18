@@ -150,7 +150,7 @@ void	lightSpaceAABBox(const CMatrix &worldToMask, const CAABBox &world,
 
 CModernShadowMask::CModernShadowMask()
 	: _HighPrecision(false), _Size(NL_MODERN_SHADOW_SIZE), _Active(false), _NumCascades(0),
-	  _SunStrength(0.f), _HaveSunStrength(false)
+	  _SunStrength(0.f), _HaveSunStrength(false), _Driver(NULL)
 {
 	for (uint i = 0; i < 2; ++i)
 	{
@@ -168,21 +168,39 @@ CModernShadowMask::CModernShadowMask()
 	// object's thickness along the light (fence shadows started beside their
 	// post) and drops single-layer shells entirely (a sun-facing plank wall
 	// stopped casting, so a shadow behind it showed through it). Self-shadowing
-	// is removed exactly by the caster id instead (see the id pass in render()),
-	// so the mask can keep the true silhouette.
+	// is prevented by the second-depth (MAX) mask itself: the farthest surface
+	// along the light is stored, and a fragment of the caster cannot be behind
+	// its own far side within a texel.
 	_CasterMaterial.setDoubleSided(true);
 	// The mask stores a depth, not a coverage: while the depth pass is on the
-	// driver ignores these blend factors and blends with MIN, which is what
-	// keeps the nearest caster per texel. They are kept as the plain
-	// additive fallback for a driver without the depth pass.
+	// driver ignores these blend factors and blends with MAX, which is what
+	// keeps the farthest caster per texel (the second-depth convention). They
+	// are kept as the plain additive fallback for a driver without the depth
+	// pass.
 	_CasterMaterial.setBlend(true);
 	_CasterMaterial.setBlendFunc(CMaterial::one, CMaterial::one);
 }
 
 CModernShadowMask::~CModernShadowMask()
 {
+	// The client destroys scenes (logout, character selection, level reload)
+	// while the driver lives on, and the driver samples the published state on
+	// every draw. Disable it before the mask textures are freed: otherwise the
+	// next draw would dereference a dangling ITexture*.
+	publishDisabled();
 	releaseMasks();
 }
+
+void CModernShadowMask::publishDisabled()
+{
+	if (!_Active || !_Driver)
+		return;
+	_Active = false;
+	const CModernShadowState	disabled;
+	_Driver->setModernShadowState(disabled);
+	modernShadowDebugLog("publish", "destroy", NULL, _Driver, &disabled, 0, NULL);
+}
+
 
 bool CModernShadowMask::isEnabled(CScene *scene) const
 {
@@ -255,6 +273,10 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		modernShadowDebugLog("skip", "nodriver", scene, NULL, NULL, 0, _Mask[0]);
 		return false;
 	}
+	// Remember the publisher: the destructor has no scene to ask, and the
+	// client destroys scenes while the driver (which samples the state on
+	// every draw) keeps living.
+	_Driver = driver;
 
 	// The cascades are fitted to the player's camera. The water reflection
 	// renders the whole scene again through a mirrored camera *inside* the
@@ -306,7 +328,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// the shadow state off for the duration of the pass: the mask textures are
 	// the render targets here, and a shader must never sample the image it is
 	// writing. It would also darken the casters themselves. The mask texel
-	// size is still published because the id pass needs it.
+	// size is still published because the driver stages it per draw.
 	{
 		CModernShadowState	disabled;
 		disabled.MaskTexelUv = 1.f / (float)_Size;
@@ -315,6 +337,18 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 
 	const CVector	sun = scene->getSunDirection();
 	const CVector	camPos = scene->getRenderTrav().CamPos;
+
+	// A zero-length or non-finite sun direction makes setArbitraryRotJ()
+	// produce a NaN camera, hence a NaN world -> mask matrix. Every bbox then
+	// compares false (all casters pass), and the receiver samples undefined
+	// UVs. Keep the last published masks for a frame instead: no visual change
+	// on a normal frame, no NaN anywhere on the odd one.
+	if (!(sun.x == sun.x) || !(sun.y == sun.y) || !(sun.z == sun.z) ||
+		sun.sqrnorm() < 1e-6f)
+	{
+		modernShadowDebugLog("skip", "badsun", scene, driver, NULL, 0, _Mask[0]);
+		return _Active;
+	}
 
 	_NumCascades = 2;
 	float	biasMillimetres[2] = { 0.f, 0.f };
@@ -355,7 +389,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// [0,1], so the whole box is the range by default. Fitting it to the
 		// casters (as this pass used to) left every receiver beyond the
 		// casters' light-space extent with a depth > 1, which compares greater
-		// than the "empty" clear value (1.0 = lit) and turned whole stretches
+		// than the empty clear value (0 = lit) and turned whole stretches
 		// of desert into one giant shadow whose extent moved with the camera,
 		// as casters entered and left the fit.
 		//
@@ -579,6 +613,11 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 
 void CModernShadowMask::releaseMasks()
 {
+	// Dropping the textures while the driver still holds the state would leave
+	// it sampling freed memory. publishDisabled() is a no-op when there is
+	// nothing published, so it is safe both from the destructor and from a
+	// future re-creation path.
+	publishDisabled();
 	for (uint i = 0; i < 2; ++i)
 	{
 		_Mask[i] = NULL;

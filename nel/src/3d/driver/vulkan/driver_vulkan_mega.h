@@ -171,8 +171,8 @@ nlctassert(sizeof(CWaterUBOData) == 48);
 // ***************************************************************************
 // Modern sun shadow block (binding 7, std140). Two cascade depth masks with
 // their world -> mask matrices; params.x enables sampling, params.y is the
-// mask texel size in UV units. The masks hold the nearest caster's light-space
-// depth (1 = no caster = lit).
+// mask texel size in UV units. The masks hold the farthest caster's light-space
+// depth per texel (0 = no caster = lit).
 struct CShadowUBOData
 {
 	float worldToMask0[16]; // 64

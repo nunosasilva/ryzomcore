@@ -527,7 +527,8 @@ bool CDriverVulkan::createRenderTargetImage(ITexture &tex, CTextureVulkan &out)
 	// ends in SHADER_READ_ONLY and ensureRenderTarget() transitions from
 	// whatever layout it is in. Cube targets are written face by face by the
 	// env-map passes; leave their per-face setup to the render target code.
-	// A float mask is cleared to 1.0 (lit) instead of 0.
+	// The second-depth (MAX) shadow mask is the one exception: its empty value
+	// is 0 ("no caster", lit), not 1.0, so ALL targets start black.
 	if (!cube)
 		clearTextureImage(out, 1);
 	out.HasAlpha = true;
@@ -1090,19 +1091,11 @@ bool CDriverVulkan::clearTextureImage(CTextureVulkan &out, uint32 mipCount)
 	STextureStaging staging;
 	if (!allocTextureStaging(levelBytes, staging))
 		return false;
-	// Zero is black/transparent for every format except the float shadow mask,
-	// where it would read as depth 0 (everything shadowed). The engine clears
-	// the mask to 1.0 before its first caster pass, but a mask sampled in
-	// between must still read lit, so a float target starts at 1.0.
-	if (out.Format == NL_VK_SHADOW_MASK_FORMAT)
-	{
-		uint32 *texels = (uint32 *)staging.Mapped;
-		const uint32 one = 0x3F800000u; // 1.0f
-		for (VkDeviceSize t = 0; t < levelBytes / 4; ++t)
-			texels[t] = one;
-	}
-	else
-		memset(staging.Mapped, 0, (size_t)levelBytes);
+	// Zero is black/transparent for every format. For the float shadow mask it
+	// is also the correct empty value: the mask keeps the farthest caster's
+	// depth with a MAX blend, so 0 means "no caster" = lit. (1.0 would mean a
+	// caster at the far plane in every texel, i.e. everything shadowed.)
+	memset(staging.Mapped, 0, (size_t)levelBytes);
 
 	STextureCopy copy;
 	copy.Image = out.Image;

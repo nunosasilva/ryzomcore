@@ -566,6 +566,15 @@ void			CDriverUser::setMatrixMode2D(const CFrustum &frust)
 {
 	NL3D_HAUTO_UI_DRIVER;
 
+	// The 2D mode is the interface and the full-screen post-process (FXAA,
+	// bloom, the final quad). The mega pixel program rebuilds a "world"
+	// position from ecPos, which in this mode is ~0..1 m around the world
+	// origin: near the origin a shadow lookup would darken the whole
+	// interface or the whole frame. Force the receiver flag off here instead
+	// of trusting whatever the last 3D draw left, so no 2D draw can inherit
+	// "receives". The next 3D mode (or the next scene part) turns it back on.
+	_Driver->setModernShadowReceiver(false);
+
 	_CurrentMatrixContext.Frustum= frust;
 	// We still work in NL3D coordinates, so must convert y to z.
 	CVector		I(1,0,0);
@@ -582,6 +591,10 @@ void			CDriverUser::setMatrixMode2D(const CFrustum &frust)
 void			CDriverUser::setMatrixMode3D(UCamera &camera)
 {
 	NL3D_HAUTO_UI_DRIVER;
+
+	// Leaving the 2D mode: world geometry receives the modern sun shadow
+	// again (see setMatrixMode2D above).
+	_Driver->setModernShadowReceiver(true);
 
 	// Retrieve the matrix and frustum from the camera.
 	CMatrix		viewMat;

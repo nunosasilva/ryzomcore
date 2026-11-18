@@ -945,7 +945,7 @@ private:
 	/// Vulkan shader samples the masks).
 	CModernShadowState		_ModernShadowState;
 	/// True only around the modern shadow caster draws: the pixel program
-	/// writes the light-space depth and the blend keeps the nearest caster.
+	/// writes the light-space depth and the MAX blend keeps the farthest caster.
 	bool					_ModernShadowDepthPass;
 	/// Whether the object currently drawn receives the modern sun shadow.
 	bool					_ModernShadowReceiver = true;

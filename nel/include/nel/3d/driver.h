@@ -1036,21 +1036,21 @@ public:
 	virtual void			setModernShadowState(const CModernShadowState &) {}
 	/** Enable the modern shadow depth mode for the draws that follow: the
 	  * generated pixel program writes the fragment's light-space depth instead
-	  * of its lit colour, and the driver blends it with a MIN blend so the
-	  * nearest caster wins each mask texel. CModernShadowMask uses it around
-	  * the caster draws only; drivers that don't support the modern path
-	  * ignore it.
+	  * of its lit colour, and the driver blends it with a MAX blend so the
+	  * farthest caster wins each mask texel (the second-depth convention).
+	  * CModernShadowMask uses it around the caster draws only; drivers that
+	  * don't support the modern path ignore it.
 	  */
 	virtual void			setModernShadowDepthPass(bool /* enabled */) {}
 
 	/** Whether the object about to be drawn receives the modern sun shadow.
 	 *
-	 * Shadow casters are drawn with this off: the mask contains their own
-	 * caster depth, and comparing a surface against its own (or its body's)
-	 * depth is what paints the dark bands on a face, a torso or a fence beam.
-	 * They still *cast*: the depth mask is written from the caster list, which
-	 * this flag does not touch. The landscape and every other non-caster keep
-	 * receiving normally.
+	 * The engine resets this to true at the start of every scene render part
+	 * and to false for the passes that are not world geometry (interface and
+	 * post-process, which switch the driver to 2D mode, as well as water,
+	 * particles, ribbons, flares and decals). Real geometry receives by
+	 * default: with a second-depth (MAX) mask a surface cannot compare behind
+	 * its own far side, so a caster no longer self-shadows.
 	 */
 	virtual void			setModernShadowReceiver(bool /* receives */) {}
 

@@ -827,10 +827,10 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	if (fogOrPpl)
 	{
 		ss << "float nlSunShadow = 1.0;" << std::endl;
-		// The masks hold the nearest caster's light-space depth per texel (the
+		// The masks hold the farthest caster's light-space depth per texel (the
 		// caster pass writes gl_FragCoord.z, which the orthographic world ->
 		// [0,1]^3 cascade camera makes exactly the receiver's own depth unit).
-		// Far texels are cleared to 1.0, so an empty texel reads "lit".
+		// An empty texel is the clear value 0, so it reads "lit".
 		//
 		// One bilinear tap is already an average of the 2x2 texels around the
 		// fragment, but a single tap leaves the mask lattice readable as a
@@ -842,7 +842,7 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));" << std::endl;
 		ss << "}" << std::endl;
 		ss << std::endl;
-		ss << "float sampleSunMask(sampler2D smap, vec2 uv, float depth, float bias, float softness, float texel) {" << std::endl;
+		ss << "float sampleSunMask(sampler2D smap, vec2 uv, float depth, float bias, float softness, float texel, float depthPerTexel) {" << std::endl;
 		ss << "  float ang = nlMaskIgn(gl_FragCoord.xy) * 6.28318530718;" << std::endl;
 		ss << "  vec2 o = vec2(cos(ang), sin(ang)) * (texel * 0.5);" << std::endl;
 		ss << "  vec2 o2 = vec2(-o.y, o.x);" << std::endl;
@@ -852,6 +852,8 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// the sun and re-introduce the early shadow start.
 		ss << "  float stored = max(max(texture(smap, uv + o).r, texture(smap, uv - o).r)," << std::endl;
 		ss << "                     max(texture(smap, uv + o2).r, texture(smap, uv - o2).r));" << std::endl;
+		// No caster in any tap: the whole neighbourhood is at the clear value
+		// 0 (0 = lit, the MAX convention's empty depth), so the fragment is lit.
 		ss << "  if (stored <= 0.0)" << std::endl;
 		ss << "    return 0.0;" << std::endl;
 		// Receiver tolerance: the floor (bias) covers the mask's quantisation,
@@ -860,7 +862,8 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// per *texel* (the depth change over the UV covered by one texel), so
 		// the tolerance is screen-resolution independent; on a surface facing
 		// the light it stays at the floor, which keeps the contact attached.
-		ss << "  float depthPerTexel = fwidth(depth) * texel / max(max(fwidth(uv).x, fwidth(uv).y), 1e-7);" << std::endl;
+		// depthPerTexel is computed by the caller, outside every per-fragment
+		// branch: fwidth() is undefined in non-uniform control flow.
 		ss << "  float tol = max(bias, depthPerTexel);" << std::endl;
 		// max(): a disabled/zero state must not turn smoothstep's edge0==edge1
 		// into a division by zero.
@@ -943,27 +946,40 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "  float nlCascadeDepth = abs(ecPos.y / ecPos.w);" << std::endl;
 		ss << "  bool nlCascade1 = nlCascadeDepth >= nlShadow.splits.x;" << std::endl;
 		ss << "  vec4 sunP = vec4(0.0);" << std::endl;
-		ss << "  if (nlShadow.params.x > 0.5 && haveWsPos && nlShadow.receive > 0.5) {" << std::endl;
+		// params.x and receive are uniform UBO values, identical for every
+		// fragment of the draw, so the fwidth() below runs in uniform control
+		// flow (GLSL/SPIR-V leave derivatives undefined in a non-uniform
+		// branch). haveWsPos stays a per-fragment test after them: it guards
+		// the *sample*, which needs no derivative.
+		ss << "  if (nlShadow.params.x > 0.5 && nlShadow.receive > 0.5) {" << std::endl;
 		ss << "    sunP = nlCascade1 ? (nlShadow.worldToMask1 * vec4(shadowWsPos, 1.0)) : (nlShadow.worldToMask0 * vec4(shadowWsPos, 1.0));" << std::endl;
-		ss << "    vec2 sunUv = sunP.xy;" << std::endl;
+		ss << "    float nlDepthPerTexel = fwidth(sunP.z) * nlShadow.params.y / max(max(fwidth(sunP.xy).x, fwidth(sunP.xy).y), 1e-7);" << std::endl;
+		ss << "    if (haveWsPos) {" << std::endl;
+		ss << "      vec2 sunUv = sunP.xy;" << std::endl;
 		// The masks are render targets: their row 0 is the top of the light
 		// camera image, while the cascade matrix maps the bottom of the light
 		// box to v = 0.
-		ss << "    sunUv.y = 1.0 - sunUv.y;" << std::endl;
+		ss << "      sunUv.y = 1.0 - sunUv.y;" << std::endl;
 		// The mask range is the whole cascade box, so a receiver inside the box
 		// always maps to [0,1]. clamp() keeps the edge texels from testing as
-		// "behind" the empty clear value (1.0) through float error.
-		ss << "    float sunDepth = clamp(sunP.z, 0.0, 1.0);" << std::endl;
-		ss << "    if (!nlCascade1)" << std::endl;
-		ss << "      nlSunShadow = 1.0 - sampleSunMask(nlShadowMask0, sunUv, sunDepth, nlShadow.depthBias.x, nlShadow.depthSoft.x, nlShadow.params.y);" << std::endl;
-		ss << "    else" << std::endl;
-		ss << "      nlSunShadow = 1.0 - sampleSunMask(nlShadowMask1, sunUv, sunDepth, nlShadow.depthBias.y, nlShadow.depthSoft.y, nlShadow.params.y);" << std::endl;
-		ss << "    if (sunUv.x < 0.0 || sunUv.x > 1.0 || sunUv.y < 0.0 || sunUv.y > 1.0)" << std::endl;
-		ss << "      nlSunShadow = 1.0;" << std::endl;
+		// "behind" the empty clear value (0 = lit) through float error.
+		ss << "      float sunDepth = clamp(sunP.z, 0.0, 1.0);" << std::endl;
+		ss << "      if (!nlCascade1)" << std::endl;
+		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask0, sunUv, sunDepth, nlShadow.depthBias.x, nlShadow.depthSoft.x, nlShadow.params.y, nlDepthPerTexel);" << std::endl;
+		ss << "      else" << std::endl;
+		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask1, sunUv, sunDepth, nlShadow.depthBias.y, nlShadow.depthSoft.y, nlShadow.params.y, nlDepthPerTexel);" << std::endl;
+		ss << "      if (sunUv.x < 0.0 || sunUv.x > 1.0 || sunUv.y < 0.0 || sunUv.y > 1.0)" << std::endl;
+		ss << "        nlSunShadow = 1.0;" << std::endl;
+		ss << "    }" << std::endl;
 		ss << "  }" << std::endl;
 		ss << "  if (nlNumPerPixelLights > 0) {" << std::endl;
 		ss << "    vec3 wsPos = worldPos.xyz / worldPos.w;" << std::endl;
-		ss << "    vec3 wsNormal = normalize(normal.xyz);" << std::endl;
+		// A degenerate normal (an unskinned or half-initialised vertex) would
+		// make normalize() produce NaN and poison the whole PPL term; keep a
+		// stable fallback direction instead.
+		ss << "    vec3 nlN = normal.xyz;" << std::endl;
+		ss << "    float nlNLen = length(nlN);" << std::endl;
+		ss << "    vec3 wsNormal = nlNLen > 1e-6 ? nlN / nlNLen : vec3(0.0, 0.0, 1.0);" << std::endl;
 		// cameraWorldPos: precomputed on CPU as inverse view matrix position
 		ss << "    vec3 eyeDir = normalize(cameraWorldPos - wsPos);" << std::endl;
 		ss << "    vec4 pplDiff = vec4(0.0);" << std::endl;

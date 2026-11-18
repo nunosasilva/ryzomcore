@@ -587,12 +587,17 @@ void	CScene::renderPart(UScene::TRenderPart rp, bool	doHrcPass, bool doTrav, boo
 	if(rp==UScene::RenderNothing)
 		return;
 
-	// The modern sun shadow receiver flag is per draw, and everything that is
-	// not a shadow caster must receive. A caster leaves it at 0 (its own body
-	// must not self-shadow), so every render part starts from "receives" and
-	// the passes below (landscape, water, sky, transparent, decals, the UI and
-	// each reflection pass) reset it again after the caster draws.
-	RenderTrav.getDriver()->setModernShadowReceiver(true);
+	// The modern sun shadow receiver flag is per draw, and every draw of a
+	// scene that owns the masks receives: with the second-depth (MAX) mask a
+	// surface cannot compare behind its own far side, so receiving everywhere
+	// is safe and lets roofs, awnings, walls and characters shade each other.
+	// A scene that did not opt in (the sky and the canopy) samples no masks:
+	// it runs with a different camera and the state in the driver belongs to
+	// the main scene. The 2D interface and the post-process are forced off by
+	// CDriverUser::setMatrixMode2D(); the explicit non-receivers inside the
+	// main pass (landscape aside: water, particles, flares, decals) reset it
+	// below.
+	RenderTrav.getDriver()->setModernShadowReceiver(getModernShadowsEnabled());
 
 	// If part asked already rendered, abort
 	nlassert((rp & _RenderedPart) == 0); // cannot render the same part twice during a render
