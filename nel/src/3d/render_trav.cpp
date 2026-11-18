@@ -52,6 +52,55 @@ namespace	NL3D
 // default is undefined, allows to see which CTransformShape are displayed in a scene, useful for debugging
 //#define NL_DEBUG_RENDER_TRAV
 
+namespace {
+
+/** NLVK_SHADOW_CASTER_CENSUS=1: the modern shadow mask builds its caster set
+ *	from CScene::getAllModels() alone. The mask pass used to also walk the
+ *	registered shadow-caster list and this pass' opaque ordering table, which
+ *	are subsets of the scene's model list by construction; this check proves
+ *	it at run time, once per scene, during the first 120 frames. A non-zero
+ *	"not-in-models" count means one of those sources still has to be kept.
+ */
+void	modernShadowCasterCensus(CScene *scene, COrderingTable<CTransform> &opaque)
+{
+	if (!scene)
+		return;
+	static const char	*env = getenv("NLVK_SHADOW_CASTER_CENSUS");
+	if (!env || !*env)
+		return;
+	static std::map<const CScene*, uint>	frames;
+	uint	&frameCount = frames[scene];
+	if (frameCount > 120)
+		return;
+	if (++frameCount != 120)
+		return;
+
+	const std::set<CTransform*>	&models = scene->getAllModels();
+	uint	registered = 0;
+	uint	missingRegistered = 0;
+	for (CScene::ItShadowCasterList it = scene->getShadowCasterListBegin();
+		it != scene->getShadowCasterListEnd(); ++it)
+	{
+		++registered;
+		if (models.find(*it) == models.end())
+			++missingRegistered;
+	}
+	uint	opaqueCount = 0;
+	uint	missingOpaque = 0;
+	opaque.begin();
+	while (opaque.get() != NULL)
+	{
+		++opaqueCount;
+		if (models.find(opaque.get()) == models.end())
+			++missingOpaque;
+		opaque.next();
+	}
+	nlinfo("SHADOWCASTER census: models=%u registered=%u opaque=%u not-in-models: registered=%u opaque=%u",
+		(uint)models.size(), registered, opaqueCount, missingRegistered, missingOpaque);
+}
+
+} // anonymous namespace
+
 
 
 
@@ -248,6 +297,7 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 			// sampling the last masks.
 			if (modernDriver)
 			{
+				modernShadowCasterCensus(Scene, OrderOpaqueList);
 				modernShadows = _ShadowMapManager.renderModernShadowMasks(Scene);
 				if (modernShadows)
 					_ShadowMapManager.clearAllShadowCasters();
