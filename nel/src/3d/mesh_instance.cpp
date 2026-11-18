@@ -291,7 +291,7 @@ void		CMeshInstance::generateShadowMap(const CVector &lightDir)
 
 // ***************************************************************************
 // ***************************************************************************
-void		CMeshInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat)
+void		CMeshInstance::renderModernShadowCaster(IDriver *driver, CMaterial &castMat)
 {
 	if (!Shape)
 		return;
@@ -303,10 +303,9 @@ void		CMeshInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMa
 	if (getAncestorSkeletonModel() != NULL)
 		return;
 
-	// The cascade camera is world -> [0,1]^3; the mesh vertices are local, so
-	// the world matrix brings them into the same space as the receiver.
-	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
-	driver->setupViewMatrix(cameraMatrix.inverted());
+	// The cascade camera (world -> [0,1]^3) is already set, once for the whole
+	// cascade (see CModernShadowMask::render); the mesh vertices are local, so
+	// the world matrix is all this caster still has to set.
 	driver->setupModelMatrix(getWorldMatrix());
 
 	CMesh	*mesh= (CMesh*)(IShape*)Shape;

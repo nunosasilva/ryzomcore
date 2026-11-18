@@ -429,6 +429,55 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		driver->setModernShadowState(disabled);
 	}
 
+	// One world-space bbox per caster for the whole frame. The box is the same
+	// for both cascades, and computing it is the expensive part (a virtual
+	// call plus the shape bounds transform), so it is done here once instead
+	// of once per cascade. A caster whose box is missing (hidden in the HRC,
+	// skeleton-bound skin) or degenerate (an uninitialised bone sphere was
+	// seen with ~1e20 extents) is dropped once, with one debug line, instead
+	// of being rejected again in each cascade.
+	struct CCasterBox
+	{
+		CTransform	*Model;
+		CAABBox		Box;
+	};
+	std::vector<CCasterBox>	casterBoxes;
+	casterBoxes.reserve(casters.size());
+	uint	badCasters = 0;
+	std::string	badCasterInfo;
+	for (uint c = 0; c < casters.size(); ++c)
+	{
+		CTransform	*model = casters[c];
+		CAABBox		bb;
+		if (!model || !model->computeWorldBBoxForShadow(bb))
+			continue;
+		if (!isValidModernShadowCasterBBox(bb))
+		{
+			++badCasters;
+			if (badCasterInfo.empty())
+			{
+				const CVector	mn = bb.getMin();
+				const CVector	mx = bb.getMax();
+				char	extra[160];
+				snprintf(extra, sizeof(extra), "bbox=(%.3g %.3g %.3g)-(%.3g %.3g %.3g)",
+					mn.x, mn.y, mn.z, mx.x, mx.y, mx.z);
+				badCasterInfo = extra;
+			}
+			continue;
+		}
+		CCasterBox	entry;
+		entry.Model = model;
+		entry.Box = bb;
+		casterBoxes.push_back(entry);
+	}
+	if (badCasters)
+	{
+		char	extra[200];
+		snprintf(extra, sizeof(extra), "bad=%u first %s", badCasters,
+			badCasterInfo.empty() ? "" : badCasterInfo.c_str());
+		modernShadowDebugLog("skip", "badcaster", scene, driver, NULL, 0, _Mask[0], extra);
+	}
+
 	_NumCascades = 2;
 	float	biasMillimetres[2] = { 0.f, 0.f };
 	// Debug trace for cascade 0: how many casters project into the box, the
@@ -437,7 +486,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	uint	inBox0 = 0;
 	float	span0 = 0.f;
 	float	sunShareRaw = 0.f;
-	bool	bad0 = false;
+	bool	bad0 = badCasters != 0;
 	// Reused per-cascade caster set (see the bbox rejection in the cascade loop).
 	std::vector<CTransform*>	cascadeCasters;
 	bool	maskPassOk = true;
@@ -485,45 +534,25 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// uses with CShadowMapProjector::_XYZToUWVMatrix.
 		CMatrix	boxToMask = cameraMatrix.inverted();
 		float	rawLo = 0.f, rawHi = 1.f;
-		bool	badCaster = false;
 		const float	texelUv = 1.f / (float)_Size;
 		// Casters that can contribute to *this* cascade: their light-space bbox
 		// must overlap the box in the image plane and in depth, and it must be
 		// large enough to cover a mask texel (a sub-texel prop at distance
 		// cannot paint a readable shadow). This is the main cost saver: the
-		// full set contains every registered caster of the scene, most of them
-		// far outside the near cascade.
+		// full set contains every caster of the scene, most of them far outside
+		// the near cascade.
 		cascadeCasters.clear();
-		for (uint c = 0; c < casters.size(); ++c)
+		for (uint c = 0; c < casterBoxes.size(); ++c)
 		{
-			CAABBox bb;
-			if (!casters[c] || !casters[c]->computeWorldBBoxForShadow(bb))
-				continue;
-			// A degenerate or half-initialised caster bbox must never reach the
-			// range: an uninitialised bone sphere can report extents around
-			// 1e20 (seen in a caster dump), which turns the normalized depth
-			// values into noise and clips nothing that a real caster needs.
-			if (!isValidModernShadowCasterBBox(bb))
-			{
-				const CVector	mn = bb.getMin();
-				const CVector	mx = bb.getMax();
-				char	extra[160];
-				snprintf(extra, sizeof(extra), "bbox=(%.3g %.3g %.3g)-(%.3g %.3g %.3g)",
-					mn.x, mn.y, mn.z, mx.x, mx.y, mx.z);
-				modernShadowDebugLog("skip", "badcaster", scene, driver, NULL,
-					0, _Mask[0], extra);
-				badCaster = true;
-				continue;
-			}
 			CVector lo, hi;
-			lightSpaceAABBox(boxToMask, bb, lo, hi);
+			lightSpaceAABBox(boxToMask, casterBoxes[c].Box, lo, hi);
 			if (hi.x < 0.f || lo.x > 1.f || hi.z < 0.f || lo.z > 1.f)
 				continue; // outside the image plane of the box: it draws nothing here
 			if (hi.y < 0.f || lo.y > 1.f)
 				continue; // entirely in front of or behind the box along the sun
 			if ((hi.x - lo.x) < texelUv && (hi.z - lo.z) < texelUv)
 				continue; // smaller than one mask texel: no readable shadow
-			cascadeCasters.push_back(casters[c]);
+			cascadeCasters.push_back(casterBoxes[c].Model);
 			rawLo = std::min(rawLo, lo.y - NL_MODERN_SHADOW_DEPTH_MARGIN);
 			rawHi = std::max(rawHi, hi.y + NL_MODERN_SHADOW_DEPTH_MARGIN);
 			if (i == 0)
@@ -535,10 +564,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		const float	depthHi = rawHi;
 		const float	depthSpan = depthHi - depthLo;
 		if (i == 0)
-		{
 			span0 = depthSpan;
-			bad0 = badCaster;
-		}
 		if (depthSpan <= 1.f)
 		{
 			// The common case: nothing sticks out, so the range stays exactly
@@ -619,9 +645,18 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		driver->setColorMask(true, true, true, true);
 		driver->clear2D(CRGBA(0, 0, 0, 0));
 
+		// The cascade camera, once for the whole cascade. Every caster used to
+		// call setFrustum() and setupViewMatrix(cameraMatrix.inverted()) itself:
+		// that repeated the same 4x4 inversion per draw and, worse, marked the
+		// mega camera UBO dirty per draw, so bindMegaDescriptors() rebuilt it
+		// (three more inversions + a 352-byte block) for every caster. The
+		// casters only set their model matrix now, and the camera block is
+		// staged once per cascade.
+		driver->setFrustum(0, 1, 0, 1, 0, 1, false);
+		driver->setupViewMatrix(casterMatrix.inverted());
 		driver->setModernShadowDepthPass(true);
 		for (uint c = 0; c < cascadeCasters.size(); ++c)
-			cascadeCasters[c]->renderModernShadowCaster(driver, casterMatrix, castMat);
+			cascadeCasters[c]->renderModernShadowCaster(driver, castMat);
 		driver->setModernShadowDepthPass(false);
 
 	}

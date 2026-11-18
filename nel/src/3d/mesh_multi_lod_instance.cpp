@@ -289,15 +289,15 @@ void		CMeshMultiLodInstance::renderSlotModernShadowCaster(IDriver *driver, uint 
 
 
 // ***************************************************************************
-void		CMeshMultiLodInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat)
+void		CMeshMultiLodInstance::renderModernShadowCaster(IDriver *driver, CMaterial &castMat)
 {
 	if (!Shape)
 		return;
 
 	// Same convention as CMeshInstance: the cascade camera maps the world to
-	// [0,1]^3, and the slot vertex buffers are local to the shape.
-	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
-	driver->setupViewMatrix(cameraMatrix.inverted());
+	// [0,1]^3, and the slot vertex buffers are local to the shape. The camera
+	// is set once per cascade by the mask pass, so only the model matrix is
+	// per caster.
 	driver->setupModelMatrix(getWorldMatrix());
 
 	// Exactly the slots CMeshMultiLod::render() draws this frame: Lod0, plus

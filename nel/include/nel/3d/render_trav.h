@@ -408,10 +408,6 @@ private:
 
 	// A grow only list of models to be rendered.
 	std::vector<CTransform*>	RenderList;
-	/// Reused list of the opaque pass's models, handed to the modern shadow
-	/// mask pass: every opaque model casts, not only the ones an entity
-	/// registered as shadow casters.
-	std::vector<CTransform*>	_ModernShadowCasterScratch;
 	uint32						_CurrentNumVisibleModels;
 
 	// Ordering Table to sort transparent objects

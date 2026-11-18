@@ -2165,15 +2165,15 @@ void		CSkeletonModel::generateShadowMap(const CVector &lightDir)
 }
 
 // ***************************************************************************
-void		CSkeletonModel::renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat)
+void		CSkeletonModel::renderModernShadowCaster(IDriver *driver, CMaterial &castMat)
 {
 	if (!Shape)
 		return;
 
 	// Same convention as CMeshInstance: the shared cascade camera maps the
 	// world to [0,1]^3 and the skinned vertices are rendered in world space.
-	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
-	driver->setupViewMatrix(cameraMatrix.inverted());
+	// The camera is set once per cascade by the mask pass; only the pose's
+	// model matrix changes per caster.
 	renderIntoSkeletonShadowMap(this, castMat, true);
 }
 

@@ -20,9 +20,6 @@
 #include "std3d.h"
 #include "nel/3d/shadow_map_manager.h"
 
-#include <unordered_set>
-#include <map>
-#include <set>
 #include "nel/misc/aabbox.h"
 #include "nel/3d/driver.h"
 #include "nel/3d/scene.h"
@@ -69,6 +66,9 @@ CShadowMapManager::CShadowMapManager()
 	setQuadGridSize(NL3D_SMM_QUADGRID_SIZE, NL3D_SMM_QUADCELL_SIZE);
 	_ShadowCasters.reserve(256);
 	_GenerateShadowCasters.reserve(256);
+	_ModernShadowCasters.reserve(256);
+	_ModernShadowCastersScene = NULL;
+	_ModernShadowCastersVersion = 0;
 	_PolySmooth= true;
 
 	// **** Setup Fill
@@ -252,56 +252,7 @@ void			CShadowMapManager::addShadowReceiver(CTransform *model)
 }
 
 // ***************************************************************************
-// TEMPORARY (milestone D): before the registered caster list and the opaque
-// ordering table are dropped as caster sources, prove that CScene::_Models is
-// a superset of both. Logged once per scene, only with
-// NLVK_SHADOW_CASTER_CENSUS=1, so a normal run pays nothing.
-static void	casterSetSupersetProof(CScene *scene, const std::vector<CTransform*> *opaqueModels)
-{
-	static const char	*env = getenv("NLVK_SHADOW_CASTER_CENSUS");
-	if (!env || !*env)
-		return;
-	static std::map<const CScene*, uint>	frames;
-	uint	&frameCount = frames[scene];
-	if (frameCount > 120)
-		return;
-	if (++frameCount != 120)
-		return;
-
-	const std::set<CTransform*>	&models = scene->getAllModels();
-	uint	registered = 0;
-	uint	missingRegistered = 0;
-	for (CScene::ItShadowCasterList it = scene->getShadowCasterListBegin();
-		it != scene->getShadowCasterListEnd(); ++it)
-	{
-		++registered;
-		if (models.find(*it) == models.end())
-		{
-			++missingRegistered;
-			nlinfo("SHADOWCASTER census: registered caster %p is not in _Models", (void *)*it);
-		}
-	}
-	uint	opaque = 0;
-	uint	missingOpaque = 0;
-	if (opaqueModels)
-	{
-		for (uint i = 0; i < opaqueModels->size(); ++i)
-		{
-			++opaque;
-			if (models.find((*opaqueModels)[i]) == models.end())
-			{
-				++missingOpaque;
-				nlinfo("SHADOWCASTER census: opaque model %p is not in _Models", (void *)(*opaqueModels)[i]);
-			}
-		}
-	}
-	nlinfo("SHADOWCASTER census: models=%u registered=%u opaque=%u not-in-models: registered=%u opaque=%u",
-		(uint)models.size(), registered, opaque, missingRegistered, missingOpaque);
-}
-
-// ***************************************************************************
-bool			CShadowMapManager::renderModernShadowMasks(CScene *scene,
-	const std::vector<CTransform*> *opaqueModels)
+bool			CShadowMapManager::renderModernShadowMasks(CScene *scene)
 {
 	if( !scene )
 		return false;
@@ -322,55 +273,42 @@ bool			CShadowMapManager::renderModernShadowMasks(CScene *scene,
 	if( !driver || !driver->supportsModernShadows() )
 		return false;
 	// A scene that did not opt in (the sky, the canopy) cannot use the masks:
-	// return before building the caster union, not after.
+	// return before building the caster set, not after.
 	if( !scene->getModernShadowsEnabled() )
 		return false;
 
-	casterSetSupersetProof(scene, opaqueModels);
-
-	// Prefer the opaque pass's models: every opaque object casts, whether or
-	// not the game registered it as a shadow caster. The registered list is
-	// the fallback for a pass that has no traversal (the water reflection and
-	// the env-map re-render never reach here, they keep the published masks).
-	// The mask's caster set must not depend on the *view* frustum: a structure
-	// behind the camera still casts into the cascade box (its shadow lands in
-	// front of it). The scene's registered shadow caster list is not frustum
-	// culled (it is filled per entity, not per view), so it is the base of the
-	// set; the opaque pass's models are added for objects the game did not
-	// register as casters (fence planks, a building's walls). Each cascade then
-	// keeps only the casters whose light-space bbox overlaps its box.
-	std::vector<CTransform*> casters;
-	casters.reserve(256);
-	std::unordered_set<CTransform*> seen;
-	for(CScene::ItShadowCasterList it= scene->getShadowCasterListBegin();
-		it!= scene->getShadowCasterListEnd(); ++it)
+	// The casters are the scene's own model list, filtered by capability. It
+	// is not frustum culled - a structure behind the camera still casts into
+	// the cascade box, its shadow landing in front of it - and it is the only
+	// complete scene-wide list of transforms: the registered caster list and
+	// the opaque ordering table of the pass are both subsets of it (verified
+	// with NLVK_SHADOW_CASTER_CENSUS=1 before those walks were removed, and
+	// the milestone C classes are created through CScene::createModel, so they
+	// are in it too). The filter rejects the landscape, particles, flares and
+	// decals before their bbox is computed; the per-cascade bbox test in
+	// CModernShadowMask then drops everything that cannot reach a cascade.
+	//
+	// The list is rebuilt only when a model is added or removed: a scene's
+	// model set is stable for long stretches, and the capability flag is a
+	// per-class constant. A pointer stored here is erased in the same call that
+	// bumps the version (CScene::deleteModel), so the cached list never holds
+	// a model that the scene no longer owns.
+	if (scene != _ModernShadowCastersScene ||
+		scene->getModelListVersion() != _ModernShadowCastersVersion)
 	{
-		casters.push_back(*it);
-		seen.insert(*it);
-	}
-	// The scene's model set is not frustum culled: it is what keeps a big
-	// structure behind the camera (a packed-zone instance group, a building)
-	// in the mask when its shadow still falls into the box. The per-cascade
-	// bbox test below rejects everything that cannot contribute.
-	{
+		_ModernShadowCastersScene = scene;
+		_ModernShadowCastersVersion = scene->getModelListVersion();
 		const std::set<CTransform*> &models = scene->getAllModels();
+		_ModernShadowCasters.clear();
+		_ModernShadowCasters.reserve(models.size());
 		for (std::set<CTransform*>::const_iterator it = models.begin(); it != models.end(); ++it)
 		{
 			CTransform *tr = *it;
-			if (tr && seen.insert(tr).second)
-				casters.push_back(tr);
+			if (tr && tr->isModernShadowCaster())
+				_ModernShadowCasters.push_back(tr);
 		}
 	}
-	if (opaqueModels)
-	{
-		for (uint i = 0; i < opaqueModels->size(); ++i)
-		{
-			CTransform *tr = (*opaqueModels)[i];
-			if (tr && seen.insert(tr).second)
-				casters.push_back(tr);
-		}
-	}
-	if( casters.empty() )
+	if( _ModernShadowCasters.empty() )
 	{
 		// Nothing to encode this frame (a scene with no casters, or the main
 		// scene during a load): keep the last published masks. They are at
@@ -379,7 +317,7 @@ bool			CShadowMapManager::renderModernShadowMasks(CScene *scene,
 		modernShadowDebugLog("keep", "nocasters", scene, driver, NULL, 0, NULL);
 		return false;
 	}
-	return _ModernShadow.render(scene, casters);
+	return _ModernShadow.render(scene, _ModernShadowCasters);
 }
 
 void			CShadowMapManager::renderGenerate(CScene *scene)

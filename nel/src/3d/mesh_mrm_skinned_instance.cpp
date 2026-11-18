@@ -182,7 +182,7 @@ void	CMeshMRMSkinnedInstance::renderSkin(float alphaMRM)
 
 
 // ***************************************************************************
-void	CMeshMRMSkinnedInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat)
+void	CMeshMRMSkinnedInstance::renderModernShadowCaster(IDriver *driver, CMaterial &castMat)
 {
 	if (!Shape)
 		return;
@@ -193,8 +193,7 @@ void	CMeshMRMSkinnedInstance::renderModernShadowCaster(IDriver *driver, const NL
 	if (getSkeletonModel() != NULL)
 		return;
 
-	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
-	driver->setupViewMatrix(cameraMatrix.inverted());
+	// The cascade camera is set once per cascade (see CModernShadowMask).
 	driver->setupModelMatrix(getWorldMatrix());
 
 	CMeshMRMSkinned	*pMesh = NLMISC::safe_cast<CMeshMRMSkinned *>((IShape*)Shape);

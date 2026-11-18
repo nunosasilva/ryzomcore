@@ -92,7 +92,7 @@ public:
 	virtual bool				computeWorldBBoxForShadow(NLMISC::CAABBox &worldBB) NL_OVERRIDE;
 
 	/// Draw the LOD slots the frame is using into the modern shadow mask
-	virtual void				renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat) NL_OVERRIDE;
+	virtual void				renderModernShadowCaster(IDriver *driver, CMaterial &castMat) NL_OVERRIDE;
 
 	// called at instanciation
 	void			initRenderFilterType();

@@ -530,11 +530,22 @@ public:
 
 	/** Modern (Vulkan) shadow path: render this caster as coverage into the
 	 *	shared cascade mask. The manager has already bound the mask target,
-	 *	set the alpha-only color mask and cleared it. cameraMatrix maps the
-	 *	world cascade box to [0,1]^3 (the same matrix the receiver shader
-	 *	uses), so the caster must render in world space.
+	 *	set the alpha-only color mask and cleared it, and set the cascade
+	 *	camera for the whole cascade (setFrustum(0,1,...) + setupViewMatrix):
+	 *	cameraMatrix maps the world cascade box to [0,1]^3 (the same matrix the
+	 *	receiver shader uses), so the caster only sets its model matrix and
+	 *	renders in world space.
 	 */
-	virtual	void		renderModernShadowCaster(IDriver * /* driver */, const NLMISC::CMatrix & /* cameraMatrix */, CMaterial & /* castMat */) { }
+	virtual	void		renderModernShadowCaster(IDriver * /* driver */, CMaterial & /* castMat */) { }
+	/** True for the model classes that can draw into the modern shadow mask.
+	 *	The caster set is built once per frame from the scene's model list; the
+	 *	classes below CMeshBaseInstance (mesh, MRM, MRM-skinned, multi-LOD) and
+	 *	CSkeletonModel override this, so the per-frame filter rejects the
+	 *	landscape, particles, flares and every other transform before their
+	 *	bbox is even computed. Override together with
+	 *	renderModernShadowCaster()/computeWorldBBoxForShadow().
+	 */
+	virtual	bool		isModernShadowCaster() const { return false; }
 	/** get The shadow Map result for receveing. If NULL, nothing is displayed.
 	 */
 	virtual	CShadowMap	*getShadowMap() { return nullptr; }

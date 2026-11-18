@@ -84,14 +84,15 @@ public:
 	/** Modern (Vulkan) path: render the sun cascade masks and publish their
 	 *	state. Must be called before the opaque pass; returns false when the
 	 *	modern path is disabled (the legacy renderGenerate() then runs).
+	 *
+	 *	The caster set comes from CScene::getAllModels() only: that is the
+	 *	complete scene-wide transform list (the registered caster list and the
+	 *	opaque ordering table are subsets of it, verified with
+	 *	NLVK_SHADOW_CASTER_CENSUS before they were dropped), filtered by
+	 *	CTransform::isModernShadowCaster() and cached while the scene's model
+	 *	list does not change.
 	 */
-	/** Render the modern cascaded sun masks for this pass.
-	 *	\param opaqueModels when non-null, the models of the opaque pass: every
-	 *	one of them casts (see CRenderTrav::traverse). Null falls back to the
-	 *	scene's registered shadow caster list.
-	 */
-	bool			renderModernShadowMasks(CScene *scene,
-		const std::vector<CTransform*> *opaqueModels = NULL);
+	bool			renderModernShadowMasks(CScene *scene);
 
 	/** project ShadowMaps onto receivers. NB: renderGenerate() must have been called before.
 	 *	NB: current driver Frustum, ViewMatrix kept their initial state but ModelMatrix not.
@@ -125,6 +126,14 @@ private:
 	std::vector<CTransform*>	_ShadowCasters;
 	// The Casters added to this pass that will compute their shadowMap this frame. cleared at render
 	std::vector<CTransform*>	_GenerateShadowCasters;
+	/// Modern shadow casters: every model of the scene that can draw into the
+	/// mask (CTransform::isModernShadowCaster()), in _Models order. Rebuilt
+	/// only when the scene's model list version moves; the per-frame work is
+	/// then the per-cascade bbox rejection in CModernShadowMask.
+	std::vector<CTransform*>	_ModernShadowCasters;
+	/// Scene the list above was built for, and its model-list version.
+	CScene						*_ModernShadowCastersScene;
+	uint32						_ModernShadowCastersVersion;
 	// This is a quadGrid of ShadowReceiver.
 	typedef CQuadGrid<CTransform*>	TShadowReceiverGrid;
 	TShadowReceiverGrid			_ShadowReceiverGrid;

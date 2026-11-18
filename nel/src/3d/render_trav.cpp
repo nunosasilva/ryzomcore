@@ -239,37 +239,16 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 		if (generateShadows)
 		{
 			// Only a scene that opted in and has the Shadows option on can use
-			// the caster union; the sky and the canopy reached this point and
-			// built (then discarded) the whole union every frame. The one-line
-			// gate also skips the ordering-table walk with `Shadows = 0`.
-			const bool wantModern = modernDriver && Scene->getShadowsEnabled() &&
-				Scene->getModernShadowsEnabled();
-			if (wantModern)
-			{
-				// Every opaque model casts. The per-entity CastShadow registration
-				// leaves objects out (some planks, a building's walls), and an
-				// object that is not in the mask neither blocks a shadow (an NPC's
-				// shadow then lands on the wall behind him) nor stops being
-				// shadowed by its neighbours. The opaque ordering table holds
-				// exactly the opaque models of this pass: no landscape, no
-				// transparent/additive material, no particle, flare or interface
-				// draw, and the sky is a separate scene.
-				_ModernShadowCasterScratch.clear();
-				OrderOpaqueList.begin();
-				while (OrderOpaqueList.get() != NULL)
-				{
-					_ModernShadowCasterScratch.push_back(OrderOpaqueList.get());
-					OrderOpaqueList.next();
-				}
-			}
+			// the masks: the caster set is the scene's own model list (see
+			// CShadowMapManager::renderModernShadowMasks), so there is no
+			// per-pass list to hand over and no ordering-table walk with
+			// `Shadows = 0`.
 			// The manager must still see the pass with `Shadows = 0`: that is
 			// where it publishes the disabled state which stops the shader
-			// sampling the last masks. With no union to hand over it returns
-			// before walking anything (see renderModernShadowMasks).
+			// sampling the last masks.
 			if (modernDriver)
 			{
-				modernShadows = _ShadowMapManager.renderModernShadowMasks(Scene,
-					wantModern ? &_ModernShadowCasterScratch : NULL);
+				modernShadows = _ShadowMapManager.renderModernShadowMasks(Scene);
 				if (modernShadows)
 					_ShadowMapManager.clearAllShadowCasters();
 			}

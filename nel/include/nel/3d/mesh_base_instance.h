@@ -233,6 +233,11 @@ public:
 	 *	pose, with the bone-sphere bounds of the skeleton.
 	 */
 	virtual bool		computeWorldBBoxForShadow(NLMISC::CAABBox &worldBB) NL_OVERRIDE;
+	/** Every mesh instance class (mesh, MRM, MRM-skinned, multi-LOD) can draw
+	 *	into the modern shadow mask, so the caster set keeps all of them and
+	 *	rejects everything that is not a mesh (or a skeleton).
+	 */
+	virtual bool		isModernShadowCaster() const NL_OVERRIDE { return true; }
 	// @}
 
 protected:

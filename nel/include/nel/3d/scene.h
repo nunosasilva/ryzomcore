@@ -848,6 +848,12 @@ private:
 	friend	class CClipTrav;
 
 	std::set<CTransform*>				_Models;
+	/// Bumped whenever _Models changes. The modern shadow caster list is
+	/// derived from _Models and cached while this does not move (see
+	/// CShadowMapManager::renderModernShadowMasks): the list is the expensive
+	/// part (a virtual capability check per model), and a scene's model set is
+	/// stable for long stretches of play.
+	uint32								_ModelListVersion;
 
 public:
 	/** Every model the scene owns, visible this frame or not.
@@ -858,6 +864,9 @@ public:
 	 * are all clip-culled. Read-only; do not modify the set while iterating.
 	 */
 	const std::set<CTransform*>			&getAllModels() const { return _Models; }
+
+	/// Incremented on every add/remove in getAllModels().
+	uint32								getModelListVersion() const { return _ModelListVersion; }
 
 private:
 	CTransform							*_UpdateModelList;

@@ -147,6 +147,7 @@ CScene::CScene(bool bSmallScene) : LightTrav(bSmallScene)
 	RootCluster = nullptr;
 	SonsOfAncestorSkeletonModelGroup = nullptr;
 	_QuadGridClipManager = nullptr;
+	_ModelListVersion = 0;
 
 	_CurrentTime = 0 ;
 	_EllapsedTime = 0 ;
@@ -242,6 +243,7 @@ void	CScene::release()
 	if(Root)									_Models.insert(Root);
 	if(RootCluster)								_Models.insert(RootCluster);
 	if(SonsOfAncestorSkeletonModelGroup)		_Models.insert(SonsOfAncestorSkeletonModelGroup);
+	++_ModelListVersion;
 	// delete in the reverse order of initDefaultRoots()
 	if(SonsOfAncestorSkeletonModelGroup)
 	{
@@ -1224,6 +1226,7 @@ CTransform	*CScene::createModel(const CClassId &idModel)
 
 		// Insert the model into the set.
 		_Models.insert(m);
+		++_ModelListVersion;
 
 		// By default the model is update() in CScene::updateModels().
 		m->linkToUpdateList();
@@ -1265,6 +1268,7 @@ void	CScene::deleteModel(CTransform *model)
 		{
 			delete *it;
 			_Models.erase(it);
+			++_ModelListVersion;
 		}
 	}
 }

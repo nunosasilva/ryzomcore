@@ -83,7 +83,7 @@ protected:
 	/// Draw the current LOD into the modern sun-shadow cascade mask (only
 	/// reached when the instance is not bound to a skeleton: a bound skin is
 	/// drawn by CSkeletonModel's shadow hull).
-	virtual void	renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat) NL_OVERRIDE;
+	virtual void	renderModernShadowCaster(IDriver *driver, CMaterial &castMat) NL_OVERRIDE;
 
 	// Implementation of SkinGrouping
 	virtual	bool			supportSkinGrouping() const NL_OVERRIDE;

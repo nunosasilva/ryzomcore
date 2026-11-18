@@ -189,7 +189,7 @@ void	CMeshMRMInstance::renderSkin(float alphaMRM)
 
 
 // ***************************************************************************
-void	CMeshMRMInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat)
+void	CMeshMRMInstance::renderModernShadowCaster(IDriver *driver, CMaterial &castMat)
 {
 	if (!Shape)
 		return;
@@ -202,9 +202,8 @@ void	CMeshMRMInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::C
 		return;
 
 	// Same convention as CMeshInstance: the cascade camera maps the world to
-	// [0,1]^3 and the mesh vertices are drawn in world space.
-	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
-	driver->setupViewMatrix(cameraMatrix.inverted());
+	// [0,1]^3 and the mesh vertices are drawn in world space. It is set once
+	// per cascade by the mask pass, so only the model matrix is per caster.
 	driver->setupModelMatrix(getWorldMatrix());
 
 	CMeshMRM	*pMesh = NLMISC::safe_cast<CMeshMRM *>((IShape*)Shape);
