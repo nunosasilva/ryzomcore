@@ -19,6 +19,7 @@
 
 #include "nel/misc/types_nl.h"
 #include "nel/misc/matrix.h"
+#include "nel/misc/aabbox.h"
 #include "nel/misc/smart_ptr.h"
 #include "nel/3d/material.h"
 #include "nel/3d/texture.h"
@@ -98,6 +99,16 @@ struct CModernShadowState
 void	modernShadowDebugLog(const char *event, const char *reason,
 	CScene *scene, IDriver *driver, const CModernShadowState *state,
 	uint casters, ITexture *mask0, const char *extra = NULL);
+
+/** True when a caster bbox is usable by the per-cascade filter: finite,
+ *	non-inverted and of a sane magnitude. A half-initialised model (a fresh
+ *	skeleton's bone sphere was seen with ~1e20 extents, a shape whose bounds
+ *	were never built reports a zero span) must be rejected before it reaches
+ *	the light-space depth range, where it would turn every normalized depth
+ *	into noise. The mask's own filter and the per-class bbox hooks share this
+ *	definition so they cannot diverge.
+ */
+bool	isValidModernShadowCasterBBox(const NLMISC::CAABBox &bb);
 
 /**
  * Cascaded sun shadow masks.

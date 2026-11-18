@@ -182,6 +182,28 @@ void	CMeshMRMSkinnedInstance::renderSkin(float alphaMRM)
 
 
 // ***************************************************************************
+void	CMeshMRMSkinnedInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat)
+{
+	if (!Shape)
+		return;
+
+	// A bound skin is drawn into the mask by the skeleton, in the current
+	// pose and with the skeleton's bone-sphere bounds. Only an unbound
+	// instance (the engine's bind-pose/debug path) has to draw itself.
+	if (getSkeletonModel() != NULL)
+		return;
+
+	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
+	driver->setupViewMatrix(cameraMatrix.inverted());
+	driver->setupModelMatrix(getWorldMatrix());
+
+	CMeshMRMSkinned	*pMesh = NLMISC::safe_cast<CMeshMRMSkinned *>((IShape*)Shape);
+	CMeshMRMSkinnedGeom	&meshGeom= const_cast<CMeshMRMSkinnedGeom&>(pMesh->getMeshGeom ());
+	meshGeom.renderModernShadowCaster(driver, this, castMat);
+}
+
+
+// ***************************************************************************
 const	CMRMLevelDetail		*CMeshMRMSkinnedInstance::getMRMLevelDetail() const
 {
 	if(Shape)

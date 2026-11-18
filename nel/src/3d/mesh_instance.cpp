@@ -315,34 +315,15 @@ void		CMeshInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMa
 	{
 		for(uint rp=0;rp<mesh->getNbRdrPass(mb);rp++)
 		{
-			// Cast the pass' true silhouette. A cut-out (leaf card, grille,
-			// banner) carries its texture and alpha test into the mask pass;
-			// a genuinely blended pass (glass, glow, additive overlay) is not
-			// an occluder and is skipped instead of writing a solid slab.
+			// Cast the pass' true silhouette. The policy is shared with the
+			// MRM / multi-LOD caster paths (see
+			// prepareModernShadowCasterMaterial): a cut-out carries its
+			// texture and alpha test into the mask, a blended non-alpha-tested
+			// pass is skipped instead of writing a solid slab.
 			const uint32	matId = mesh->getRdrPassMaterial(mb, rp);
 			const bool		haveMat = matId < mesh->getNbMaterial();
-			if (haveMat)
-			{
-				const CMaterial	&mat = mesh->getMaterial(matId);
-				if (mat.getBlend() && !mat.getAlphaTest())
-					continue;
-				if (mat.getAlphaTest() && mat.getTexture(0) != NULL)
-				{
-					castMat.setTexture(0, mat.getTexture(0));
-					castMat.setAlphaTest(true);
-					castMat.setAlphaTestThreshold(mat.getAlphaTestThreshold());
-				}
-				else
-				{
-					castMat.setTexture(0, NULL);
-					castMat.setAlphaTest(false);
-				}
-			}
-			else
-			{
-				castMat.setTexture(0, NULL);
-				castMat.setAlphaTest(false);
-			}
+			if (!prepareModernShadowCasterMaterial(castMat, haveMat ? &mesh->getMaterial(matId) : NULL))
+				continue;
 			const CIndexBuffer	&pb= mesh->getRdrPassPrimitiveBlock(mb, rp);
 			driver->activeIndexBuffer(const_cast<CIndexBuffer&>(pb));
 			driver->renderTriangles(castMat, 0, pb.getNumIndexes()/3);
@@ -350,8 +331,7 @@ void		CMeshInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMa
 	}
 	// The caster material is shared by every caster of the pass: leave it
 	// untextured and without an alpha test for the next one.
-	castMat.setTexture(0, NULL);
-	castMat.setAlphaTest(false);
+	resetModernShadowCasterMaterial(castMat);
 }
 
 // ***************************************************************************

@@ -390,6 +390,9 @@ public:
 	/// render() this mesh as a skin
 	virtual void	renderSkin(CTransformShape *trans, float alphaMRM) NL_OVERRIDE;
 
+	/// draw this meshGeom into the modern sun-shadow cascade mask
+	virtual void	renderModernShadowCaster(IDriver *drv, CMeshBaseInstance *mi, CMaterial &castMat) NL_OVERRIDE;
+
 	// get an approximation of the number of triangles this instance will render for a fixed distance.
 	virtual float	getNumTriangles (float distance) NL_OVERRIDE;
 

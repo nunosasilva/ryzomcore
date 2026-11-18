@@ -805,6 +805,69 @@ void	CMeshMRMSkinnedGeom::render(IDriver *drv, CTransformShape *trans, float pol
 
 
 // ***************************************************************************
+void	CMeshMRMSkinnedGeom::renderModernShadowCaster(IDriver *drv, CMeshBaseInstance *mi, CMaterial &castMat)
+{
+	nlassert(drv);
+	if (!mi || _Lods.empty())
+		return;
+
+	// Same LOD as the visible render() (the polygon budget of this frame),
+	// never one selected from the light camera.
+	const float	alphaMRM = _LevelDetail.getLevelDetailFromPolyCount(mi->getNumTrianglesAfterLoadBalancing());
+	float	alphaLod;
+	const sint	numLod = chooseLod(alphaMRM, alphaLod);
+	CLod	&lod = _Lods[numLod];
+	if (lod.RdrPass.empty())
+		return;
+
+	// The two vertex paths of render(): the immutable GPU geomorph buffers
+	// (this LOD's indices over the full-detail bind-pose vertices) or the
+	// packed buffer decompacted after the LOD's geomorph. The latter is the
+	// slow "bind pose / debug" path, which is exactly why a bound skin is
+	// left to the skeleton's shadow hull and never reaches this code.
+	CVertexBuffer	unpacked;
+	const bool	useGPUGeomorph = _GPUSkinBuilt && mi->getOwnerScene()->isGPUSkinningEnabled();
+	if (!useGPUGeomorph)
+	{
+		if (numLod > 0)
+			applyGeomorph(lod.Geomorphs, alphaLod);
+		getVertexBuffer(unpacked);
+		drv->activeVertexBuffer(unpacked);
+	}
+	else
+	{
+		drv->activeVertexBuffer(_GPUSkinVB);
+	}
+
+	for (uint rp = 0; rp < lod.RdrPass.size(); ++rp)
+	{
+		CRdrPass	&rdrPass = lod.RdrPass[rp];
+		const CMaterial	*passMaterial = NULL;
+		if (rdrPass.MaterialId < mi->getNumMaterial())
+			passMaterial = mi->getMaterial(rdrPass.MaterialId);
+		if (!prepareModernShadowCasterMaterial(castMat, passMaterial))
+			continue;
+		if (useGPUGeomorph)
+		{
+			const GPULodPass	&lodPass = _GPULodPasses[numLod][rp];
+			drv->activeIndexBuffer(_GPUSkinIB);
+			drv->renderTriangles(castMat, lodPass.IBOffset, lodPass.IBCount / 3);
+		}
+		else
+		{
+			// Same as render(): the pass block is packed, materialize it for
+			// the draw (the visible path does this too).
+			CIndexBuffer	block;
+			lod.getRdrPassPrimitiveBlock(rp, block);
+			drv->activeIndexBuffer(block);
+			drv->renderTriangles(castMat, 0, block.getNumIndexes() / 3);
+		}
+	}
+	resetModernShadowCasterMaterial(castMat);
+}
+
+
+// ***************************************************************************
 void	CMeshMRMSkinnedGeom::renderSkin(CTransformShape *trans, float alphaMRM)
 {
 }

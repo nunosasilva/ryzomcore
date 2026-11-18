@@ -23,12 +23,15 @@
 #include "nel/3d/shadow_map_manager.h"
 #include "nel/3d/texture_mem.h"
 #include "nel/3d/transform.h"
+#include "nel/3d/transform_shape.h"
 #include "nel/misc/aabbox.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <string>
 
 using namespace NLMISC;
 
@@ -105,6 +108,67 @@ bool	shadowDebugEnabled()
 
 } // anonymous namespace
 
+// ***************************************************************************
+bool	isValidModernShadowCasterBBox(const CAABBox &bb)
+{
+	const CVector	mn = bb.getMin();
+	const CVector	mx = bb.getMax();
+	// Non-finite, inverted or absurdly large: an uninitialised bone sphere or
+	// a shape whose bounds were never built. A zero-span box is left to the
+	// per-cascade test, which rejects it as smaller than a mask texel.
+	if (!(mx.x >= mn.x && mx.y >= mn.y && mx.z >= mn.z))
+		return false;
+	return fabsf(mn.x) <= 1e6f && fabsf(mn.y) <= 1e6f && fabsf(mn.z) <= 1e6f &&
+		fabsf(mx.x) <= 1e6f && fabsf(mx.y) <= 1e6f && fabsf(mx.z) <= 1e6f;
+}
+
+namespace {
+
+/** NLVK_SHADOW_CASTER_CENSUS: once, a couple of seconds after a scene starts
+ *	rendering (so the zone IGs have streamed in), log how many of the casters
+ *	that pass the near cascade's filter belong to each shape class. It answers
+ *	the coverage question "are the walls / fences / props around here plain
+ *	CMesh, MRM or multi-LOD?" from the installed binary, without touching the
+ *	render path when the variable is unset.
+ */
+void	casterClassCensus(CScene *scene, const std::vector<CTransform*> &cascadeCasters)
+{
+	static const char	*env = getenv("NLVK_SHADOW_CASTER_CENSUS");
+	if (!env || !*env)
+		return;
+	static std::map<const CScene*, uint>	frames;
+	uint	&frameCount = frames[scene];
+	// 120 rendered frames is about two seconds: the first frames of a login
+	// are still streaming the packed zone IGs in.
+	if (frameCount > 120)
+		return;
+	if (++frameCount != 120)
+		return;
+
+	std::map<std::string, uint>	counts;
+	for (uint c = 0; c < cascadeCasters.size(); ++c)
+	{
+		CTransform	*model = cascadeCasters[c];
+		if (!model || !model->isTransformShape())
+			continue;
+		CTransformShape	*shapeModel = static_cast<CTransformShape *>(model);
+		const std::string	className = shapeModel->Shape ? shapeModel->Shape->getClassName() : std::string("<noshape>");
+		++counts[className];
+	}
+	std::string	line;
+	for (std::map<std::string, uint>::const_iterator it = counts.begin(); it != counts.end(); ++it)
+	{
+		char	item[128];
+		snprintf(item, sizeof(item), "%s%s=%u", line.empty() ? "" : " ", it->first.c_str(), it->second);
+		line += item;
+	}
+	nlinfo("SHADOWCASTER census cascade0 casters=%u classes: %s",
+		(uint)cascadeCasters.size(), line.empty() ? "<none>" : line.c_str());
+}
+
+} // anonymous namespace
+
+// ***************************************************************************
 void	modernShadowDebugLog(const char *event, const char *reason,
 	CScene *scene, IDriver *driver, const CModernShadowState *state,
 	uint casters, ITexture *mask0, const char *extra)
@@ -439,12 +503,10 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 			// range: an uninitialised bone sphere can report extents around
 			// 1e20 (seen in a caster dump), which turns the normalized depth
 			// values into noise and clips nothing that a real caster needs.
-			const CVector	mn = bb.getMin();
-			const CVector	mx = bb.getMax();
-			if (!(mx.x >= mn.x && mx.y >= mn.y && mx.z >= mn.z) ||
-				fabsf(mn.x) > 1e6f || fabsf(mn.y) > 1e6f || fabsf(mn.z) > 1e6f ||
-				fabsf(mx.x) > 1e6f || fabsf(mx.y) > 1e6f || fabsf(mx.z) > 1e6f)
+			if (!isValidModernShadowCasterBBox(bb))
 			{
+				const CVector	mn = bb.getMin();
+				const CVector	mx = bb.getMax();
 				char	extra[160];
 				snprintf(extra, sizeof(extra), "bbox=(%.3g %.3g %.3g)-(%.3g %.3g %.3g)",
 					mn.x, mn.y, mn.z, mx.x, mx.y, mx.z);
@@ -467,6 +529,8 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 			if (i == 0)
 				++inBox0;
 		}
+		if (i == 0)
+			casterClassCensus(scene, cascadeCasters);
 		const float	depthLo = rawLo;
 		const float	depthHi = rawHi;
 		const float	depthSpan = depthHi - depthLo;

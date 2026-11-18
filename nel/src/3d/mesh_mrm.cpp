@@ -1183,6 +1183,71 @@ void	CMeshMRMGeom::render(IDriver *drv, CTransformShape *trans, float polygonCou
 
 
 // ***************************************************************************
+void	CMeshMRMGeom::renderModernShadowCaster(IDriver *drv, CMeshBaseInstance *mi, CMaterial &castMat)
+{
+	nlassert(drv);
+	if (!mi || _Lods.empty())
+		return;
+
+	// The LOD has to be the one the visible pass draws: re-selecting it from
+	// the light camera would put a different mesh in the mask (and would pick
+	// a different one per cascade). The visible render() derives it from the
+	// polygon budget the load balancing traversal gave this instance, so do
+	// the same, including for a caster that is currently outside the view
+	// frustum (its budget is then the last one it was drawn with).
+	const float	alphaMRM = _LevelDetail.getLevelDetailFromPolyCount(mi->getNumTrianglesAfterLoadBalancing());
+	float	alphaLod;
+	const sint	numLod = chooseLod(alphaMRM, alphaLod);
+	CLod	&lod = _Lods[numLod];
+	if (lod.RdrPass.empty())
+		return;
+
+	// The same two vertex paths as render(). The GPU geomorph path leaves the
+	// shared vertex buffer untouched and morphs in its own vertex program,
+	// which the caster pass does not use: drawing this LOD's indices over the
+	// immutable GPU vertex buffer gives the LOD's silhouette in full detail
+	// (slightly conservative, never a different shape). Without it the visible
+	// pass geomorphs the shared buffer for this instance, so the mask applies
+	// the very same morph and matches the surface that is drawn. Blend-shape
+	// morphing is not applied (the visible pass does it for the last instance
+	// that used the shape); the classes that use it are characters, which cast
+	// through their skeleton's shadow hull instead.
+	const bool	useGPUGeomorph = _GPUSkinBuilt && !_MeshVertexProgram &&
+		mi->getOwnerScene()->isGPUSkinningEnabled();
+	if (!useGPUGeomorph)
+	{
+		if (_Skinned && !lod.OriginalSkinRestored)
+			restoreOriginalSkinPart(lod);
+		if (numLod > 0)
+			applyGeomorph(lod.Geomorphs, alphaLod);
+	}
+
+	drv->activeVertexBuffer(useGPUGeomorph ? _GPUSkinVB : _VBufferFinal);
+	for (uint rp = 0; rp < lod.RdrPass.size(); ++rp)
+	{
+		CRdrPass	&rdrPass = lod.RdrPass[rp];
+		const CMaterial	*passMaterial = NULL;
+		if (rdrPass.MaterialId < mi->getNumMaterial())
+			passMaterial = mi->getMaterial(rdrPass.MaterialId);
+		if (!prepareModernShadowCasterMaterial(castMat, passMaterial))
+			continue;
+		if (useGPUGeomorph)
+		{
+			const GPULodPass	&lodPass = _GPULodPasses[numLod][rp];
+			drv->activeIndexBuffer(_GPUSkinIB);
+			drv->renderTriangles(castMat, lodPass.IBOffset, lodPass.IBCount / 3);
+		}
+		else
+		{
+			drv->activeIndexBuffer(rdrPass.PBlock);
+			drv->renderTriangles(castMat, 0, rdrPass.PBlock.getNumIndexes() / 3);
+		}
+	}
+	resetModernShadowCasterMaterial(castMat);
+}
+
+
+// ***************************************************************************
 void	CMeshMRMGeom::renderSkin(CTransformShape *trans, float alphaMRM)
 {
 	H_AUTO( NL3D_MeshMRMGeom_renderSkin );

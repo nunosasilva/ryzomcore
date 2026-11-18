@@ -81,6 +81,19 @@ public:
 	// From CTransformShape
 	virtual float				getNumTriangles (float distance) NL_OVERRIDE;
 
+	/** Modern (Vulkan) shadow mask: union of the bounds of every LOD slot the
+	 *	shape can draw, transformed by the world matrix. Conservative on
+	 *	purpose: the slot the frame picks is only known after the load
+	 *	balancing traversal, and a slot's bounds can differ (a coarse mesh is a
+	 *	different mesh), so covering all of them can never miss the drawn
+	 *	geometry. The per-cascade test still rejects the instances that are
+	 *	outside a cascade.
+	 */
+	virtual bool				computeWorldBBoxForShadow(NLMISC::CAABBox &worldBB) NL_OVERRIDE;
+
+	/// Draw the LOD slots the frame is using into the modern shadow mask
+	virtual void				renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat) NL_OVERRIDE;
+
 	// called at instanciation
 	void			initRenderFilterType();
 
@@ -125,6 +138,9 @@ private:
 	void			setUVCoarseMesh( CMeshGeom &geom, uint vtDstSize, uint dstUvOff );
 	void			setPosCoarseMesh( CMeshGeom &geom, const CMatrix &matrix, uint vtDstSize );
 	void			setColorCoarseMesh( CRGBA color, uint vtDstSize, uint dstColorOff );
+
+	/// Draw one LOD slot into the modern shadow mask (no-op for an empty slot)
+	void			renderSlotModernShadowCaster(IDriver *driver, uint slot, CMaterial &castMat);
 };
 
 

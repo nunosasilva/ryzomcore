@@ -724,6 +724,39 @@ void	CMeshGeom::render(IDriver *drv, CTransformShape *trans, float polygonCount,
 
 
 // ***************************************************************************
+void	CMeshGeom::renderModernShadowCaster(IDriver *drv, CMeshBaseInstance *mi, CMaterial &castMat)
+{
+	nlassert(drv);
+	if (!mi)
+		return;
+
+	// The cascade camera and the model matrix are already set up (the
+	// instance's renderModernShadowCaster does it, exactly like
+	// CMeshInstance), so the geometry is drawn as-is, in world space.
+	drv->activeVertexBuffer(_VBuffer);
+	for (uint mb = 0; mb < _MatrixBlocks.size(); ++mb)
+	{
+		CMatrixBlock	&mBlock = _MatrixBlocks[mb];
+		for (uint rp = 0; rp < mBlock.RdrPass.size(); ++rp)
+		{
+			CRdrPass	&rdrPass = mBlock.RdrPass[rp];
+			// The pass' instance material is the one the frame draws with;
+			// the caster policy (skip a blended non-cut-out, carry the alpha
+			// test) is the shared one.
+			const CMaterial	*passMaterial = NULL;
+			if (rdrPass.MaterialId < mi->getNumMaterial())
+				passMaterial = mi->getMaterial(rdrPass.MaterialId);
+			if (!prepareModernShadowCasterMaterial(castMat, passMaterial))
+				continue;
+			drv->activeIndexBuffer(rdrPass.PBlock);
+			drv->renderTriangles(castMat, 0, rdrPass.PBlock.getNumIndexes()/3);
+		}
+	}
+	resetModernShadowCasterMaterial(castMat);
+}
+
+
+// ***************************************************************************
 void	CMeshGeom::renderSkin(CTransformShape *trans, float alphaMRM)
 {
 	// get the mesh instance.

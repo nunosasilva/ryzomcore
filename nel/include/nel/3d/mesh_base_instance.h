@@ -37,6 +37,22 @@ class CAnimatedLightmap;
 class CAsyncTextureManager;
 
 
+/** Modern (Vulkan) sun-shadow mask: decide what one render pass of a mesh
+ *	instance contributes to the mask, from the material the pass is drawn
+ *	with. A blended material without an alpha test (glass, glow, an additive
+ *	overlay) is not an occluder and returns false: it must not write a solid
+ *	slab. Otherwise the pass is drawn with the shared caster material, and an
+ *	alpha-tested cut-out (leaf card, grille, banner) keeps its texture and
+ *	threshold so the mask receives its true shape.
+ *
+ *	Shared by CMeshInstance and the MRM / multi-LOD geometries so the caster
+ *	policy cannot diverge between the mesh classes.
+ */
+bool	prepareModernShadowCasterMaterial(CMaterial &castMat, const CMaterial *passMaterial);
+/// Leave the shared caster material neutral for the next caster.
+void	resetModernShadowCasterMaterial(CMaterial &castMat);
+
+
 // ***************************************************************************
 // ClassIds.
 const NLMISC::CClassId		MeshBaseInstanceId=NLMISC::CClassId(0xef44331, 0x739f6bcf);
@@ -204,6 +220,19 @@ public:
 	// @{
 	/// see CTransform::fastIntersect()
 	virtual bool		fastIntersect(const NLMISC::CVector &p0, const NLMISC::CVector &dir, float &dist2D, float &distZ, bool computeDist2D) NL_OVERRIDE;
+	// @}
+
+	/// \name Modern (Vulkan) sun-shadow mask
+	// @{
+	/** World-space bounds of the geometry this instance can draw: the shape's
+	 *	base bounds transformed by the world matrix. This is the shared
+	 *	implementation for the mesh classes below CMeshBaseInstance (MRM,
+	 *	MRM-skinned, multi-LOD); subclasses whose drawn LOD is not covered by
+	 *	the shape bounds override it. A skin bound to a skeleton returns
+	 *	false, because CSkeletonModel draws it into the mask in its current
+	 *	pose, with the bone-sphere bounds of the skeleton.
+	 */
+	virtual bool		computeWorldBBoxForShadow(NLMISC::CAABBox &worldBB) NL_OVERRIDE;
 	// @}
 
 protected:

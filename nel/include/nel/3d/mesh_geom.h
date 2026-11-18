@@ -39,6 +39,7 @@ class CMeshBaseInstance;
 class CMeshBlockManager;
 class CScene;
 class CRenderTrav;
+class CMaterial;
 using NLMISC::CPlane;
 using NLMISC::CMatrix;
 
@@ -110,6 +111,18 @@ public:
 	 *	All the materials must be rendered.
 	 */
 	virtual void	renderSkin(CTransformShape *trans, float alphaMRM) =0;
+
+	/** Draw this geometry into the modern (Vulkan) sun-shadow cascade mask.
+	 *	The caller has already bound the mask target, set up the cascade camera
+	 *	and the model matrix, and selected the unlit caster material; an
+	 *	implementation only binds its vertex/index buffers and draws the
+	 *	geometry the frame is using. The pass' instance material decides
+	 *	whether a render pass is an occluder (see
+	 *	prepareModernShadowCasterMaterial()). The default is "no mask
+	 *	representation": shape classes that can cover several meshes (MRM,
+	 *	multi-LOD) override it in the geometry that is actually drawn.
+	 */
+	virtual void	renderModernShadowCaster(IDriver * /*drv*/, CMeshBaseInstance * /*mi*/, CMaterial & /*castMat*/) {}
 
 	/// True if this mesh has a vertexProgram
 	virtual bool	hasMeshVertexProgram() const {return false;}

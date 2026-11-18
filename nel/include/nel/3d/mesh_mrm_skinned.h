@@ -119,6 +119,13 @@ public:
 	/// render() this mesh as a skin
 	virtual void	renderSkin(CTransformShape *trans, float alphaMRM) NL_OVERRIDE;
 
+	/** Draw the LOD the frame is using into the modern sun-shadow cascade
+	 *	mask. Only needed for an instance that is not bound to a skeleton (a
+	 *	bound skin is drawn by the skeleton in its current pose); the geometry
+	 *	is then the bind pose, which is also what render() draws.
+	 */
+	virtual void	renderModernShadowCaster(IDriver *drv, CMeshBaseInstance *mi, CMaterial &castMat) NL_OVERRIDE;
+
 	/// get an approximation of the number of triangles this instance will render for a fixed distance.
 	virtual float	getNumTriangles (float distance) NL_OVERRIDE;
 

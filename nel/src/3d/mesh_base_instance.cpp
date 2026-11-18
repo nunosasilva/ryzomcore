@@ -24,6 +24,7 @@
 #include "nel/3d/anim_detail_trav.h"
 #include "nel/3d/texture_file.h"
 #include "nel/3d/async_texture_manager.h"
+#include "nel/3d/modern_shadow.h"
 
 #include <limits>
 
@@ -35,6 +36,64 @@ using namespace NLMISC;
 
 namespace NL3D
 {
+
+
+// ***************************************************************************
+bool	prepareModernShadowCasterMaterial(CMaterial &castMat, const CMaterial *passMaterial)
+{
+	if (passMaterial)
+	{
+		// A genuinely blended pass (glass, glow, an additive overlay) is not
+		// an occluder: skip it instead of writing a solid slab into the mask.
+		// An alpha-tested pass is a cut-out (leaf card, grille, banner) and
+		// keeps its texture and threshold so the mask receives its true shape.
+		if (passMaterial->getBlend() && !passMaterial->getAlphaTest())
+			return false;
+		if (passMaterial->getAlphaTest() && passMaterial->getTexture(0) != NULL)
+		{
+			castMat.setTexture(0, passMaterial->getTexture(0));
+			castMat.setAlphaTest(true);
+			castMat.setAlphaTestThreshold(passMaterial->getAlphaTestThreshold());
+			return true;
+		}
+	}
+	castMat.setTexture(0, NULL);
+	castMat.setAlphaTest(false);
+	return true;
+}
+
+// ***************************************************************************
+void	resetModernShadowCasterMaterial(CMaterial &castMat)
+{
+	castMat.setTexture(0, NULL);
+	castMat.setAlphaTest(false);
+}
+
+
+// ***************************************************************************
+bool		CMeshBaseInstance::computeWorldBBoxForShadow(CAABBox &worldBB)
+{
+	// If even not visible or empty, no-op
+	if (!isHrcVisible() || !Shape)
+		return false;
+
+	// A skin bound to a skeleton is drawn into the mask by
+	// CSkeletonModel::renderModernShadowCaster(): in the skeleton's *current*
+	// pose, and with the bone-sphere bounds that the skeleton computes. Its
+	// own base-shape bounds are the bind pose, which is wrong for a moving
+	// character, and drawing it here as well would duplicate it (the mesh and
+	// the skeleton caster would both write it).
+	if (getSkeletonModel() != NULL)
+		return false;
+
+	// The shape bounds cover every LOD / every matrix block it can draw, so
+	// transforming them by the world matrix is conservative for the geometry
+	// the frame picks. Subclasses whose drawn geometry is not covered by the
+	// shape bounds override this.
+	Shape->getAABBox(worldBB);
+	worldBB = CAABBox::transformAABBox(getWorldMatrix(), worldBB);
+	return isValidModernShadowCasterBBox(worldBB);
+}
 
 
 // ***************************************************************************

@@ -23,6 +23,7 @@
 #include "nel/3d/shifted_triangle_cache.h"
 #include "nel/3d/u_scene.h"
 #include "nel/3d/scene.h"
+#include "nel/3d/driver.h"
 #include "nel/3d/gpu_skin_vp.h"
 
 
@@ -184,6 +185,31 @@ void	CMeshMRMInstance::renderSkin(float alphaMRM)
 		CMeshMRMGeom	&meshGeom= const_cast<CMeshMRMGeom&>(pMesh->getMeshGeom ());
 		meshGeom.renderSkin( this, alphaMRM );
 	}
+}
+
+
+// ***************************************************************************
+void	CMeshMRMInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat)
+{
+	if (!Shape)
+		return;
+
+	// A skin bound to a skeleton is drawn into the mask by the skeleton, in
+	// the current pose, through its shadow hull (CSkeletonModel::
+	// renderIntoSkeletonShadowMap -> CMeshMRMInstance::renderShadowSkin*).
+	// Drawing the bind pose here as well would add a second, stale silhouette.
+	if (getSkeletonModel() != NULL)
+		return;
+
+	// Same convention as CMeshInstance: the cascade camera maps the world to
+	// [0,1]^3 and the mesh vertices are drawn in world space.
+	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
+	driver->setupViewMatrix(cameraMatrix.inverted());
+	driver->setupModelMatrix(getWorldMatrix());
+
+	CMeshMRM	*pMesh = NLMISC::safe_cast<CMeshMRM *>((IShape*)Shape);
+	CMeshMRMGeom	&meshGeom= const_cast<CMeshMRMGeom&>(pMesh->getMeshGeom ());
+	meshGeom.renderModernShadowCaster(driver, this, castMat);
 }
 
 

@@ -20,6 +20,8 @@
 #include "nel/3d/mesh_multi_lod.h"
 #include "nel/3d/coarse_mesh_manager.h"
 #include "nel/3d/scene.h"
+#include "nel/3d/driver.h"
+#include "nel/3d/modern_shadow.h"
 
 #include "nel/misc/debug.h"
 
@@ -38,6 +40,16 @@ namespace NL3D
 {
 	// No flags
 	Flags=0;
+	// The LOD selection is computed by traverseLoadBalancing() for the models
+	// that are in view. A caster that is currently outside the view frustum
+	// (the mask keeps drawing the scene's models, see CScene::getAllModels())
+	// never went through it, so the fields it would read must have a defined
+	// value: draw slot 0, no second slot.
+	Lod0=0;
+	Lod1=0xffffffff;
+	BlendFactor=0.f;
+	PolygonCountLod0=0.f;
+	PolygonCountLod1=0.f;
 	_CoarseMeshDistance = -1.f;
 	_LastCoarseMesh = nullptr;
 	_LastCoarseMeshNumVertices= 0;
@@ -222,6 +234,81 @@ float	   CMeshMultiLodInstance::getNumTriangles (float distance)
 {
 	CMeshMultiLod *shape = safe_cast<CMeshMultiLod*> ((IShape*)Shape);
 	return shape->getNumTrianglesWithCoarsestDist(distance, _CoarseMeshDistance);
+}
+
+
+// ***************************************************************************
+bool		CMeshMultiLodInstance::computeWorldBBoxForShadow(NLMISC::CAABBox &worldBB)
+{
+	if (!isHrcVisible() || !Shape)
+		return false;
+
+	CMeshMultiLod	*shape = safe_cast<CMeshMultiLod*> ((IShape*)Shape);
+
+	// Union of every LOD slot, not just the shape's getAABBox() (which
+	// returns the first available slot). The slot the frame draws is chosen
+	// by the load balancing traversal, a coarse slot is a different mesh, and
+	// a caster outside the frustum keeps a stale selection - so the only
+	// bound that is always right is the union of all of them.
+	bool	haveBB = false;
+	const uint	meshCount = shape->getNumSlotMesh();
+	for (uint slot = 0; slot < meshCount; ++slot)
+	{
+		bool		coarseMesh = false;
+		IMeshGeom	*meshGeom = shape->getSlotMesh(slot, coarseMesh);
+		if (!meshGeom)
+			continue;
+		const CAABBox	slotBB = meshGeom->getBoundingBox().getAABBox();
+		if (!haveBB)
+		{
+			worldBB = slotBB;
+			haveBB = true;
+		}
+		else
+			worldBB = CAABBox::computeAABBoxUnion(worldBB, slotBB);
+	}
+	if (!haveBB)
+		return false;
+
+	worldBB = CAABBox::transformAABBox(getWorldMatrix(), worldBB);
+	return isValidModernShadowCasterBBox(worldBB);
+}
+
+
+// ***************************************************************************
+void		CMeshMultiLodInstance::renderSlotModernShadowCaster(IDriver *driver, uint slot, CMaterial &castMat)
+{
+	CMeshMultiLod	*shape = safe_cast<CMeshMultiLod*> ((IShape*)Shape);
+	if (slot >= shape->getNumSlotMesh())
+		return;
+	bool			coarseMesh = false;
+	IMeshGeom		*meshGeom = shape->getSlotMesh(slot, coarseMesh);
+	if (meshGeom)
+		meshGeom->renderModernShadowCaster(driver, this, castMat);
+}
+
+
+// ***************************************************************************
+void		CMeshMultiLodInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat)
+{
+	if (!Shape)
+		return;
+
+	// Same convention as CMeshInstance: the cascade camera maps the world to
+	// [0,1]^3, and the slot vertex buffers are local to the shape.
+	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
+	driver->setupViewMatrix(cameraMatrix.inverted());
+	driver->setupModelMatrix(getWorldMatrix());
+
+	// Exactly the slots CMeshMultiLod::render() draws this frame: Lod0, plus
+	// Lod1 while a LOD cross-fade is running. The mask has no alpha, but both
+	// meshes are on screen during the fade, so both are occluders. A coarse
+	// slot's MeshGeom holds the same triangles the coarse batch draws (see
+	// CMeshMultiLod::compileCoarseMeshes), just rendered through its normal
+	// pass list here.
+	renderSlotModernShadowCaster(driver, Lod0, castMat);
+	if (Lod1 != 0xffffffff)
+		renderSlotModernShadowCaster(driver, Lod1, castMat);
 }
 
 
