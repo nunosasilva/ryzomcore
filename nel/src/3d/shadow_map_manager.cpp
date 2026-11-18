@@ -292,6 +292,19 @@ bool			CShadowMapManager::renderModernShadowMasks(CScene *scene,
 		casters.push_back(*it);
 		seen.insert(*it);
 	}
+	// The scene's model set is not frustum culled: it is what keeps a big
+	// structure behind the camera (a packed-zone instance group, a building)
+	// in the mask when its shadow still falls into the box. The per-cascade
+	// bbox test below rejects everything that cannot contribute.
+	{
+		const std::set<CTransform*> &models = scene->getAllModels();
+		for (std::set<CTransform*>::const_iterator it = models.begin(); it != models.end(); ++it)
+		{
+			CTransform *tr = *it;
+			if (tr && seen.insert(tr).second)
+				casters.push_back(tr);
+		}
+	}
 	if (opaqueModels)
 	{
 		for (uint i = 0; i < opaqueModels->size(); ++i)

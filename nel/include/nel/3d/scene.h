@@ -833,6 +833,18 @@ private:
 	friend	class CClipTrav;
 
 	std::set<CTransform*>				_Models;
+
+public:
+	/** Every model the scene owns, visible this frame or not.
+	 *
+	 * The modern sun shadow mask must not be limited to the view frustum: a
+	 * structure behind the camera still casts into the cascade box. This is
+	 * the only scene-wide list of transforms (`_Models`), the per-view lists
+	 * are all clip-culled. Read-only; do not modify the set while iterating.
+	 */
+	const std::set<CTransform*>			&getAllModels() const { return _Models; }
+
+private:
 	CTransform							*_UpdateModelList;
 
 	static std::set<CModelEntry>	_RegModels;
