@@ -1089,16 +1089,36 @@ void		CSkeletonModel::traverseRender()
 	if (entityClip)
 		wrm.selectClipBias(getOwnerScene()->getRenderTrav().getDriver(), CWaterReflectionManager::ClipBiasEntity);
 
-	// A skeleton overrides CTransformShape::traverseRender(), so if receiving
-	// ever needs to be decided per class again, this is the second site. Today
-	// the scene render part owns the flag and every scene draw receives
-	// (second-depth masks make self-shadowing impossible inside a texel).
+	// A skeleton character does not receive the modern sun shadow. Its own
+	// skeleton shadow hull (CShadowSkin) writes the character's far side into
+	// the mask, and the back's own depth lands inside the hull's silhouette
+	// within the soft-edge tolerance: with the sun behind the camera this
+	// paints a soft dark patch on the back / shoulder blades (measured on
+	// Matsfive and the Zora Hawker, 2026-11-18; gone with Shadows = 0). The old
+	// class-based receive gate prevented it by making every caster a
+	// non-receiver; with the MAX second-depth mask the only case that still
+	// needs it is the character's own hull, so only skeleton characters opt out
+	// and every CMeshInstance (props, walls, awnings, tents) keeps receiving.
+	// Trade-off: a character is not shaded by an awning or a roof either, until
+	// the per-caster id path lands (see AGENTS_shadow_plan.md, milestone B2).
+	// Only the opaque pass is scoped: the transparent pass forces receiving off
+	// for every draw that is not a receiver by itself.
+	CRenderTrav	&renderTrav = getOwnerScene()->getRenderTrav();
+	IDriver		*driver = renderTrav.getDriver();
+	const bool	receiveScope = driver != NULL && renderTrav.isCurrentPassOpaque();
+	if (receiveScope)
+		driver->setModernShadowReceiver(false);
 
 	// render as CLod, or render Skins.
 	if(isDisplayedAsLodCharacter())
 		renderCLod();
 	else
 		renderSkins();
+
+	// Back to the scene's receive default for the models drawn after this one
+	// (the opaque ordering table mixes characters and props).
+	if (receiveScope)
+		driver->setModernShadowReceiver(getOwnerScene()->getModernShadowsEnabled());
 
 	if (entityClip)
 		wrm.selectClipBias(getOwnerScene()->getRenderTrav().getDriver(), CWaterReflectionManager::ClipBiasStatic);

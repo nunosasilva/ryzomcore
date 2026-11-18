@@ -425,9 +425,11 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 		{
 			// Same for the merged CLod character batch: it is drawn after the
 			// ordering table, so its receive flag would depend on whichever
-			// model happened to be last. Characters receive with the rest of
-			// the scene (the MAX mask cannot self-shadow them inside a texel).
-			getDriver()->setModernShadowReceiver(Scene->getModernShadowsEnabled());
+			// model happened to be last. The batch is made of characters, so
+			// it does not receive either (same reason as
+			// CSkeletonModel::traverseRender(): a character's own shadow hull
+			// must not shade its back).
+			getDriver()->setModernShadowReceiver(false);
 			clodMngr->endRender();
 		}
 
