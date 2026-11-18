@@ -257,6 +257,14 @@ void updateFromClientCfg()
 		}
 	}
 
+	if (ClientCfg.ShadowsQuality != LastClientCfg.ShadowsQuality)
+	{
+		// Rebuilds the cascades at the new level on the next opaque pass
+		// (CModernShadowMask re-creates the masks when the level changes).
+		if (Scene)
+			Scene->setModernShadowsQuality(ClientCfg.ShadowsQuality);
+	}
+
 	//---------------------------------------------------
 	if (ClientCfg.AnisotropicFilter != LastClientCfg.AnisotropicFilter)
 	{

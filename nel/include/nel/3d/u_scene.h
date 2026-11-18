@@ -649,6 +649,10 @@ public:
 	/// scene the sun shadow belongs to builds them (see CScene).
 	virtual	void			setModernShadowsEnabled(bool enabled) =0;
 	virtual	bool			getModernShadowsEnabled() const =0;
+	/// Quality level of those masks (the client's ShadowsQuality option):
+	/// 0 = performance, 1 = balanced, 2 = quality. Ignored by the legacy path.
+	virtual	void			setModernShadowsQuality(sint quality) =0;
+	virtual	sint			getModernShadowsQuality() const =0;
 
 	/// The scene may have one special VisualCollisionManager which can manage some shadow receiving
 	virtual	void			setVisualCollisionManagerForShadow(UVisualCollisionManager *vcm) =0;

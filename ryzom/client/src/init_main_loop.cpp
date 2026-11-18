@@ -816,6 +816,9 @@ void initMainLoop()
 				// their own pass.
 				if (Scene)
 					Scene->setModernShadowsEnabled(true);
+				// Quality level of those masks (ShadowsQuality in client.cfg).
+				if (Scene)
+					Scene->setModernShadowsQuality(ClientCfg.ShadowsQuality);
 
 				// RefineCenter not auto, because ThirdPerson => refine slower
 				Landscape->setRefineCenterAuto(false);

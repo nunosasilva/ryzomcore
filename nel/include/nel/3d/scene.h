@@ -659,6 +659,15 @@ public:
 	void			setModernShadowsEnabled(bool enabled) {_ModernShadowsEnabled= enabled;}
 	bool			getModernShadowsEnabled() const {return _ModernShadowsEnabled;}
 
+	/** Quality level of the modern sun shadows, from the client's
+	 *	ShadowsQuality option: 0 = performance, 1 = balanced, 2 = quality.
+	 *	It selects the cascade count, radii, mask sizes and the far cascade's
+	 *	refresh rate (see CModernShadowMask); the value is clamped there. The
+	 *	legacy OpenGL path does not read it.
+	 */
+	void			setModernShadowsQuality(sint quality) {_ModernShadowsQuality = quality;}
+	sint			getModernShadowsQuality() const {return _ModernShadowsQuality;}
+
 	/// The scene may have one special VisualCollisionManager which can manage some shadow receiving
 	void					setVisualCollisionManagerForShadow(CVisualCollisionManager *vcm) {_VisualCollisionManagerForShadow= vcm;}
 	CVisualCollisionManager *getVisualCollisionManagerForShadow() const {return _VisualCollisionManagerForShadow;}
@@ -885,6 +894,8 @@ private:
 	bool			_ShadowsEnabled;
 	/// Modern (Vulkan) cascaded sun masks on this scene (see setModernShadowsEnabled)
 	bool			_ModernShadowsEnabled;
+	/// Quality level of those masks (see setModernShadowsQuality).
+	sint			_ModernShadowsQuality;
 	float			_ShadowMapDistFadeStart;
 	float			_ShadowMapDistFadeEnd;
 	uint			_ShadowMapMaxCasterInScreen;

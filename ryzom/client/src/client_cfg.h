@@ -449,6 +449,9 @@ struct CClientConfig
 
 	/// Display or not the shadows.
 	bool			Shadows;
+	/// Quality of the modern (Vulkan) sun shadows: 0 = performance,
+	/// 1 = balanced, 2 = quality. The legacy OpenGL path only reads Shadows.
+	sint			ShadowsQuality;
 	/// Shadows are disabled after this distance.
 	float			ShadowsClipFar;
 	/// Shadows draw with just 1 part after this distance.

@@ -303,6 +303,8 @@ public:
 	virtual	bool			getShadowsEnabled() const NL_OVERRIDE;
 	virtual	void			setModernShadowsEnabled(bool enabled) NL_OVERRIDE;
 	virtual	bool			getModernShadowsEnabled() const NL_OVERRIDE;
+	virtual	void			setModernShadowsQuality(sint quality) NL_OVERRIDE;
+	virtual	sint			getModernShadowsQuality() const NL_OVERRIDE;
 	virtual	void			setVisualCollisionManagerForShadow(UVisualCollisionManager *vcm) NL_OVERRIDE;
 	// @}
 

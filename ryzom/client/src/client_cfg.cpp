@@ -526,6 +526,7 @@ CClientConfig::CClientConfig()
 	PacsPrimDir.push_back("data/3d/");
 
 	Shadows				= true;						// Draw Shadows by default.
+	ShadowsQuality		= 1;						// 0 = performance, 1 = balanced, 2 = quality.
 	ShadowsClipFar		= 10.f;						// Shadows are disabled after this distance.
 	ShadowsLodDist		= 3.f;						// Shadows draw with just 1 part after this distance.
 	ShadowZDirClampLandscape	= -0.5f;			// On landscape, allow a minimum Phi angle of -30 degrees
@@ -1611,6 +1612,12 @@ void CClientConfig::setValues()
 	// SHADOWS //
 	// Shadows : Get Shadows state
 	READ_BOOL_FV(Shadows)
+	// ShadowsQuality : modern (Vulkan) sun shadow quality level.
+	// 0 = performance (one 48 m cascade, 2048x2048)
+	// 1 = balanced    (40 m 2048x2048 every frame + 70 m 1024x1024 at half rate)
+	// 2 = quality     (40 m + 80 m, both 2048x2048, every frame)
+	// Ignored when Shadows = 0; the legacy OpenGL path does not read it.
+	READ_INT_FV(ShadowsQuality)
 	// ShadowsClipFar : Get Shadows Clip Far.
 	READ_FLOAT_DEV(ShadowsClipFar)
 	// ShadowsLodDist : Get Shadows Lod Distance.
