@@ -664,8 +664,7 @@ public:
 	virtual bool hasHighPrecisionShadowMask() const override { return _ShadowMaskFormat != VK_FORMAT_UNDEFINED; }
 	virtual void setModernShadowState(const CModernShadowState &state) override;
 	virtual void setModernShadowDepthPass(bool enabled) override;
-	virtual void setModernShadowIdPass(bool enabled) override { _ModernShadowIdPass = enabled; }
-	virtual void setModernShadowObjectId(uint32 id) override { _ModernShadowObjectId = id; }
+	virtual void setModernShadowReceiver(bool receives) override { _ModernShadowReceiver = receives; }
 	virtual bool isModernShadowStateEnabled() const override { return _ModernShadowState.Enabled; }
 	virtual bool getRenderTargetSize(uint32 &width, uint32 &height) override;
 	virtual bool copyTargetToTexture(ITexture *tex, uint32 offsetx, uint32 offsety, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel) override;
@@ -948,10 +947,8 @@ private:
 	/// True only around the modern shadow caster draws: the pixel program
 	/// writes the light-space depth and the blend keeps the nearest caster.
 	bool					_ModernShadowDepthPass;
-	/// Second pass: stamp the caster id into the id mask (no blending).
-	bool					_ModernShadowIdPass = false;
-	/// Id of the object currently drawn (0 = none).
-	uint32					_ModernShadowObjectId = 0;
+	/// Whether the object currently drawn receives the modern sun shadow.
+	bool					_ModernShadowReceiver = true;
 
 	VkFormat				_DepthFormat;
 	// One depth/stencil image per swapchain image: frames in flight must never

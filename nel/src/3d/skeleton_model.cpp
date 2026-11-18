@@ -1089,12 +1089,11 @@ void		CSkeletonModel::traverseRender()
 	if (entityClip)
 		wrm.selectClipBias(getOwnerScene()->getRenderTrav().getDriver(), CWaterReflectionManager::ClipBiasEntity);
 
-	// Which object the draws below belong to. A skeleton overrides
-	// CTransformShape::traverseRender(), so the base hook never runs for it:
-	// without this the skinned parts were drawn with whatever id the last
-	// static object left, the modern shadow lookup could not recognise the
-	// character's own caster depth, and the body banded itself.
-	getOwnerScene()->getRenderTrav().getDriver()->setModernShadowObjectId(getModernShadowId());
+	// A skeleton overrides CTransformShape::traverseRender(), so the base hook
+	// never runs for it: set the receiver policy here too. A character is a
+	// shadow caster, so its body does not receive the sun shadow (it keeps
+	// casting); that is what removes the bands on its face, torso and arms.
+	getOwnerScene()->getRenderTrav().getDriver()->setModernShadowReceiver(modelCanCastShadowMap() == 0);
 
 	// render as CLod, or render Skins.
 	if(isDisplayedAsLodCharacter())
@@ -2176,9 +2175,6 @@ void		CSkeletonModel::renderModernShadowCaster(IDriver *driver, const NLMISC::CM
 	// world to [0,1]^3 and the skinned vertices are rendered in world space.
 	driver->setFrustum(0, 1, 0, 1, 0, 1, false);
 	driver->setupViewMatrix(cameraMatrix.inverted());
-	// One id for the whole character: the id pass stamps it and the body's
-	// parts share it, so no part shadows another part of the same body.
-	driver->setModernShadowObjectId(getModernShadowId());
 	renderIntoSkeletonShadowMap(this, castMat, true);
 }
 

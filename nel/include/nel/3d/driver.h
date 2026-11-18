@@ -1043,14 +1043,16 @@ public:
 	  */
 	virtual void			setModernShadowDepthPass(bool /* enabled */) {}
 
-	/** Second modern shadow pass: stamp the caster id where the depth pass
-	 *	kept this draw's depth (see CModernShadowState::IdMask).
+	/** Whether the object about to be drawn receives the modern sun shadow.
+	 *
+	 * Shadow casters are drawn with this off: the mask contains their own
+	 * caster depth, and comparing a surface against its own (or its body's)
+	 * depth is what paints the dark bands on a face, a torso or a fence beam.
+	 * They still *cast*: the depth mask is written from the caster list, which
+	 * this flag does not touch. The landscape and every other non-caster keep
+	 * receiving normally.
 	 */
-	virtual void			setModernShadowIdPass(bool /* enabled */) {}
-	/** Id of the object being drawn, for both the id stamp and the receiver's
-	 *	self-shadow test (0 = none).
-	 */
-	virtual void			setModernShadowObjectId(uint32 /* id */) {}
+	virtual void			setModernShadowReceiver(bool /* receives */) {}
 
 	/** True when the modern shadow state the driver samples is enabled.
 	 *	Used by the debug trace (NLVK_SHADOW_DEBUG) to catch a state that a

@@ -296,9 +296,6 @@ void		CMeshInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMa
 	if (!Shape)
 		return;
 
-	// The id pass stamps this object's id so it never shadows itself (see
-	// CModernShadowState::IdMask).
-	driver->setModernShadowObjectId(getModernShadowId());
 
 	// The cascade camera is world -> [0,1]^3; the mesh vertices are local, so
 	// the world matrix brings them into the same space as the receiver.
@@ -408,8 +405,6 @@ void	CMeshInstance::renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, CM
 	}
 	driver->setupModelMatrix(localPosMatrix);
 
-	// Same per-caster id as renderModernShadowCaster().
-	driver->setModernShadowObjectId(getModernShadowId());
 
 	// render the Mesh
 	CMesh	*mesh= (CMesh*)(IShape*)Shape;

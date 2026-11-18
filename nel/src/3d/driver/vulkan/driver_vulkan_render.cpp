@@ -1828,14 +1828,13 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 	// which is what the Vulkan spec recommends for those ops.
 	if (_ModernShadowDepthPass)
 	{
-		// Depth pass: MIN keeps the nearest caster per texel. Id pass: the
-		// shader discards every fragment that is not the one the depth mask
-		// kept, so exactly one fragment writes and it must *replace* the
-		// texel (blending would blend ids together).
-		_BlendEnabled = !_ModernShadowIdPass;
+		// The mask stores a depth, not a coverage: MIN keeps the nearest
+		// caster per texel, so the pass needs neither a depth attachment to
+		// test against nor an ordering of the casters.
+		_BlendEnabled = true;
 		_SrcBlend = VK_BLEND_FACTOR_ONE;
 		_DstBlend = VK_BLEND_FACTOR_ONE;
-		_BlendOp = _ModernShadowIdPass ? VK_BLEND_OP_ADD : VK_BLEND_OP_MIN;
+		_BlendOp = VK_BLEND_OP_MIN;
 		_DepthTestEnabled = false;
 		_DepthWriteEnabled = false;
 		_FogColorOverrideBlack = false;
