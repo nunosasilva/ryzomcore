@@ -312,6 +312,8 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	float	span0 = 0.f;
 	float	sunShareRaw = 0.f;
 	bool	bad0 = false;
+	// Reused per-cascade caster set (see the bbox rejection in the cascade loop).
+	std::vector<CTransform*>	cascadeCasters;
 	for (uint i = 0; i < 2; ++i)
 	{
 		// Build the same kind of world -> [0,1]^3 camera the legacy caster
@@ -357,6 +359,14 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		CMatrix	boxToMask = cameraMatrix.inverted();
 		float	rawLo = 0.f, rawHi = 1.f;
 		bool	badCaster = false;
+		const float	texelUv = 1.f / (float)_Size;
+		// Casters that can contribute to *this* cascade: their light-space bbox
+		// must overlap the box in the image plane and in depth, and it must be
+		// large enough to cover a mask texel (a sub-texel prop at distance
+		// cannot paint a readable shadow). This is the main cost saver: the
+		// full set contains every registered caster of the scene, most of them
+		// far outside the near cascade.
+		cascadeCasters.clear();
 		for (uint c = 0; c < casters.size(); ++c)
 		{
 			CAABBox bb;
@@ -384,6 +394,11 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 			lightSpaceAABBox(boxToMask, bb, lo, hi);
 			if (hi.x < 0.f || lo.x > 1.f || hi.z < 0.f || lo.z > 1.f)
 				continue; // outside the image plane of the box: it draws nothing here
+			if (hi.y < 0.f || lo.y > 1.f)
+				continue; // entirely in front of or behind the box along the sun
+			if ((hi.x - lo.x) < texelUv && (hi.z - lo.z) < texelUv)
+				continue; // smaller than one mask texel: no readable shadow
+			cascadeCasters.push_back(casters[c]);
 			rawLo = std::min(rawLo, lo.y - NL_MODERN_SHADOW_DEPTH_MARGIN);
 			rawHi = std::max(rawHi, hi.y + NL_MODERN_SHADOW_DEPTH_MARGIN);
 			if (i == 0)
@@ -467,11 +482,8 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		driver->clear2D(CRGBA(255, 255, 255, 255));
 
 		driver->setModernShadowDepthPass(true);
-		for (uint c = 0; c < casters.size(); ++c)
-		{
-			if (casters[c])
-				casters[c]->renderModernShadowCaster(driver, casterMatrix, castMat);
-		}
+		for (uint c = 0; c < cascadeCasters.size(); ++c)
+			cascadeCasters[c]->renderModernShadowCaster(driver, casterMatrix, castMat);
 		driver->setModernShadowDepthPass(false);
 
 	}

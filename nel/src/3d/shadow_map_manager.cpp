@@ -19,6 +19,8 @@
 
 #include "std3d.h"
 #include "nel/3d/shadow_map_manager.h"
+
+#include <unordered_set>
 #include "nel/misc/aabbox.h"
 #include "nel/3d/driver.h"
 #include "nel/3d/scene.h"
@@ -274,16 +276,29 @@ bool			CShadowMapManager::renderModernShadowMasks(CScene *scene,
 	// not the game registered it as a shadow caster. The registered list is
 	// the fallback for a pass that has no traversal (the water reflection and
 	// the env-map re-render never reach here, they keep the published masks).
+	// The mask's caster set must not depend on the *view* frustum: a structure
+	// behind the camera still casts into the cascade box (its shadow lands in
+	// front of it). The scene's registered shadow caster list is not frustum
+	// culled (it is filled per entity, not per view), so it is the base of the
+	// set; the opaque pass's models are added for objects the game did not
+	// register as casters (fence planks, a building's walls). Each cascade then
+	// keeps only the casters whose light-space bbox overlaps its box.
 	std::vector<CTransform*> casters;
-	if (opaqueModels && !opaqueModels->empty())
-		casters = *opaqueModels;
-	else
+	casters.reserve(256);
+	std::unordered_set<CTransform*> seen;
+	for(CScene::ItShadowCasterList it= scene->getShadowCasterListBegin();
+		it!= scene->getShadowCasterListEnd(); ++it)
 	{
-		casters.reserve(64);
-		for(CScene::ItShadowCasterList it= scene->getShadowCasterListBegin();
-			it!= scene->getShadowCasterListEnd(); ++it)
+		casters.push_back(*it);
+		seen.insert(*it);
+	}
+	if (opaqueModels)
+	{
+		for (uint i = 0; i < opaqueModels->size(); ++i)
 		{
-			casters.push_back(*it);
+			CTransform *tr = (*opaqueModels)[i];
+			if (tr && seen.insert(tr).second)
+				casters.push_back(tr);
 		}
 	}
 	if( casters.empty() )
