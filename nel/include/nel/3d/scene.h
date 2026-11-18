@@ -644,6 +644,21 @@ public:
 	void			setShadowsEnabled(bool enabled) {_ShadowsEnabled= enabled;}
 	bool			getShadowsEnabled() const {return _ShadowsEnabled;}
 
+	/** Opt-in switch for the modern (Vulkan) sun-shadow masks on this scene.
+	 *
+	 * The masks are cascaded around the camera that renders the scene that
+	 * owns the sun-shadowed world, and that pass publishes the state every
+	 * other draw samples. A scene that is drawn *for* another scene (the
+	 * canopy layer, the sky dome and its objects) must not build them: it
+	 * would pay a full caster pass and a render-target switch inside its own
+	 * pass, and publish cascades centred on its own camera over the main
+	 * scene's. Off by default; the application enables it on the one scene
+	 * the sun shadow belongs to (the client's main scene). The legacy
+	 * CShadowMapManager keeps using getShadowsEnabled() alone.
+	 */
+	void			setModernShadowsEnabled(bool enabled) {_ModernShadowsEnabled= enabled;}
+	bool			getModernShadowsEnabled() const {return _ModernShadowsEnabled;}
+
 	/// The scene may have one special VisualCollisionManager which can manage some shadow receiving
 	void					setVisualCollisionManagerForShadow(CVisualCollisionManager *vcm) {_VisualCollisionManagerForShadow= vcm;}
 	CVisualCollisionManager *getVisualCollisionManagerForShadow() const {return _VisualCollisionManagerForShadow;}
@@ -859,6 +874,8 @@ private:
 	uint			_ShadowMapTextureSize;
 	uint			_ShadowMapBlurSize;
 	bool			_ShadowsEnabled;
+	/// Modern (Vulkan) cascaded sun masks on this scene (see setModernShadowsEnabled)
+	bool			_ModernShadowsEnabled;
 	float			_ShadowMapDistFadeStart;
 	float			_ShadowMapDistFadeEnd;
 	uint			_ShadowMapMaxCasterInScreen;

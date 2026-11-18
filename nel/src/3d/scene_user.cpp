@@ -1157,6 +1157,16 @@ bool			CSceneUser::getShadowsEnabled() const
 	return _Scene.getShadowsEnabled();
 }
 // ***************************************************************************
+void			CSceneUser::setModernShadowsEnabled(bool enabled)
+{
+	_Scene.setModernShadowsEnabled(enabled);
+}
+// ***************************************************************************
+bool			CSceneUser::getModernShadowsEnabled() const
+{
+	return _Scene.getModernShadowsEnabled();
+}
+// ***************************************************************************
 void			CSceneUser::setVisualCollisionManagerForShadow(UVisualCollisionManager *vcm)
 {
 	if(vcm == nullptr)

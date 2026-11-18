@@ -1114,7 +1114,14 @@ bool CDriverVulkan::createRenderPass()
 	attachments[1].format = _DepthFormat;
 	attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
 	attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	// STORE, not DONT_CARE: an offscreen pass (the modern shadow masks, the
+	// water reflection, bloom) can end this pass in the middle of a frame and
+	// the resumed pass LOADs the depth again. With DONT_CARE the contents are
+	// undefined after the switch, so the sky and the transparent pass after it
+	// tested against whatever the attachment happened to hold (the "sun drawn
+	// in front of the trees" report). The depth is only written back once per
+	// switch, not per draw.
+	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1157,7 +1164,8 @@ bool CDriverVulkan::createRenderPass()
 
 	// Same attachments, LOAD instead of CLEAR: resumes the main pass in the
 	// middle of a frame after an offscreen target was bound. Render-pass
-	// compatible with _RenderPass, so both share the cached pipelines.
+	// compatible with _RenderPass, so both share the cached pipelines. The
+	// depth storeOp stays STORE: another switch can end this pass again.
 	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
 	attachments[0].initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 	attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
@@ -1179,7 +1187,10 @@ bool CDriverVulkan::createRenderPass()
 	attachments[1].format = _DepthFormat;
 	attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
 	attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	// STORE for the same reason as the swapchain pass: this is the scene
+	// target while FXAA/Bloom are on, and a shadow mask switch inside the
+	// scene ends and resumes it.
+	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;

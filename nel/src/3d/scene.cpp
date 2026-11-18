@@ -186,6 +186,7 @@ CScene::CScene(bool bSmallScene) : LightTrav(bSmallScene)
 	_ShadowMapTextureSize= NL3D_SCENE_DEFAULT_SHADOW_MAP_SIZE;
 	_ShadowMapBlurSize= NL3D_SCENE_DEFAULT_SHADOW_MAP_BLUR_SIZE;
 	_ShadowsEnabled= true;
+	_ModernShadowsEnabled= false;
 	_ShadowMapDistFadeStart= NL3D_SCENE_DEFAULT_SHADOW_MAP_DIST_FADE_START;
 	_ShadowMapDistFadeEnd= NL3D_SCENE_DEFAULT_SHADOW_MAP_DIST_FADE_END;
 	_ShadowMapMaxCasterInScreen= NL3D_SCENE_DEFAULT_SHADOW_MAP_MAX_CASTER_IN_SCREEN;

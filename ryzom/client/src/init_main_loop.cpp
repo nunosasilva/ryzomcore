@@ -809,6 +809,13 @@ void initMainLoop()
 				// Master shadow switch (legacy and the modern Vulkan path).
 				if (Scene)
 					Scene->setShadowsEnabled(ClientCfg.Shadows);
+				// The modern sun masks belong to this scene only. The canopy
+				// (SceneRoot) and the sky are separate scenes drawn around the
+				// same camera: they must not build (and publish) their own
+				// cascades, which would also switch render targets inside
+				// their own pass.
+				if (Scene)
+					Scene->setModernShadowsEnabled(true);
 
 				// RefineCenter not auto, because ThirdPerson => refine slower
 				Landscape->setRefineCenterAuto(false);

@@ -42,11 +42,25 @@ static const uint	NL_MODERN_SHADOW_SIZE = 2048;
 /// cascade box), so a caster whose bbox is slightly off is not clipped.
 static const float	NL_MODERN_SHADOW_DEPTH_MARGIN = 0.02f;
 /// Caster-side depth offset in metres along the sun (the equivalent of a
-/// polygon offset for the depth mask). The casters are drawn with the light
+/// polygon offset for the depth mask): the casters are drawn with the light
 /// camera's near plane pushed back by this much, so a caster's stored depth is
-/// a centimetre farther from the sun than the surface it stands on. That is
-/// what keeps a lit ground plane from shadowing itself at the contact, without
-/// the half-metre bias the 8-bit mask used to need.
+/// that much farther from the sun than the surface it stands on.
+///
+/// This is *not* the cause of the "fence shadow starts slightly towards the
+/// sun" report: the reference does it too. The user reproduced the same sunward
+/// start on two machines (Radeon and Intel) with the official upstream
+/// `ryzom_client`; it is only less visible there because the reference shadows
+/// are fuzzier and lighter. So the offset is not tuned to cancel it, it is kept
+/// at the value that is safest against contact acne.
+///
+/// One centimetre is that value. With the second-depth (farthest, MAX) mask the
+/// offset only ever pushes the stored depth away from the sun, which can add
+/// shadow but can never leave a lit speckle inside a shadow: acne-safe by
+/// construction. Its cost is a start 1.7 cm earlier along the ground at the
+/// 36 degree sun, i.e. in the direction the reference already shows. Zero (the
+/// contact is exact on paper) is a plausible alternative but leaves no margin
+/// beyond the half-texel receiver tolerance; a negative value eats that
+/// tolerance and brings acne back at silhouette edges.
 static const float	NL_MODERN_SHADOW_CASTER_OFFSET = 0.01f;
 /// Receiver tolerance, in mask texels of surface slope along the sun. A
 /// receiver at the same depth as the caster must read lit, and the stored
@@ -172,7 +186,7 @@ CModernShadowMask::~CModernShadowMask()
 
 bool CModernShadowMask::isEnabled(CScene *scene) const
 {
-	if (!scene || !scene->getShadowsEnabled())
+	if (!scene || !scene->getShadowsEnabled() || !scene->getModernShadowsEnabled())
 		return false;
 
 	IDriver *driver = scene->getRenderTrav().getDriver();

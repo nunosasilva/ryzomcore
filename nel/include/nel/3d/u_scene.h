@@ -645,6 +645,11 @@ public:
 	virtual	void			setShadowsEnabled(bool enabled) =0;
 	virtual	bool			getShadowsEnabled() const =0;
 
+	/// Opt-in switch for the modern (Vulkan) cascaded sun masks: only the
+	/// scene the sun shadow belongs to builds them (see CScene).
+	virtual	void			setModernShadowsEnabled(bool enabled) =0;
+	virtual	bool			getModernShadowsEnabled() const =0;
+
 	/// The scene may have one special VisualCollisionManager which can manage some shadow receiving
 	virtual	void			setVisualCollisionManagerForShadow(UVisualCollisionManager *vcm) =0;
 	// @}

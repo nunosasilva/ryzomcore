@@ -245,6 +245,9 @@ void updateFromClientCfg()
 		// Master shadow switch (legacy and the modern Vulkan path).
 		if (Scene)
 			Scene->setShadowsEnabled(ClientCfg.Shadows);
+		// The modern sun masks belong to the main scene only (see init_main_loop).
+		if (Scene)
+			Scene->setModernShadowsEnabled(true);
 		// Enable/Disable Cast for all entities
 		for(uint i=0;i<EntitiesMngr.entities().size();i++)
 		{
