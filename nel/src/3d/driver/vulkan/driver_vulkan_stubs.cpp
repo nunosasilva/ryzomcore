@@ -185,11 +185,19 @@ uint32 CDriverVulkan::getAvailableVertexVRAMMemory()
 
 void CDriverVulkan::setSwapVBLInterval(uint interval)
 {
+	// The client's WaitVBL option (and the runtime toggle in
+	// main_loop_utilities.cpp) reaches the driver here. Present synchronisation
+	// is a swapchain property, so a change replaces the swapchain; at init the
+	// call arrives right after createDisplay() and no frame is recording yet.
+	if (_SwapVBLInterval == interval)
+		return;
+	_SwapVBLInterval = interval;
+	recreateSwapchain(interval ? "vsync on" : "vsync off");
 }
 
 uint CDriverVulkan::getSwapVBLInterval()
 {
-	return 0;
+	return _SwapVBLInterval;
 }
 
 void CDriverVulkan::profileRenderedPrimitives(CPrimitiveProfile &pIn, CPrimitiveProfile &pOut)

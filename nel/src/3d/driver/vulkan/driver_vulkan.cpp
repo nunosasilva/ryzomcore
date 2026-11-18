@@ -136,6 +136,8 @@ CDriverVulkan::CDriverVulkan()
 	, _PresentLogLastNs(0)
 	, _SkippedFrames(0)
 	, _SwapchainGeneration(0)
+	, _SwapVBLInterval(1)
+	, _SwapchainPresentMode(VK_PRESENT_MODE_FIFO_KHR)
 	, _CurrRot(0)
 	, _CurrHotSpotX(0)
 	, _CurrHotSpotY(0)
@@ -419,6 +421,13 @@ CDriverVulkan::CDriverVulkan()
 	_GpuTimeQuery = VK_NULL_HANDLE;
 	_GpuTimeEnabled = false;
 	_GpuTimePeriod = 1.0;
+	_StatsShadowDraws = 0;
+	_StatsShadowPasses = 0;
+	_StatsShadowGpuNs[0] = _StatsShadowGpuNs[1] = 0;
+	_StatsShadowGpuSamples[0] = _StatsShadowGpuSamples[1] = 0;
+	_ShadowPassCount[0] = _ShadowPassCount[1] = 0;
+	_ShadowPassQuery = -1;
+	_ShadowDrawsBaseline = 0;
 	_OcclusionPools[0] = VK_NULL_HANDLE;
 	_OcclusionPools[1] = VK_NULL_HANDLE;
 	_OcclusionNextSlot[0] = _OcclusionNextSlot[1] = 0;
@@ -1042,7 +1051,8 @@ bool CDriverVulkan::createSwapchain()
 	sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	sci.preTransform = caps.currentTransform;
 	sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-	sci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+	sci.presentMode = choosePresentMode();
+	_SwapchainPresentMode = sci.presentMode;
 	sci.clipped = VK_TRUE;
 	sci.oldSwapchain = _Swapchain;
 	if (!checkVk(vkCreateSwapchainKHR(_Device, &sci, NULL, &_Swapchain), "vkCreateSwapchainKHR"))
@@ -1085,7 +1095,10 @@ bool CDriverVulkan::createSwapchain()
 			return false;
 	}
 
-	nlinfo("Vulkan: swapchain %ux%u, %u images", _SwapchainExtent.width, _SwapchainExtent.height, imageCount);
+	nlinfo("Vulkan: swapchain %ux%u, %u images, %s present", _SwapchainExtent.width, _SwapchainExtent.height, imageCount,
+		_SwapchainPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate (no vsync)" :
+		_SwapchainPresentMode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox (no vsync)" :
+		_SwapchainPresentMode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO (vsync)" : "other");
 	// The surface extent is the drawable size (X11) clamped to what the surface
 	// accepts: cache it as the window size so getWindowSize() and the next
 	// frame's resize check agree with the images. The game loop does not call
@@ -1096,6 +1109,33 @@ bool CDriverVulkan::createSwapchain()
 	_SwapchainOutOfDate = false;
 	++_SwapchainGeneration;
 	return true;
+}
+
+VkPresentModeKHR CDriverVulkan::choosePresentMode()
+{
+	// FIFO is the only mode every surface must support, so it is the fallback
+	// and the default (WaitVBL on). The client turns synchronisation off with
+	// WaitVBL=0, which reaches the driver as setSwapVBLInterval(0): use
+	// IMMEDIATE when the surface offers it, else MAILBOX, else FIFO. Both are
+	// needed for a measurement that does not lie: with FIFO every frame is
+	// capped at the display refresh rate and the per-frame cost of a feature
+	// is invisible.
+	uint32 count = 0;
+	vkGetPhysicalDeviceSurfacePresentModesKHR(_PhysicalDevice, _Surface, &count, NULL);
+	std::vector<VkPresentModeKHR> modes(count ? count : 0);
+	if (count)
+		vkGetPhysicalDeviceSurfacePresentModesKHR(_PhysicalDevice, _Surface, &count, &modes[0]);
+	modes.resize(count);
+
+	const VkPresentModeKHR	fifo = VK_PRESENT_MODE_FIFO_KHR;
+	if (_SwapVBLInterval > 0)
+		return fifo;
+	const VkPresentModeKHR	preferred[2] = { VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR };
+	for (uint p = 0; p < 2; ++p)
+		for (uint i = 0; i < modes.size(); ++i)
+			if (modes[i] == preferred[p])
+				return preferred[p];
+	return fifo;
 }
 
 bool CDriverVulkan::createRenderPass()
@@ -1521,7 +1561,9 @@ bool CDriverVulkan::initVulkan()
 	createOcclusionPools();
 
 	// NLVK_STATS: one GPU timestamp pair per frame slot, written around the
-	// frame command buffer. Timestamps need support from the queue family.
+	// frame command buffer, plus one pair per modern shadow cascade (see
+	// NL_VK_GPU_QUERIES_PER_SLOT). Timestamps need support from the queue
+	// family.
 	if (_StatsEnabled)
 	{
 		uint32 qcount = 0;
@@ -1534,7 +1576,7 @@ bool CDriverVulkan::initVulkan()
 		memset(&qpci, 0, sizeof(qpci));
 		qpci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
 		qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
-		qpci.queryCount = 4;
+		qpci.queryCount = 2 * NL_VK_GPU_QUERIES_PER_SLOT;
 		if (hasTimestamps && vkCreateQueryPool(_Device, &qpci, NULL, &_GpuTimeQuery) == VK_SUCCESS)
 		{
 			_GpuTimeEnabled = true;
@@ -2172,12 +2214,27 @@ bool CDriverVulkan::beginFrame()
 	if (_GpuTimeEnabled && _SwapBufferCounter >= 2)
 	{
 		uint64 times[2] = { 0, 0 };
-		const VkResult query = vkGetQueryPoolResults(_Device, _GpuTimeQuery, frame * 2, 2,
+		const VkResult query = vkGetQueryPoolResults(_Device, _GpuTimeQuery,
+			frame * NL_VK_GPU_QUERIES_PER_SLOT, 2,
 			sizeof(times), times, sizeof(uint64), VK_QUERY_RESULT_64_BIT);
 		if (query == VK_SUCCESS && times[1] >= times[0])
 		{
 			_StatsGpuNs += (uint64)((double)(times[1] - times[0]) * _GpuTimePeriod + 0.5);
 			++_StatsGpuSamples;
+		}
+		// The cascades of this frame, one pair each, when the mask pass ran.
+		for (uint32 cascade = 0; cascade < _ShadowPassCount[frame] && cascade < 2; ++cascade)
+		{
+			const uint64 maskTimes[2] = { 0, 0 };
+			const VkResult maskQuery = vkGetQueryPoolResults(_Device, _GpuTimeQuery,
+				frame * NL_VK_GPU_QUERIES_PER_SLOT + 2 + 2 * cascade, 2,
+				sizeof(maskTimes), (void *)maskTimes, sizeof(uint64), VK_QUERY_RESULT_64_BIT);
+			if (maskQuery == VK_SUCCESS && maskTimes[1] >= maskTimes[0])
+			{
+				_StatsShadowGpuNs[cascade] +=
+					(uint64)((double)(maskTimes[1] - maskTimes[0]) * _GpuTimePeriod + 0.5);
+				++_StatsShadowGpuSamples[cascade];
+			}
 		}
 	}
 
@@ -2280,9 +2337,13 @@ bool CDriverVulkan::beginFrame()
 
 	if (_GpuTimeEnabled)
 	{
-		vkCmdResetQueryPool(cmd, _GpuTimeQuery, frame * 2, 2);
-		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, _GpuTimeQuery, frame * 2);
+		vkCmdResetQueryPool(cmd, _GpuTimeQuery, frame * NL_VK_GPU_QUERIES_PER_SLOT,
+			NL_VK_GPU_QUERIES_PER_SLOT);
+		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, _GpuTimeQuery,
+			frame * NL_VK_GPU_QUERIES_PER_SLOT);
 	}
+	_ShadowPassCount[frame] = 0;
+	_ShadowPassQuery = -1;
 	// Reset this slot's occlusion pool before the render pass opens (the reset
 	// is only legal outside one). The fence waited above proves the previous
 	// submission of this same pool is done, and the other pool belongs to the
@@ -2476,7 +2537,8 @@ bool CDriverVulkan::swapBuffers()
 
 	vkCmdEndRenderPass(cmd);
 	if (_GpuTimeEnabled)
-		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _GpuTimeQuery, frame * 2 + 1);
+		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _GpuTimeQuery,
+			frame * NL_VK_GPU_QUERIES_PER_SLOT + 1);
 
 	bool wantScreenshot = false;
 	if (!_ScreenshotPath.empty())
@@ -2682,6 +2744,11 @@ bool CDriverVulkan::swapBuffers()
 				(unsigned long long)(_StatsVertexBindRepeats / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				_StatsVertexBinds ? 100.0 * (double)_StatsVertexBindRepeats / (double)_StatsVertexBinds : 0.0,
 				(unsigned long long)(_StatsMegaDescWrites / (_StatsWindowFrames ? _StatsWindowFrames : 1)));
+			nlinfo("Vulkan stats: shadow mask: %llu caster draws/frame in %llu passes/frame, gpu %.2f ms cascade0 + %.2f ms cascade1",
+				(unsigned long long)(_StatsShadowDraws / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				(unsigned long long)(_StatsShadowPasses / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				_StatsShadowGpuSamples[0] ? (double)_StatsShadowGpuNs[0] / 1e6 / (double)_StatsShadowGpuSamples[0] : 0.0,
+				_StatsShadowGpuSamples[1] ? (double)_StatsShadowGpuNs[1] / 1e6 / (double)_StatsShadowGpuSamples[1] : 0.0);
 			{
 				char formats[512];
 				formats[0] = 0;
@@ -2762,6 +2829,10 @@ bool CDriverVulkan::swapBuffers()
 			_StatsVertexBinds = 0;
 			_StatsVertexBindRepeats = 0;
 			_StatsMegaDescWrites = 0;
+			_StatsShadowDraws = 0;
+			_StatsShadowPasses = 0;
+			_StatsShadowGpuNs[0] = _StatsShadowGpuNs[1] = 0;
+			_StatsShadowGpuSamples[0] = _StatsShadowGpuSamples[1] = 0;
 			memset(_StatsVertexFormats, 0, sizeof(_StatsVertexFormats));
 			_StatsVertexFormatCount = 0;
 		}

@@ -820,6 +820,18 @@ private:
 	uint64					_SkippedFrames;
 	/// Incremented on every successful swapchain creation.
 	uint32					_SwapchainGeneration;
+	/// Value of the client's WaitVBL option (IDriver::setSwapVBLInterval):
+	/// 1 presents with FIFO (the default, and what every surface supports),
+	/// 0 asks for no display synchronisation and uses IMMEDIATE when the
+	/// surface offers it (MAILBOX, then FIFO, otherwise). It used to be a
+	/// no-op and every frame was FIFO-limited, which hides the real per-frame
+	/// cost; NLVK_STATS measurements need the unsynchronised mode.
+	uint					_SwapVBLInterval;
+	/// Present mode createSwapchain() picked for the current swapchain.
+	VkPresentModeKHR		_SwapchainPresentMode;
+	/// Choose the present mode for the current WaitVBL setting, falling back
+	/// to FIFO on a surface that does not offer the unsynchronised ones.
+	VkPresentModeKHR		choosePresentMode();
 #if defined(NL_OS_UNIX) && !defined(NL_OS_MAC)
 	NLMISC::CVulkanEventEmitter _EventEmitter;
 #endif
@@ -967,6 +979,20 @@ private:
 	VkQueryPool				_GpuTimeQuery;
 	bool					_GpuTimeEnabled;
 	double					_GpuTimePeriod;
+	/// NLVK_STATS: one more timestamp pair per frame slot for each modern
+	/// shadow cascade, plus the caster draws and passes recorded, so the mask
+	/// pass' GPU time and draw count can be separated from the main pass.
+	/// Query layout: slot * 6 + {0,1} frame, + {2,3} cascade 0, + {4,5} cascade 1.
+	static const uint32		NL_VK_GPU_QUERIES_PER_SLOT = 6;
+	uint64					_StatsShadowDraws;
+	uint64					_StatsShadowPasses;
+	uint64					_StatsShadowGpuNs[2];
+	uint64					_StatsShadowGpuSamples[2];
+	/// Mask passes recorded in each frame slot of the frame being recorded, and
+	/// the timestamp pair of the mask pass currently open (-1 outside one).
+	uint8					_ShadowPassCount[2];
+	sint32					_ShadowPassQuery;
+	uint64					_ShadowDrawsBaseline;
 
 	// --- Occlusion queries (flares, item 7) ---
 	// One query pool per frame slot. beginFrame() resets the pool of the slot

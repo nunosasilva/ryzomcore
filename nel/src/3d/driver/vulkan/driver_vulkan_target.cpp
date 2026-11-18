@@ -416,6 +416,27 @@ bool CDriverVulkan::ensureRenderTarget(ITexture &tex, CTextureVulkan &target)
 
 void CDriverVulkan::beginOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target, VkFramebuffer framebuffer, VkExtent2D extent)
 {
+	// NLVK_STATS: bracket the modern shadow mask pass (image barrier, clear,
+	// caster draws, pass end) with a GPU timestamp pair, one pair per cascade,
+	// and remember where its draw count starts. The pass is identified by its
+	// float colour format, which no other target uses.
+	const bool maskTarget = _OffscreenShadowRenderPass != VK_NULL_HANDLE &&
+		target.Format == _ShadowMaskFormat;
+	_ShadowPassQuery = -1;
+	if (maskTarget)
+	{
+		if (_StatsEnabled)
+			_ShadowDrawsBaseline = _StatsDraws;
+		if (_GpuTimeEnabled && _ShadowPassCount[_FrameIndex] < 2)
+		{
+			_ShadowPassQuery = (sint32)(_FrameIndex * NL_VK_GPU_QUERIES_PER_SLOT + 2 +
+				2 * _ShadowPassCount[_FrameIndex]);
+			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, _GpuTimeQuery,
+				(uint32)_ShadowPassQuery);
+			++_ShadowPassCount[_FrameIndex];
+		}
+	}
+
 	// Same as beginMainPass(): the dynamic state cache describes the previous
 	// render pass instance, and Vulkan does not carry it across.
 	forgetDrawState();
@@ -514,6 +535,21 @@ void CDriverVulkan::endOffscreenPass(VkCommandBuffer cmd, CTextureVulkan &target
 		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 		0, 0, NULL, 0, NULL, 1, &barrier);
 	target.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+	// NLVK_STATS: close the mask pass' timestamp pair and count its caster
+	// draws (the difference of the driver's draw counter across the pass).
+	if (_ShadowPassQuery >= 0)
+	{
+		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, _GpuTimeQuery,
+			(uint32)_ShadowPassQuery + 1);
+		_ShadowPassQuery = -1;
+	}
+	if (_StatsEnabled && _OffscreenShadowRenderPass != VK_NULL_HANDLE &&
+		target.Format == _ShadowMaskFormat)
+	{
+		_StatsShadowDraws += _StatsDraws - _ShadowDrawsBaseline;
+		++_StatsShadowPasses;
+	}
 }
 
 // ---------------------------------------------------------------------------

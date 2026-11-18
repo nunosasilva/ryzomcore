@@ -21,6 +21,8 @@
 #include "nel/3d/shadow_map_manager.h"
 
 #include <unordered_set>
+#include <map>
+#include <set>
 #include "nel/misc/aabbox.h"
 #include "nel/3d/driver.h"
 #include "nel/3d/scene.h"
@@ -250,6 +252,54 @@ void			CShadowMapManager::addShadowReceiver(CTransform *model)
 }
 
 // ***************************************************************************
+// TEMPORARY (milestone D): before the registered caster list and the opaque
+// ordering table are dropped as caster sources, prove that CScene::_Models is
+// a superset of both. Logged once per scene, only with
+// NLVK_SHADOW_CASTER_CENSUS=1, so a normal run pays nothing.
+static void	casterSetSupersetProof(CScene *scene, const std::vector<CTransform*> *opaqueModels)
+{
+	static const char	*env = getenv("NLVK_SHADOW_CASTER_CENSUS");
+	if (!env || !*env)
+		return;
+	static std::map<const CScene*, uint>	frames;
+	uint	&frameCount = frames[scene];
+	if (frameCount > 120)
+		return;
+	if (++frameCount != 120)
+		return;
+
+	const std::set<CTransform*>	&models = scene->getAllModels();
+	uint	registered = 0;
+	uint	missingRegistered = 0;
+	for (CScene::ItShadowCasterList it = scene->getShadowCasterListBegin();
+		it != scene->getShadowCasterListEnd(); ++it)
+	{
+		++registered;
+		if (models.find(*it) == models.end())
+		{
+			++missingRegistered;
+			nlinfo("SHADOWCASTER census: registered caster %p is not in _Models", (void *)*it);
+		}
+	}
+	uint	opaque = 0;
+	uint	missingOpaque = 0;
+	if (opaqueModels)
+	{
+		for (uint i = 0; i < opaqueModels->size(); ++i)
+		{
+			++opaque;
+			if (models.find((*opaqueModels)[i]) == models.end())
+			{
+				++missingOpaque;
+				nlinfo("SHADOWCASTER census: opaque model %p is not in _Models", (void *)(*opaqueModels)[i]);
+			}
+		}
+	}
+	nlinfo("SHADOWCASTER census: models=%u registered=%u opaque=%u not-in-models: registered=%u opaque=%u",
+		(uint)models.size(), registered, opaque, missingRegistered, missingOpaque);
+}
+
+// ***************************************************************************
 bool			CShadowMapManager::renderModernShadowMasks(CScene *scene,
 	const std::vector<CTransform*> *opaqueModels)
 {
@@ -275,6 +325,8 @@ bool			CShadowMapManager::renderModernShadowMasks(CScene *scene,
 	// return before building the caster union, not after.
 	if( !scene->getModernShadowsEnabled() )
 		return false;
+
+	casterSetSupersetProof(scene, opaqueModels);
 
 	// Prefer the opaque pass's models: every opaque object casts, whether or
 	// not the game registered it as a shadow caster. The registered list is
