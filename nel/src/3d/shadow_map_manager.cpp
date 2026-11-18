@@ -415,6 +415,13 @@ void			CShadowMapManager::renderGenerate(CScene *scene)
 		// Copy the last blur texture
 		_CopyMaterial.setTexture(0, _BlurTexture[blurTarget]);
 
+		// Vulkan copies a cell straight out of the blur atlas that is still
+		// bound. The old per-caster path below binds the destination map and
+		// draws a copy quad, which ends and resumes the main pass twice for
+		// every caster (and, now that the passes STORE depth, writes the whole
+		// window depth back each time). GL2/GL3 keep the quad path.
+		const bool	directCopy= driverForShadowGeneration->supportsDirectTargetCopy();
+
 		// Store Screen in ShadowMaps
 		// ********
 		textX=0;
@@ -431,10 +438,13 @@ void			CShadowMapManager::renderGenerate(CScene *scene)
 				{
 					uint	bts= baseTextureSize;
 
-					// todo hulud : Try the temporary buffer trick (openGL)
-					//if (!driverForShadowGeneration->copyTargetToTexture (text, 0, 0, textX*bts, textY*bts, bts, bts))
+					bool	cellCopied= false;
+					if(directCopy)
+						cellCopied= driverForShadowGeneration->copyTargetToTexture (text, 0, 0, textX*bts, textY*bts, bts, bts);
+
+					if(!cellCopied)
 					{
-						// Copy the texture
+						// Copy the texture through a temporary render target.
 						driverForShadowGeneration->setRenderTarget (text, 0, 0, bts, bts);
 						driverForShadowGeneration->clear2D (CRGBA(0,0,0,0));
 

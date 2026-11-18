@@ -661,6 +661,7 @@ public:
 	virtual bool setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel, uint32 cubeFace) override;
 	virtual bool getRenderTargetSize(uint32 &width, uint32 &height) override;
 	virtual bool copyTargetToTexture(ITexture *tex, uint32 offsetx, uint32 offsety, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel) override;
+	virtual bool supportsDirectTargetCopy() const override { return true; }
 	virtual bool textureCoordinateAlternativeMode() const override;
 	virtual uint getMaxLight() const override;
 	virtual void setLight(uint8 num, const CLight &light) override;

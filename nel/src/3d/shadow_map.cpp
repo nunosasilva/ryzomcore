@@ -133,7 +133,8 @@ void			CShadowMap::buildCasterCameraMatrix(const CVector &lightDir, const CMatri
 	CAABBox		bbLocal;
 	bbLocal= CAABBox::transformAABBox(cameraMatrix.inverted() * localPosMatrix, bbShape);
 
-	// Enlarge for 1 pixel left and right.
+	// Enlarge by 4 pixels on each side (the +8 margin) so the blurred
+	// silhouette and the projection do not touch the cell border.
 	float	scaleSize= (float)getTextureSize();
 	scaleSize= (scaleSize+8)/scaleSize;
 	CVector		hs= bbLocal.getHalfSize();

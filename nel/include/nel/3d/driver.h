@@ -1046,6 +1046,17 @@ public:
 													uint32 height = 0,
 		                                            uint32 mipmapLevel = 0
 													) = 0;
+
+	/** True if copyTargetToTexture() copies the currently bound texture target
+	  * directly, without going through the window target and without a
+	  * setRenderTarget() round trip per copy.
+	  *
+	  * The shadow map manager uses this to copy every blurred caster cell out
+	  * of the atlas it is still rendering into. The GL drivers keep their
+	  * existing per-caster "bind the map, draw a copy quad, return" path (the
+	  * D3D implementation is a stub), so the default is false.
+	  */
+	virtual bool			supportsDirectTargetCopy() const { return false; }
 	// @}
 
 	/// Hack for bloom
