@@ -2623,6 +2623,7 @@ bool CDriverVulkan::drawArrays(CMaterial &mat, uint32 firstVertex, uint32 count,
 	VkDeviceSize offset = info->currentOffset();
 	bindVertexBuffer(cmd, info->currentBuffer(), offset);
 	vkCmdDraw(cmd, count, 1, firstVertex, 0);
+	_MainPassEmpty = false;
 	info->_Drawn = true;
 	info->_DrawFrame = getSwapBufferCounter();
 	info->markDrawn(info->_DrawFrame);
@@ -2713,6 +2714,7 @@ bool CDriverVulkan::drawIndexed(CMaterial &mat, uint32 firstIndex, uint32 count,
 	vkCmdBindIndexBuffer(cmd, indexBuffer, _IndexRingDrawOffset,
 		indexStride == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
 	vkCmdDrawIndexed(cmd, count, 1, 0, 0, 0);
+	_MainPassEmpty = false;
 	info->_Drawn = true;
 	info->_DrawFrame = getSwapBufferCounter();
 	info->markDrawn(info->_DrawFrame);
@@ -2945,6 +2947,7 @@ bool CDriverVulkan::renderRawQuads(CMaterial &mat, uint32 startVertex, uint32 nu
 			// The quad index pattern addresses vertices relative to the batch start.
 			sint32 firstVertex = (sint32)(startVertex + base);
 			vkCmdDrawIndexed(cmd, batch * 6, 1, 0, firstVertex, 0);
+			_MainPassEmpty = false;
 			++_IndexedDrawCount;
 
 			base += batch * 4;

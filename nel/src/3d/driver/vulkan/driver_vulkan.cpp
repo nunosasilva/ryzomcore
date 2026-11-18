@@ -421,6 +421,10 @@ CDriverVulkan::CDriverVulkan()
 	_GpuTimeQuery = VK_NULL_HANDLE;
 	_GpuTimeEnabled = false;
 	_GpuTimePeriod = 1.0;
+	_MainPassEmpty = false;
+	_MainPassClearColor = CRGBA(0, 0, 0, 255);
+	_MainPassClearDepth = 1.f;
+	_MainPassClearStencil = 0;
 	_StatsShadowDraws = 0;
 	_StatsShadowPasses = 0;
 	_StatsShadowGpuNs[0] = _StatsShadowGpuNs[1] = 0;
@@ -428,6 +432,7 @@ CDriverVulkan::CDriverVulkan()
 	_ShadowPassCount[0] = _ShadowPassCount[1] = 0;
 	_ShadowPassQuery = -1;
 	_ShadowDrawsBaseline = 0;
+	_StatsMainPassReclears = 0;
 	_OcclusionPools[0] = VK_NULL_HANDLE;
 	_OcclusionPools[1] = VK_NULL_HANDLE;
 	_OcclusionNextSlot[0] = _OcclusionNextSlot[1] = 0;
@@ -1237,15 +1242,41 @@ bool CDriverVulkan::createRenderPass()
 	if (!checkVk(vkCreateRenderPass(_Device, &rpci, NULL, &_OffscreenRenderPass), "vkCreateRenderPass(offscreen)"))
 		return false;
 
-	// Same attachments, one float channel for the modern shadow mask. Only the
-	// colour format differs: the pass is render-pass compatible with the rest
-	// of the offscreen targets in every other respect (load/store ops, depth
-	// attachment, subpass), so the caster pipeline is the only extra state the
-	// pipeline cache has to key on.
+	// The modern shadow mask gets its own pass with a single colour attachment.
+	// The caster pipelines have depth test and write disabled by construction
+	// (the mask is a MAX-blended second-depth map, so it needs neither), yet
+	// the shared depth attachment made every mask pass load and store the
+	// 2048x2048 D32 image: 16 MB loaded and 16 MB stored per cascade for
+	// nothing, 64 MB per frame. Dropping the attachment also lets the mask
+	// targets keep no depth image at all (see createTargetFramebuffer). The
+	// pass is therefore *not* render-pass compatible with the RGBA8 offscreen
+	// targets, which is why the pipeline cache keys on the target kind (see
+	// fillMegaPipelineKey).
 	if (_ShadowMaskFormat != VK_FORMAT_UNDEFINED)
 	{
-		attachments[0].format = _ShadowMaskFormat;
-		if (!checkVk(vkCreateRenderPass(_Device, &rpci, NULL, &_OffscreenShadowRenderPass), "vkCreateRenderPass(shadow mask)"))
+		VkAttachmentDescription maskAttachment = attachments[0];
+		maskAttachment.format = _ShadowMaskFormat;
+		VkAttachmentReference maskColorRef = colorRef;
+		VkSubpassDescription maskSubpass;
+		memset(&maskSubpass, 0, sizeof(maskSubpass));
+		maskSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		maskSubpass.colorAttachmentCount = 1;
+		maskSubpass.pColorAttachments = &maskColorRef;
+		maskSubpass.pDepthStencilAttachment = NULL;
+		VkSubpassDependency maskDependency;
+		memset(&maskDependency, 0, sizeof(maskDependency));
+		maskDependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+		maskDependency.dstSubpass = 0;
+		maskDependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		maskDependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		maskDependency.srcAccessMask = 0;
+		maskDependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		VkRenderPassCreateInfo maskRpci = rpci;
+		maskRpci.attachmentCount = 1;
+		maskRpci.pAttachments = &maskAttachment;
+		maskRpci.pSubpasses = &maskSubpass;
+		maskRpci.pDependencies = &maskDependency;
+		if (!checkVk(vkCreateRenderPass(_Device, &maskRpci, NULL, &_OffscreenShadowRenderPass), "vkCreateRenderPass(shadow mask)"))
 			return false;
 	}
 
@@ -2357,6 +2388,15 @@ bool CDriverVulkan::beginFrame()
 	// the scissor from the previous frame: the frame's first clear would be
 	// clipped to whatever region the last draw of the previous frame used.
 	_Scissor.initFullScreen();
+	// The main pass holds nothing but its clear values until its first draw:
+	// remember them, so a switch away and back before any geometry (the shadow
+	// mask pass runs right after the clear) can re-clear instead of loading the
+	// colour and depth attachments. clear2D()/clearZBuffer() update these
+	// values for as long as the pass is empty.
+	_MainPassEmpty = true;
+	_MainPassClearColor = _ClearColor;
+	_MainPassClearDepth = _ClearDepth;
+	_MainPassClearStencil = _ClearStencil;
 	beginMainPass(cmd, true);
 
 	// The fence waited above proves that the submission which used the upload
@@ -2410,6 +2450,12 @@ bool CDriverVulkan::beginFrame()
 	return true;
 }
 
+bool CDriverVulkan::scissorIsFullScreen() const
+{
+	return _Scissor.X <= 0.f && _Scissor.Y <= 0.f &&
+		_Scissor.Width >= 1.f && _Scissor.Height >= 1.f;
+}
+
 bool CDriverVulkan::clear2D(CRGBA rgba)
 {
 	if (_ShuttingDown || _SwapchainLost)
@@ -2418,6 +2464,18 @@ bool CDriverVulkan::clear2D(CRGBA rgba)
 	_ClearColorPending = true;
 	if (_FrameOpen)
 	{
+		// A clear of the main target while nothing has been drawn into it only
+		// changes what the pass has to be cleared to on a re-entry (see
+		// _MainPassEmpty); the clear command itself is recorded below. A
+		// scissored clear cannot be replayed by the pass' full-attachment
+		// CLEAR, so it stops the pass from counting as empty.
+		if (_MainPassEmpty && !_RenderTargetInfo)
+		{
+			if (scissorIsFullScreen())
+				_MainPassClearColor = rgba;
+			else
+				_MainPassEmpty = false;
+		}
 		// GL's glClear is affected by the scissor test and the engine relies on
 		// that: the shadow-map pass clears one caster cell per clear2D() call,
 		// with the scissor set to that cell. Clear the scissor rect, not the
@@ -2452,6 +2510,13 @@ bool CDriverVulkan::clearZBuffer(float zval)
 	_ClearDepthPending = true;
 	if (_FrameOpen)
 	{
+		if (_MainPassEmpty && !_RenderTargetInfo)
+		{
+			if (scissorIsFullScreen())
+				_MainPassClearDepth = zval;
+			else
+				_MainPassEmpty = false;
+		}
 		// Scissored like clear2D(): GL's depth clear obeys the scissor test too.
 		const VkRect2D rect = currentScissorRect(currentTargetExtent());
 		if (rect.extent.width != 0 && rect.extent.height != 0)
@@ -2744,11 +2809,12 @@ bool CDriverVulkan::swapBuffers()
 				(unsigned long long)(_StatsVertexBindRepeats / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				_StatsVertexBinds ? 100.0 * (double)_StatsVertexBindRepeats / (double)_StatsVertexBinds : 0.0,
 				(unsigned long long)(_StatsMegaDescWrites / (_StatsWindowFrames ? _StatsWindowFrames : 1)));
-			nlinfo("Vulkan stats: shadow mask: %llu caster draws/frame in %llu passes/frame, gpu %.2f ms cascade0 + %.2f ms cascade1",
+			nlinfo("Vulkan stats: shadow mask: %llu caster draws/frame in %llu passes/frame, gpu %.2f ms cascade0 + %.2f ms cascade1; %llu empty main-pass re-clears/frame",
 				(unsigned long long)(_StatsShadowDraws / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				(unsigned long long)(_StatsShadowPasses / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				_StatsShadowGpuSamples[0] ? (double)_StatsShadowGpuNs[0] / 1e6 / (double)_StatsShadowGpuSamples[0] : 0.0,
-				_StatsShadowGpuSamples[1] ? (double)_StatsShadowGpuNs[1] / 1e6 / (double)_StatsShadowGpuSamples[1] : 0.0);
+				_StatsShadowGpuSamples[1] ? (double)_StatsShadowGpuNs[1] / 1e6 / (double)_StatsShadowGpuSamples[1] : 0.0,
+				(unsigned long long)(_StatsMainPassReclears / (_StatsWindowFrames ? _StatsWindowFrames : 1)));
 			{
 				char formats[512];
 				formats[0] = 0;
@@ -2833,6 +2899,7 @@ bool CDriverVulkan::swapBuffers()
 			_StatsShadowPasses = 0;
 			_StatsShadowGpuNs[0] = _StatsShadowGpuNs[1] = 0;
 			_StatsShadowGpuSamples[0] = _StatsShadowGpuSamples[1] = 0;
+			_StatsMainPassReclears = 0;
 			memset(_StatsVertexFormats, 0, sizeof(_StatsVertexFormats));
 			_StatsVertexFormatCount = 0;
 		}

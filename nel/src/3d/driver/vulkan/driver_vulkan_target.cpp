@@ -194,13 +194,19 @@ void CDriverVulkan::beginMainPass(VkCommandBuffer cmd, bool first)
 	}
 	else
 	{
-		clears[0].color.float32[0] = _ClearColor.R / 255.f;
-		clears[0].color.float32[1] = _ClearColor.G / 255.f;
-		clears[0].color.float32[2] = _ClearColor.B / 255.f;
-		clears[0].color.float32[3] = _ClearColor.A / 255.f;
+		// The first pass of a frame (and a re-entry into a pass that holds
+		// nothing but its clears) uses the snapshot beginFrame() took, not the
+		// live clear state: the shadow mask pass clears its own target to black
+		// through the same _ClearColor field, and that must not repaint the
+		// window.
+		const CRGBA	col = first ? _MainPassClearColor : _ClearColor;
+		clears[0].color.float32[0] = col.R / 255.f;
+		clears[0].color.float32[1] = col.G / 255.f;
+		clears[0].color.float32[2] = col.B / 255.f;
+		clears[0].color.float32[3] = col.A / 255.f;
 	}
-	clears[1].depthStencil.depth = _ClearDepth;
-	clears[1].depthStencil.stencil = (uint32)_ClearStencil;
+	clears[1].depthStencil.depth = first ? _MainPassClearDepth : _ClearDepth;
+	clears[1].depthStencil.stencil = (uint32)(first ? _MainPassClearStencil : _ClearStencil);
 
 	VkRenderPassBeginInfo rbi;
 	memset(&rbi, 0, sizeof(rbi));
@@ -299,17 +305,28 @@ void CDriverVulkan::destroyDepthTargets()
 
 bool CDriverVulkan::createTargetFramebuffer(CTextureVulkan &target, VkRenderPass pass)
 {
-	sint32 depthIndex = getDepthTarget(target.Width, target.Height);
-	if (depthIndex < 0)
-		return false;
+	// The shadow mask pass has no depth attachment (see createRenderPass): its
+	// framebuffer carries the colour view only, and no 2048x2048 depth image is
+	// allocated for it at all.
+	const bool maskTarget = _OffscreenShadowRenderPass != VK_NULL_HANDLE &&
+		pass == _OffscreenShadowRenderPass;
+	sint32 depthIndex = -1;
+	if (!maskTarget)
+	{
+		depthIndex = getDepthTarget(target.Width, target.Height);
+		if (depthIndex < 0)
+			return false;
+	}
 	target.DepthTarget = depthIndex;
 
-	VkImageView views[2] = { target.View, _DepthTargets[depthIndex].View };
+	VkImageView views[2] = { target.View, VK_NULL_HANDLE };
+	if (depthIndex >= 0)
+		views[1] = _DepthTargets[depthIndex].View;
 	VkFramebufferCreateInfo fci;
 	memset(&fci, 0, sizeof(fci));
 	fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
 	fci.renderPass = pass;
-	fci.attachmentCount = 2;
+	fci.attachmentCount = maskTarget ? 1 : 2;
 	fci.pAttachments = views;
 	fci.width = target.Width;
 	fci.height = target.Height;
@@ -604,7 +621,13 @@ bool CDriverVulkan::setRenderTarget(ITexture *tex, uint32 x, uint32 y, uint32 wi
 		// setRenderTarget() switched the viewport to the target: restore the
 		// one the main target had when the target was bound.
 		_Viewport = _SavedViewport;
-		beginMainPass(cmd, false);
+		// Nothing drawn into the main pass before the switch (the mask pass runs
+		// right after the frame clear): the CLEAR variant re-applies exactly
+		// what the pass held and skips the colour and depth loads. As soon as
+		// anything was drawn the resume has to LOAD.
+		if (_MainPassEmpty)
+			++_StatsMainPassReclears;
+		beginMainPass(cmd, _MainPassEmpty);
 		return true;
 	}
 

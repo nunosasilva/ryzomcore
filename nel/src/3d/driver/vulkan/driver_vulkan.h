@@ -559,6 +559,10 @@ public:
 	virtual void getWindowPos(sint32 &x, sint32 &y) override;
 	virtual bool clear2D(CRGBA rgba) override;
 	virtual bool clearZBuffer(float zval) override;
+	/// True when the current scissor covers the whole attachment. The frame
+	/// clear is full-screen; the mask pass clears its caster cells through a
+	/// small scissor and must never be mistaken for it.
+	bool					scissorIsFullScreen() const;
 	virtual bool clearStencilBuffer(sint stencilval) override;
 	virtual void setColorMask(bool bRed, bool bGreen, bool bBlue, bool bAlpha) override;
 	virtual void getBuffer(CBitmap &bitmap) override;
@@ -993,6 +997,9 @@ private:
 	uint8					_ShadowPassCount[2];
 	sint32					_ShadowPassQuery;
 	uint64					_ShadowDrawsBaseline;
+	/// NLVK_STATS: main-pass re-entries that used the CLEAR variant because the
+	/// pass held nothing but its clear values (see _MainPassEmpty).
+	uint64					_StatsMainPassReclears;
 
 	// --- Occlusion queries (flares, item 7) ---
 	// One query pool per frame slot. beginFrame() resets the pool of the slot
@@ -1046,6 +1053,17 @@ private:
 	bool					_ClearColorPending;
 	bool					_ClearDepthPending;
 	bool					_ClearStencilPending;
+	/// The main pass has been opened but no geometry has been recorded into it
+	/// yet: it holds nothing but the clear values below. A switch to an
+	/// offscreen target before the first draw (the modern shadow masks are
+	/// rendered at the very start of the opaque pass) can then return with the
+	/// CLEAR variant of the main pass instead of the LOAD one: same pixels by
+	/// construction, one colour and one depth load per frame less. Clears
+	/// recorded while the pass is empty only update these values.
+	bool					_MainPassEmpty;
+	NLMISC::CRGBA			_MainPassClearColor;
+	float					_MainPassClearDepth;
+	sint					_MainPassClearStencil;
 
 	// --- Render state cache (subset of the IDriver state we honour) ---
 	CMatrix					_ViewMatrix;
