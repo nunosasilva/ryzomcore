@@ -22,6 +22,8 @@
 
 
 #include "stdpch.h"
+
+#include <cstdlib>
 #include "light_cycle_manager.h"
 #include "weather_manager_client.h"
 #include "game_share/light_cycle.h"
@@ -55,7 +57,38 @@ float               ManualWeatherValue = 0.f;
 EGSPD::CSeason::TSeason	ManualSeasonValue = EGSPD::CSeason::Spring;
 bool                ForceTrueWeatherValue = false;
 float				DayNightCycleHour = 12.f;
-float				ForcedDayNightCycleHour = -1.0f;
+
+/// Test and screenshot hook: RYZOM_FORCE_LIGHT_HOUR=<hour> pins the light
+/// cycle hour at startup, exactly like /setLightHour. A same-hour visual A/B
+/// (OpenGL vs Vulkan) needs the same light in every run, and the chat command
+/// cannot be scripted reliably.
+static float initForcedDayNightCycleHour()
+{
+	const char *env = getenv("RYZOM_FORCE_LIGHT_HOUR");
+	if (!env || !*env)
+		return -1.0f;
+	const float hour = (float)atof(env);
+	return hour >= 0.f ? hour : -1.0f;
+}
+
+float				ForcedDayNightCycleHour = initForcedDayNightCycleHour();
+
+/// Test and screenshot hook: RYZOM_FORCE_WEATHER=<0..1> selects a weather
+/// setup by hand (the value the R2ED weather slider uses), so a visual test
+/// does not run in rain or at dusk because the server moved on between runs.
+/// Negative or absent keeps the server weather.
+static float initForcedWeatherValue()
+{
+	const char *env = getenv("RYZOM_FORCE_WEATHER");
+	if (!env || !*env)
+		return -1.0f;
+	const float value = (float)atof(env);
+	if (value < 0.f)
+		return -1.0f;
+	return value > 1.f ? 1.f : value;
+}
+
+float				ForcedWeatherValue = initForcedWeatherValue();
 
 EGSPD::CSeason::TSeason CurrSeason = EGSPD::CSeason::Invalid;
 EGSPD::CSeason::TSeason StartupSeason = EGSPD::CSeason::Invalid;
@@ -152,9 +185,10 @@ void updateWeatherManager(CContinent *continent)
 
 	// Update the weather manager
 	// NB nico : even when light hour is forced, we use the real time to compute the weather (so that the weather will reflect the real one, even if hour & light is fixed)
-	if(ClientCfg.ManualWeatherSetup && !ForceTrueWeatherValue)
+	if((ClientCfg.ManualWeatherSetup || ForcedWeatherValue >= 0.f) && !ForceTrueWeatherValue)
 	{
-		WeatherManager.manualUpdate(RT.getRyzomDay(), (float) RT.getRyzomTime(), wc, ManualWeatherValue, CurrSeason);
+		WeatherManager.manualUpdate(RT.getRyzomDay(), (float) RT.getRyzomTime(), wc,
+			ForcedWeatherValue >= 0.f ? ForcedWeatherValue : ManualWeatherValue, CurrSeason);
 	}
 	else
 	{
@@ -177,9 +211,10 @@ void updateWeatherManager(const NLMISC::CMatrix &camMatrix, CContinent *continen
 
 	if (continent)
 	{
-		if(ClientCfg.ManualWeatherSetup && !ForceTrueWeatherValue)
+		if((ClientCfg.ManualWeatherSetup || ForcedWeatherValue >= 0.f) && !ForceTrueWeatherValue)
 		{
-			WeatherManager.manualUpdate(RT.getRyzomDay(), (float) RT.getRyzomTime(), wc, ManualWeatherValue, CurrSeason, camMatrix, *continent);
+			WeatherManager.manualUpdate(RT.getRyzomDay(), (float) RT.getRyzomTime(), wc,
+				ForcedWeatherValue >= 0.f ? ForcedWeatherValue : ManualWeatherValue, CurrSeason, camMatrix, *continent);
 		}
 		else
 		{
