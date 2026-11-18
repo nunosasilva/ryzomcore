@@ -2449,11 +2449,6 @@ void		CSkeletonModel::renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, 
 	}
 	driver->setupModelMatrix(localPosMatrix);
 
-	// A skinned body is a closed mesh: like CMeshInstance::renderModernShadowCaster,
-	// let the mask keep only its back faces (front-face culling) so its lit side
-	// cannot shadow itself.
-	castMat.setDoubleSided(false);
-
 	// render the skins.
 	renderShadowSkins(castMat);
 

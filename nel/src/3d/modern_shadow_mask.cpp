@@ -23,7 +23,6 @@
 #include "nel/3d/shadow_map_manager.h"
 #include "nel/3d/texture_mem.h"
 #include "nel/3d/transform.h"
-#include "nel/3d/skeleton_model.h"
 #include "nel/misc/aabbox.h"
 
 #include <algorithm>
@@ -150,14 +149,14 @@ CModernShadowMask::CModernShadowMask()
 	_CasterMaterial.setColor(CRGBA::White);
 	_CasterMaterial.setZWrite(false);
 	_CasterMaterial.setZFunc(CMaterial::always);
-	// The mask keeps only the *back* faces of a closed caster (the driver culls
-	// front faces while the shadow depth pass is on), so the caster's lit side
-	// is not in the mask and cannot shadow itself: that is what draws the dark
-	// bands on a face or a fence beam that is nearly parallel to the light.
-	// Setting this material double sided keeps both faces, which a caster with
-	// a single-layer shell needs (CInstance::renderModernShadowCaster restores
-	// it per instance from the shape's own materials).
-	_CasterMaterial.setDoubleSided(false);
+	// Both faces are drawn into the mask. Culling the caster's lit side would
+	// stop it shadowing itself, but it also retracts every silhouette by the
+	// object's thickness along the light (fence shadows started beside their
+	// post) and drops single-layer shells entirely (a sun-facing plank wall
+	// stopped casting, so a shadow behind it showed through it). Self-shadowing
+	// is removed exactly by the caster id instead (see the id pass in render()),
+	// so the mask can keep the true silhouette.
+	_CasterMaterial.setDoubleSided(true);
 	// The mask stores a depth, not a coverage: while the depth pass is on the
 	// driver ignores these blend factors and blends with MIN, which is what
 	// keeps the nearest caster per texel. They are kept as the plain
@@ -494,9 +493,8 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// Second pass: stamp the caster id of whoever wrote the depth mask, so
 		// a receiver can skip its own object's depth (an object must not
 		// shadow itself, and a character's layered parts must not band its
-		// body). Only the skinned casters take part: the static meshes are
-		// already clean through the back-face-only depth mask above, and they
-		// cannot shadow themselves across parts.
+		// body). Every caster takes part: a static mesh's own lit face is in
+		// the mask now that both faces are drawn, and it must skip it too.
 		driver->setRenderTarget(_IdMask[i], 0, 0, _Size, _Size);
 		driver->clear2D(CRGBA(0, 0, 0, 0));
 		{
@@ -513,7 +511,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		driver->setModernShadowIdPass(true);
 		for (uint c = 0; c < casters.size(); ++c)
 		{
-			if (casters[c] && dynamic_cast<CSkeletonModel *>(casters[c]))
+			if (casters[c])
 				casters[c]->renderModernShadowCaster(driver, casterMatrix, castMat);
 		}
 		driver->setModernShadowIdPass(false);

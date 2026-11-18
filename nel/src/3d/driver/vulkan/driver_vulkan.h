@@ -1106,20 +1106,10 @@ private:
 	/// otherwise the pass resumes after an offscreen target (loads it).
 	void					beginMainPass(VkCommandBuffer cmd, bool first);
 
-	/** Cull mode for the draw about to be recorded.
-	 *
-	 * The modern shadow depth pass keeps only the *back* faces of a closed
-	 * caster (front-face culling): its lit side is then not in the mask at
-	 * all, which is what stops a surface nearly parallel to the light from
-	 * sampling its own depth (the dark bands on faces, NPCs and fence beams).
-	 * A caster whose material is double sided is a single-layer shell (Ryzom
-	 * has several), and culling one of its faces would remove its shadow
-	 * entirely, so those keep both faces.
-	 */
+	/// Cull mode for the draw about to be recorded (both faces for a double
+	/// sided material, which is what the modern shadow caster material is).
 	VkCullModeFlags			modernShadowCullMode() const
 	{
-		if (_ModernShadowDepthPass)
-			return _MaterialTwoSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_FRONT_BIT;
 		return _MaterialTwoSided ? VK_CULL_MODE_NONE
 			: (_CullMode == CW ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT);
 	}

@@ -23,9 +23,6 @@
 #include "nel/3d/scene.h"
 #include "nel/3d/gpu_skin_vp.h"
 #include <list>
-#include <set>
-#include <cstdio>
-#include <cstdlib>
 
 using namespace std;
 using namespace NLMISC;
@@ -293,47 +290,14 @@ void		CMeshInstance::generateShadowMap(const CVector &lightDir)
 }
 
 // ***************************************************************************
-/// True when the shape's own materials render both faces, which is how Ryzom
-/// marks a single-layer shell (a canvas, a leaf card). The modern shadow mask
-/// culls the caster's front faces so its lit side cannot shadow itself; such a
-/// shell has only one face, so culling it would remove the caster entirely and
-/// it has to keep both.
-static bool	shadowCasterNeedsBothFaces(const CMeshBaseInstance &inst)
-{
-	for (uint i = 0; i < inst.Materials.size(); ++i)
-	{
-		if (inst.Materials[i].getDoubleSided())
-		{
-			// TEMP diagnosis (NLVK_SHADOW_DEBUG): one line per shape that
-			// keeps both faces in the mask, with the material that asks for it.
-			if (getenv("NLVK_SHADOW_DEBUG") != NULL)
-			{
-				static std::set<const void *> seen;
-				const void *key = (const void *)inst.Shape;
-				if (seen.insert(key).second)
-				{
-					char extra[160];
-					snprintf(extra, sizeof(extra), "shape=%p mat=%u/%u", key, i,
-						(unsigned)inst.Materials.size());
-					modernShadowDebugLog("cull", "bothfaces", NULL, NULL, NULL, 0, NULL, extra);
-				}
-			}
-			return true;
-		}
-	}
-	return false;
-}
-
 // ***************************************************************************
 void		CMeshInstance::renderModernShadowCaster(IDriver *driver, const NLMISC::CMatrix &cameraMatrix, CMaterial &castMat)
 {
 	if (!Shape)
 		return;
 
-	// Per caster: the mask pass culls the front faces (see CModernShadowMask)
-	// unless this shape is a single-layer shell, and the id pass stamps this
-	// object's id so it never shadows itself.
-	castMat.setDoubleSided(shadowCasterNeedsBothFaces(*this));
+	// The id pass stamps this object's id so it never shadows itself (see
+	// CModernShadowState::IdMask).
 	driver->setModernShadowObjectId(getModernShadowId());
 
 	// The cascade camera is world -> [0,1]^3; the mesh vertices are local, so
@@ -444,8 +408,7 @@ void	CMeshInstance::renderIntoSkeletonShadowMap(CSkeletonModel *rootSkeleton, CM
 	}
 	driver->setupModelMatrix(localPosMatrix);
 
-	// Same per-caster culling choice and id as renderModernShadowCaster().
-	castMat.setDoubleSided(shadowCasterNeedsBothFaces(*this));
+	// Same per-caster id as renderModernShadowCaster().
 	driver->setModernShadowObjectId(getModernShadowId());
 
 	// render the Mesh
