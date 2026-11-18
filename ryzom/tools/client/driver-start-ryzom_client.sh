@@ -405,7 +405,7 @@ write_state() {
 
 pid_has_state_env() {
 	[ -r "/proc/$1/environ" ] || return 1
-	tr '\0' '\n' <"/proc/$1/environ" 2>/dev/null \
+	{ tr '\0' '\n' <"/proc/$1/environ"; } 2>/dev/null \
 		| grep -a -x -F "RYZOM_HARNESS_STATE=$STATE_FILE" >/dev/null
 }
 
@@ -592,7 +592,7 @@ find_client_pid() {
 		pid=${p#/proc/}
 		[ "$pid" = "$$" ] && continue
 		[ -r "$p/environ" ] || continue
-		tr '\0' '\n' <"$p/environ" 2>/dev/null \
+		{ tr '\0' '\n' <"$p/environ"; } 2>/dev/null \
 			| grep -a -x -F "RYZOM_HARNESS_TOKEN=$TOKEN" >/dev/null || continue
 		exe=$(readlink "$p/exe" 2>/dev/null) || continue
 		exe=${exe% (deleted)}
@@ -603,7 +603,7 @@ find_client_pid() {
 
 client_display() {
 	if [ -n "$CLIENT_PID" ]; then
-		tr '\0' '\n' <"/proc/$CLIENT_PID/environ" 2>/dev/null \
+		{ tr '\0' '\n' <"/proc/$CLIENT_PID/environ"; } 2>/dev/null \
 			| sed -n 's/^DISPLAY=//p' | head -n1
 	fi
 }
@@ -686,7 +686,7 @@ reuse_client() {
 	# file or stop it (cleanup checks this flag).
 	REUSED=1
 	for kv in "${ENV_ASSIGNMENTS[@]}"; do
-		tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null \
+		{ tr '\0' '\n' <"/proc/$pid/environ"; } 2>/dev/null \
 			| grep -a -x -F "$kv" >/dev/null || { env_ok=0; break; }
 	done
 	if [ "$env_ok" != 1 ]; then
