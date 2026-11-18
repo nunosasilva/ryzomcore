@@ -827,35 +827,32 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	if (fogOrPpl)
 	{
 		ss << "float nlSunShadow = 1.0;" << std::endl;
+		// Dev-only false-colour instrumentation (NLVK_SHADOW_DEBUG_VIEW):
+		// stored and receiver depth of the last mask lookup.
+		ss << "float nlDbgStored = 0.0;" << std::endl;
+		ss << "float nlDbgDepth = 0.0;" << std::endl;
+		ss << "float nlDbgValid = 0.0;" << std::endl;
 		// The masks hold the farthest caster's light-space depth per texel (the
 		// caster pass writes gl_FragCoord.z, which the orthographic world ->
 		// [0,1]^3 cascade camera makes exactly the receiver's own depth unit).
 		// An empty texel is the clear value 0, so it reads "lit".
 		//
-		// One bilinear tap is already an average of the 2x2 texels around the
-		// fragment, but a single tap leaves the mask lattice readable as a
-		// staircase along a shadow edge at close range. Four taps on a
-		// per-fragment rotated cross (interleaved gradient noise) turn that
-		// lattice into sub-texel jitter, and the widened smoothstep below
-		// turns the jitter into a soft, diffuse penumbra.
-		ss << "float nlMaskIgn(vec2 p) {" << std::endl;
-		ss << "  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));" << std::endl;
-		ss << "}" << std::endl;
-		ss << std::endl;
-		ss << "float sampleSunMask(sampler2D smap, vec2 uv, float depth, float bias, float softness, float texel, float depthPerTexel) {" << std::endl;
-		ss << "  float ang = nlMaskIgn(gl_FragCoord.xy) * 6.28318530718;" << std::endl;
-		ss << "  vec2 o = vec2(cos(ang), sin(ang)) * (texel * 0.5);" << std::endl;
-		ss << "  vec2 o2 = vec2(-o.y, o.x);" << std::endl;
-		// Second-depth mask: the texel holds the caster's farthest depth, 0
-		// when nothing covers it. The taps are combined with max (not an
-		// average) so an empty neighbour cannot pull the stored depth towards
-		// the sun and re-introduce the early shadow start.
-		ss << "  float stored = max(max(texture(smap, uv + o).r, texture(smap, uv - o).r)," << std::endl;
-		ss << "                     max(texture(smap, uv + o2).r, texture(smap, uv - o2).r));" << std::endl;
-		// No caster in any tap: the whole neighbourhood is at the clear value
-		// 0 (0 = lit, the MAX convention's empty depth), so the fragment is lit.
-		ss << "  if (stored <= 0.0)" << std::endl;
-		ss << "    return 0.0;" << std::endl;
+		// Four taps: the four texels of the 2x2 cell that contains the fragment,
+		// fetched as point samples (textureGather). The mask is a depth field
+		// with hard texel steps, and a texel either holds a caster or the empty
+		// clear value (0), so the depth must never be *interpolated*: between a
+		// caster's texel and an empty one a bilinear (or a max of bilinear)
+		// stored value passes through depths that no surface has. On a receiver
+		// that is in front of the caster (a bank or a wall between the sun and
+		// the caster: a character standing in the shade of a building), the
+		// interpolated value is *below* the receiver's own depth for a one-texel
+		// ring around the caster's silhouette, and that ring is painted as a
+		// false shadow ("reverse shadow towards the sun"). Comparing the texels
+		// themselves cannot produce a depth that is not in the mask, and the
+		// average of the four comparisons is the shadow's own coverage
+		// anti-aliasing. The smoothstep keeps the slope-scaled penumbra.
+		ss << "float sampleSunMask(sampler2D smap, vec2 uv, float depth, float bias, float softness, float depthPerTexel) {" << std::endl;
+		ss << "  vec4 tap = textureGather(smap, uv);" << std::endl;
 		// Receiver tolerance: the floor (bias) covers the mask's quantisation,
 		// and the slope term covers a surface nearly parallel to the light,
 		// where one mask texel spans a large depth range. The slope is measured
@@ -865,9 +862,13 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// depthPerTexel is computed by the caller, outside every per-fragment
 		// branch: fwidth() is undefined in non-uniform control flow.
 		ss << "  float tol = max(bias, depthPerTexel);" << std::endl;
-		// max(): a disabled/zero state must not turn smoothstep's edge0==edge1
-		// into a division by zero.
-		ss << "  return smoothstep(stored + tol, stored + tol + max(softness, 1e-6), depth);" << std::endl;
+		// 0 = empty texel = no caster = lit (the MAX convention's empty depth):
+		// step(1e-9, tap) cancels the comparison for an empty tap.
+		ss << "  vec4 cmp = smoothstep(tap + tol, tap + tol + max(softness, 1e-6), vec4(depth));" << std::endl;
+		ss << "  cmp *= step(vec4(1e-9), tap);" << std::endl;
+		ss << "  nlDbgStored = max(max(tap.x, tap.y), max(tap.z, tap.w));" << std::endl;
+		ss << "  nlDbgDepth = depth; nlDbgValid = 1.0;" << std::endl;
+		ss << "  return dot(cmp, vec4(0.25));" << std::endl;
 		ss << "}" << std::endl;
 		ss << std::endl;
 		ss << "void computeLightPP(int lightMode, vec3 dirOrPos, vec4 colDiff, vec4 colSpec," << std::endl;
@@ -975,9 +976,9 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// "behind" the empty clear value (0 = lit) through float error.
 		ss << "      float sunDepth = clamp(sunP.z, 0.0, 1.0);" << std::endl;
 		ss << "      if (!nlCascade1)" << std::endl;
-		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask0, sunUv, sunDepth, nlShadow.depthBias.x, nlShadow.depthSoft.x, nlShadow.params.y, nlDepthPerTexel);" << std::endl;
+		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask0, sunUv, sunDepth, nlShadow.depthBias.x, nlShadow.depthSoft.x, nlDepthPerTexel);" << std::endl;
 		ss << "      else" << std::endl;
-		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask1, sunUv, sunDepth, nlShadow.depthBias.y, nlShadow.depthSoft.y, nlShadow.params.y, nlDepthPerTexel);" << std::endl;
+		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask1, sunUv, sunDepth, nlShadow.depthBias.y, nlShadow.depthSoft.y, nlDepthPerTexel);" << std::endl;
 		ss << "      if (sunUv.x < 0.0 || sunUv.x > 1.0 || sunUv.y < 0.0 || sunUv.y > 1.0)" << std::endl;
 		ss << "        nlSunShadow = 1.0;" << std::endl;
 		ss << "    }" << std::endl;
@@ -1210,6 +1211,18 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	// fog is enabled for the draw (the interface and additive passes are not).
 	if (fogOrPpl)
 		ss << "  if (nlFogEnabled != 0) fragColor = applyFog(fragColor);" << std::endl;
+
+	// Dev-only mask-comparison view (NLVK_SHADOW_DEBUG_VIEW, params.w): paint
+	// the last lookup on receivers. R = stored depth, G = receiver depth,
+	// B = 0.5 + (receiver - stored) * 8 (blue: shadowed, dark: lit), B = 1 when
+	// no caster was stored in the neighbourhood. Black = did not sample.
+	if (fogOrPpl)
+	{
+		ss << "  if (nlFogEnabled != 0 && nlShadow.params.w > 0.5) {" << std::endl;
+		ss << "    float nlDbgMix = (nlDbgStored <= 0.0) ? 1.0 : clamp(0.5 + (nlDbgDepth - nlDbgStored) * 8.0, 0.0, 0.999);" << std::endl;
+		ss << "    fragColor = vec4(nlDbgStored, nlDbgDepth, nlDbgValid < 0.5 ? 0.0 : nlDbgMix, 1.0);" << std::endl;
+		ss << "  }" << std::endl;
+	}
 
 	ss << "}" << std::endl;
 

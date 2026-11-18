@@ -320,6 +320,20 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// next draw must not inherit that either.
 	const CMatrix	bkupModelMatrix = driver->getModelMatrix();
 	const IDriver::TCullMode	bkupCullMode = driver->getCullMode();
+	// The mask stores gl_FragCoord.z, and the driver's viewport maps NDC depth
+	// through the *engine's* window depth range. The client renders the main
+	// scene with [0, CANOPY_DEPTH_RANGE_START] = [0, 0.95], which would store
+	// 0.95 * box depth, while the receiver compares its own true box depth
+	// (the cascade matrix maps the whole box to [0, 1]). The 5 % difference is
+	// 2-5 m of light-space depth: every caster then compares behind its own
+	// far side and self-shadows (a character loses half its sun), and a thin
+	// casting wall self-shadows as a whole, so an entity *behind* it (which
+	// MAX stores as the farther depth) is painted as a lit, full silhouette.
+	// The mask pass owns its depth convention, so it always writes [0, 1] and
+	// restores the caller's range.
+	float	bkupDepthNear = 0.f, bkupDepthFar = 1.f;
+	driver->getDepthRange(bkupDepthNear, bkupDepthFar);
+	driver->setDepthRange(0.f, 1.f);
 
 	driver->enableFog(false);
 	driver->setColorMask(false, false, false, true);
@@ -361,6 +375,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	bool	bad0 = false;
 	// Reused per-cascade caster set (see the bbox rejection in the cascade loop).
 	std::vector<CTransform*>	cascadeCasters;
+	bool	maskPassOk = true;
 	for (uint i = 0; i < 2; ++i)
 	{
 		// Build the same kind of world -> [0,1]^3 camera the legacy caster
@@ -519,7 +534,17 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		}
 		biasMillimetres[i] = _DepthBias[i] * depthMetres * 1000.f;
 
-		driver->setRenderTarget(_Mask[i], 0, 0, _Size, _Size);
+		// A failed target bind would leave the scene target bound, and the
+		// casters would then be drawn into it as unlit white silhouettes (the
+		// caster material writes depth through the mega program). Abort the
+		// whole mask pass instead and keep the masks published last frame.
+		if (!driver->setRenderTarget(_Mask[i], 0, 0, _Size, _Size))
+		{
+			nlwarning("MODERNSHADOW: cannot bind the %ux%u mask target of cascade %u",
+				_Size, _Size, i);
+			maskPassOk = false;
+			break;
+		}
 		CScissor	scissor;
 		scissor.initFullScreen();
 		driver->setupScissor(scissor);
@@ -538,6 +563,7 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 
 	driver->setRenderTarget(previousTarget);
 	driver->setColorMask(true, true, true, true);
+	driver->setDepthRange(bkupDepthNear, bkupDepthFar);
 	driver->setupViewport(bkupViewport);
 	driver->enableFog(bkupFog);
 	driver->setCullMode(bkupCullMode);
@@ -548,6 +574,11 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// setupDriverCamera() re-set the view matrix, so the model matrix has to be
 	// re-set up after it (setupModelMatrix() must follow the camera).
 	driver->setupModelMatrix(bkupModelMatrix);
+
+	// A half-written pair of cascades must not be published: the driver keeps
+	// last frame's state, which still points at both valid masks.
+	if (!maskPassOk)
+		return false;
 
 	// Publish the masks before the opaque pass samples them. The masks are
 	// already back in SHADER_READ_ONLY layout (setRenderTarget(previous)).

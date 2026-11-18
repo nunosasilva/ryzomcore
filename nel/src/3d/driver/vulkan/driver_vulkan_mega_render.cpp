@@ -36,6 +36,7 @@
 #include "nel/3d/texture_bump.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 using namespace std;
 using namespace NLMISC;
@@ -963,6 +964,12 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	// pass publishes a disabled state.
 	shadowData.params[1] = _ModernShadowState.MaskTexelUv;
 	shadowData.receive = _ModernShadowReceiver ? 1.f : 0.f;
+	// Dev hook (temporary): false-colour the mask comparison on receivers.
+	{
+		static const bool debugView = getenv("NLVK_SHADOW_DEBUG_VIEW") != NULL;
+		if (debugView)
+			shadowData.params[3] = 1.f;
+	}
 	if (_ModernShadowState.Enabled)
 	{
 		shadowData.params[0] = 1.f;
