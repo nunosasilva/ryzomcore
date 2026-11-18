@@ -711,7 +711,9 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 	ss << "  vec4 params;" << std::endl;
 	ss << "  vec4 depthBias;" << std::endl;
 	ss << "  vec4 depthSoft;" << std::endl;
-	ss << "  float receive;        // 0 = this object does not receive the sun shadow" << std::endl;
+	// x = this object receives the sun shadow, y/z = one mask texel of cascade
+	// 0/1 in UV units, w = 1 when a far cascade exists.
+	ss << "  vec4 receiveParams;" << std::endl;
 	ss << "} nlShadow;" << std::endl;
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK0 << ") uniform sampler2D nlShadowMask0;" << std::endl;
 	ss << "layout(set = 0, binding = " << NL_VK_MEGA_BINDING_SHADOW_MASK1 << ") uniform sampler2D nlShadowMask1;" << std::endl;
@@ -955,16 +957,20 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		// cameraWorldPos, which made every fragment fall into the far cascade
 		// whenever the camera block read zero.
 		ss << "  float nlCascadeDepth = abs(ecPos.y / ecPos.w);" << std::endl;
-		ss << "  bool nlCascade1 = nlCascadeDepth >= nlShadow.splits.x;" << std::endl;
+		// A single-cascade quality level sets receiveParams.w = 0: every
+		// fragment then samples cascade 0, and no fragment ever reads the
+		// unbound far mask.
+		ss << "  bool nlCascade1 = nlShadow.receiveParams.w > 0.5 && nlCascadeDepth >= nlShadow.splits.x;" << std::endl;
+		ss << "  float nlMaskTexelUv = nlCascade1 ? nlShadow.receiveParams.z : nlShadow.receiveParams.y;" << std::endl;
 		ss << "  vec4 sunP = vec4(0.0);" << std::endl;
 		// params.x and receive are uniform UBO values, identical for every
 		// fragment of the draw, so the fwidth() below runs in uniform control
 		// flow (GLSL/SPIR-V leave derivatives undefined in a non-uniform
 		// branch). haveWsPos stays a per-fragment test after them: it guards
 		// the *sample*, which needs no derivative.
-		ss << "  if (nlShadow.params.x > 0.5 && nlShadow.receive > 0.5) {" << std::endl;
+		ss << "  if (nlShadow.params.x > 0.5 && nlShadow.receiveParams.x > 0.5) {" << std::endl;
 		ss << "    sunP = nlCascade1 ? (nlShadow.worldToMask1 * vec4(shadowWsPos, 1.0)) : (nlShadow.worldToMask0 * vec4(shadowWsPos, 1.0));" << std::endl;
-		ss << "    float nlDepthPerTexel = fwidth(sunP.z) * nlShadow.params.y / max(max(fwidth(sunP.xy).x, fwidth(sunP.xy).y), 1e-7);" << std::endl;
+		ss << "    float nlDepthPerTexel = fwidth(sunP.z) * nlMaskTexelUv / max(max(fwidth(sunP.xy).x, fwidth(sunP.xy).y), 1e-7);" << std::endl;
 		ss << "    if (haveWsPos) {" << std::endl;
 		ss << "      vec2 sunUv = sunP.xy;" << std::endl;
 		// The masks are render targets: their row 0 is the top of the light
@@ -981,6 +987,16 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask1, sunUv, sunDepth, nlShadow.depthBias.y, nlShadow.depthSoft.y, nlDepthPerTexel);" << std::endl;
 		ss << "      if (sunUv.x < 0.0 || sunUv.x > 1.0 || sunUv.y < 0.0 || sunUv.y > 1.0)" << std::endl;
 		ss << "        nlSunShadow = 1.0;" << std::endl;
+		// A single-cascade level covers one camera-centred box and nothing
+		// else: outside it, the result must be lit. The mask's light-space
+		// box is a superset of that world box (it is the AABB of the rotated
+		// box), so without this test its outer edge would sample clamped
+		// depths and paint a hard shadow band where no cascade exists.
+		ss << "      if (nlShadow.receiveParams.w < 0.5) {" << std::endl;
+		ss << "        vec3 nlBoxDist = abs(shadowWsPos - cameraWorldPos);" << std::endl;
+		ss << "        if (max(max(nlBoxDist.x, nlBoxDist.y), nlBoxDist.z) > nlShadow.splits.x)" << std::endl;
+		ss << "          nlSunShadow = 1.0;" << std::endl;
+		ss << "      }" << std::endl;
 		ss << "    }" << std::endl;
 		ss << "  }" << std::endl;
 		ss << "  if (nlNumPerPixelLights > 0) {" << std::endl;

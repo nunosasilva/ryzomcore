@@ -63,9 +63,10 @@ struct CModernShadowState
 	/// Width of the smoothstep that turns the depth comparison into a soft
 	/// edge, in the same normalized units as DepthBias.
 	float			DepthSoftness[4];
-	/// One mask texel in UV units (1/mask size): the shader offsets its
-	/// penumbra taps by this much.
-	float			MaskTexelUv;
+	/// One mask texel in UV units (1/mask size) per cascade: the shader
+	/// offsets its penumbra taps by this much. The cascades may have
+	/// different sizes (the balanced level's far mask is 1024x1024).
+	float			MaskTexelUv[4];
 	/// How much of the scene's light is direct sun (0..1). The shader uses it
 	/// to scale the darkening so shadowed areas keep the sky/ambient part:
 	/// at dusk, when the sun is dim, a full shadow would otherwise paint
@@ -74,7 +75,7 @@ struct CModernShadowState
 
 
 	CModernShadowState()
-		: Enabled(false), NumCascades(0), MaskTexelUv(0.f), SunStrength(0.f)
+		: Enabled(false), NumCascades(0), SunStrength(0.f)
 	{
 		for (uint i = 0; i < 4; ++i)
 		{
@@ -82,6 +83,7 @@ struct CModernShadowState
 			Mask[i] = NULL;
 			DepthBias[i] = 0.f;
 			DepthSoftness[i] = 0.f;
+			MaskTexelUv[i] = 0.f;
 			memset(WorldToMask[i], 0, sizeof(WorldToMask[i]));
 		}
 	}
@@ -171,9 +173,21 @@ private:
 	bool					_HaveSunStrength;
 	/// True when the masks are 32-bit float (driver::hasHighPrecisionShadowMask).
 	bool					_HighPrecision;
-	uint					_Size;
+	/// Mask texture size of each cascade (the balanced level's far cascade is
+	/// smaller). Cascade 1 is unused at the single-cascade level.
+	uint					_Size[2];
 	bool					_Active;
 	uint					_NumCascades;
+	/// Quality level currently rendered (0..2, see NL_MODERN_SHADOW_LEVELS),
+	/// and a frame counter for the half-rate far cascade. A level change
+	/// recreates the masks before anything is published.
+	uint					_Quality;
+	uint					_FrameCounter;
+	/// True once cascade 1 has been rendered with the current level. On a
+	/// frame that skips the far cascade, the last published matrix, split,
+	/// bias and texture are kept, so the mask content and the matrix the
+	/// receiver uses still agree.
+	bool					_FarValid;
 	/// Driver the masks were last published to. Kept so the destructor can
 	/// disable the published state: the client destroys scenes while the
 	/// driver lives on, and the driver samples the state on every draw.

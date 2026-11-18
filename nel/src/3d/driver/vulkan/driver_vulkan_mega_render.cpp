@@ -959,11 +959,13 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 
 	CShadowUBOData shadowData;
 	memset(&shadowData, 0, sizeof(shadowData));
-	// The mask texel size and the receiver flag are *draw* state, not shadow
+	// The mask texel sizes and the receiver flag are *draw* state, not shadow
 	// *view* state: stage them even while the state is disabled, as the mask
 	// pass publishes a disabled state.
-	shadowData.params[1] = _ModernShadowState.MaskTexelUv;
-	shadowData.receive = _ModernShadowReceiver ? 1.f : 0.f;
+	shadowData.receiveParams[0] = _ModernShadowReceiver ? 1.f : 0.f;
+	shadowData.receiveParams[1] = _ModernShadowState.MaskTexelUv[0];
+	shadowData.receiveParams[2] = _ModernShadowState.MaskTexelUv[1];
+	shadowData.receiveParams[3] = _ModernShadowState.NumCascades > 1 ? 1.f : 0.f;
 	// Dev hook (temporary): false-colour the mask comparison on receivers.
 	{
 		static const bool debugView = getenv("NLVK_SHADOW_DEBUG_VIEW") != NULL;
@@ -981,6 +983,8 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 		shadowData.depthBias[1] = _ModernShadowState.DepthBias[1];
 		shadowData.depthSoft[0] = _ModernShadowState.DepthSoftness[0];
 		shadowData.depthSoft[1] = _ModernShadowState.DepthSoftness[1];
+		// params[1] is unused since the texel sizes moved to receiveParams
+		// (they differ per cascade at the balanced level).
 	}
 
 	const uint32 cameraOffset = allocUniformBlock(&cameraData, sizeof(cameraData));

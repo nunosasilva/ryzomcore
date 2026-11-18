@@ -183,11 +183,13 @@ struct CShadowUBOData
 	/// normalized light-space depth (x = cascade 0, y = cascade 1).
 	float depthBias[4];     // 16
 	float depthSoft[4];     // 16
-	/// 1 when the object being drawn receives the modern sun shadow, 0 for a
-	/// shadow caster (its own caster depth is in the mask, comparing against
-	/// it is what paints the bands on a face, torso or fence beam).
-	float receive;          // 4
-	float pad[3];
+	/// Per-cascade mask texel size and the receiver flag, in one std140 vec4:
+	/// x = 1 when the object being drawn receives the modern sun shadow (0 for
+	/// a shadow caster), y = one mask texel of cascade 0 in UV units, z = the
+	/// same for cascade 1 (the balanced level's far mask is 1024x1024),
+	/// w = 1 when the far cascade exists (0 at the single-cascade level, which
+	/// then samples cascade 0 only and reads lit outside its box).
+	float receiveParams[4]; // 16
 };
 nlctassert(sizeof(CShadowUBOData) == 208);
 
