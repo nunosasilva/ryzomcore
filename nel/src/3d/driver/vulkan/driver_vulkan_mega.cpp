@@ -846,8 +846,14 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "  float ang = nlMaskIgn(gl_FragCoord.xy) * 6.28318530718;" << std::endl;
 		ss << "  vec2 o = vec2(cos(ang), sin(ang)) * (texel * 0.5);" << std::endl;
 		ss << "  vec2 o2 = vec2(-o.y, o.x);" << std::endl;
-		ss << "  float stored = 0.25 * (texture(smap, uv + o).r + texture(smap, uv - o).r" << std::endl;
-		ss << "                       + texture(smap, uv + o2).r + texture(smap, uv - o2).r);" << std::endl;
+		// Second-depth mask: the texel holds the caster's farthest depth, 0
+		// when nothing covers it. The taps are combined with max (not an
+		// average) so an empty neighbour cannot pull the stored depth towards
+		// the sun and re-introduce the early shadow start.
+		ss << "  float stored = max(max(texture(smap, uv + o).r, texture(smap, uv - o).r)," << std::endl;
+		ss << "                     max(texture(smap, uv + o2).r, texture(smap, uv - o2).r));" << std::endl;
+		ss << "  if (stored <= 0.0)" << std::endl;
+		ss << "    return 0.0;" << std::endl;
 		// Receiver tolerance: the floor (bias) covers the mask's quantisation,
 		// and the slope term covers a surface nearly parallel to the light,
 		// where one mask texel spans a large depth range. The slope is measured

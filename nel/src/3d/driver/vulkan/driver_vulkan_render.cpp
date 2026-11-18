@@ -1828,13 +1828,17 @@ void CDriverVulkan::updateMaterialState(CMaterial &mat)
 	// which is what the Vulkan spec recommends for those ops.
 	if (_ModernShadowDepthPass)
 	{
-		// The mask stores a depth, not a coverage: MIN keeps the nearest
-		// caster per texel, so the pass needs neither a depth attachment to
-		// test against nor an ordering of the casters.
+		// The mask is a *second-depth* (farthest) map: MAX keeps the caster's
+		// far side per texel. With the nearest face (MIN) the silhouette was
+		// the sunward face, so every shadow started towards the sun by the
+		// object's thickness; the far side puts the start at the contact. It
+		// also means a caster's own lit face is always in front of the stored
+		// depth, so it cannot self-shadow. The pass needs neither a depth
+		// attachment to test against nor an ordering of the casters.
 		_BlendEnabled = true;
 		_SrcBlend = VK_BLEND_FACTOR_ONE;
 		_DstBlend = VK_BLEND_FACTOR_ONE;
-		_BlendOp = VK_BLEND_OP_MIN;
+		_BlendOp = VK_BLEND_OP_MAX;
 		_DepthTestEnabled = false;
 		_DepthWriteEnabled = false;
 		_FogColorOverrideBlack = false;

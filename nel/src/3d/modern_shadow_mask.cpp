@@ -204,11 +204,10 @@ bool CModernShadowMask::ensureMasks(bool highPrecision)
 	{
 		const uint32 bytes = 4 * _Size * _Size;
 		uint8 *mem = new uint8[bytes];
-		// White = the far end of the light box = no caster = lit, so a mask
-		// that is sampled before its first caster pass cannot darken anything.
-		// (The driver clears a float target to 1.0 as well; the buffer here is
-		// only the CPU-side placeholder, a render target is never uploaded.)
-		memset(mem, 0xFF, bytes);
+		// 0 = the minimum depth = "no caster" = lit, the empty value of the
+		// second-depth (MAX) mask. The buffer here is only the CPU-side
+		// placeholder, a render target is never uploaded.
+		memset(mem, 0, bytes);
 		CTextureMem *tex = new CTextureMem(mem, bytes, true, false, _Size, _Size);
 		tex->setWrapS(ITexture::Clamp);
 		tex->setWrapT(ITexture::Clamp);
@@ -476,10 +475,11 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		CScissor	scissor;
 		scissor.initFullScreen();
 		driver->setupScissor(scissor);
-		// Far (white) = no caster in this texel = lit. The caster draws blend
-		// with a MIN op, so they only ever replace it with a nearer depth.
+		// 0 = no caster in this texel = lit (the empty value of a farthest-depth
+		// mask). The caster draws blend with a MAX op, so they only ever raise
+		// it with a farther depth.
 		driver->setColorMask(true, true, true, true);
-		driver->clear2D(CRGBA(255, 255, 255, 255));
+		driver->clear2D(CRGBA(0, 0, 0, 0));
 
 		driver->setModernShadowDepthPass(true);
 		for (uint c = 0; c < cascadeCasters.size(); ++c)
