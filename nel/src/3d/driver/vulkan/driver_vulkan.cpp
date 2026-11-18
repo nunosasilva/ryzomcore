@@ -1108,7 +1108,14 @@ bool CDriverVulkan::createRenderPass()
 	attachments[1].format = _DepthFormat;
 	attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
 	attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	// STORE, not DONT_CARE: the shadow-map generation (and the water
+	// reflection, bloom) ends this pass in the middle of a frame and the
+	// resumed pass LOADs the depth again. With DONT_CARE the contents are
+	// undefined after the switch, so the landscape, decals and transparents
+	// that follow a per-caster shadow-map bind would depth-test against
+	// whatever the attachment happened to hold. The depth is written back
+	// once per switch, not per draw.
+	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1173,7 +1180,10 @@ bool CDriverVulkan::createRenderPass()
 	attachments[1].format = _DepthFormat;
 	attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
 	attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	// STORE for the same reason as the swapchain pass: the scene can run
+	// through this target (FXAA/bloom) while a shadow-map bind ends and
+	// resumes it mid-frame. _ResumeRenderPass above also keeps STORE.
+	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
