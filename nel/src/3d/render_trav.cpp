@@ -238,7 +238,22 @@ void		CRenderTrav::traverse(UScene::TRenderPart renderPart, bool newRender, bool
 		bool modernShadows = false;
 		if (generateShadows)
 		{
-			modernShadows = _ShadowMapManager.renderModernShadowMasks(Scene);
+			// Every opaque model casts. The per-entity CastShadow registration
+			// leaves objects out (some planks, a building's walls), and an
+			// object that is not in the mask neither blocks a shadow (an NPC's
+			// shadow then lands on the wall behind him) nor stops being
+			// shadowed by its neighbours. The opaque ordering table holds
+			// exactly the opaque models of this pass: no landscape, no
+			// transparent/additive material, no particle, flare or interface
+			// draw, and the sky is a separate scene.
+			_ModernShadowCasterScratch.clear();
+			OrderOpaqueList.begin();
+			while (OrderOpaqueList.get() != NULL)
+			{
+				_ModernShadowCasterScratch.push_back(OrderOpaqueList.get());
+				OrderOpaqueList.next();
+			}
+			modernShadows = _ShadowMapManager.renderModernShadowMasks(Scene, &_ModernShadowCasterScratch);
 			if (modernShadows)
 				_ShadowMapManager.clearAllShadowCasters();
 		}

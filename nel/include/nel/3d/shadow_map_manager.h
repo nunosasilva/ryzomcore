@@ -85,7 +85,13 @@ public:
 	 *	state. Must be called before the opaque pass; returns false when the
 	 *	modern path is disabled (the legacy renderGenerate() then runs).
 	 */
-	bool			renderModernShadowMasks(CScene *scene);
+	/** Render the modern cascaded sun masks for this pass.
+	 *	\param opaqueModels when non-null, the models of the opaque pass: every
+	 *	one of them casts (see CRenderTrav::traverse). Null falls back to the
+	 *	scene's registered shadow caster list.
+	 */
+	bool			renderModernShadowMasks(CScene *scene,
+		const std::vector<CTransform*> *opaqueModels = NULL);
 
 	/** project ShadowMaps onto receivers. NB: renderGenerate() must have been called before.
 	 *	NB: current driver Frustum, ViewMatrix kept their initial state but ModelMatrix not.

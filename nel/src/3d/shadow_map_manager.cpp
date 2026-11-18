@@ -248,7 +248,8 @@ void			CShadowMapManager::addShadowReceiver(CTransform *model)
 }
 
 // ***************************************************************************
-bool			CShadowMapManager::renderModernShadowMasks(CScene *scene)
+bool			CShadowMapManager::renderModernShadowMasks(CScene *scene,
+	const std::vector<CTransform*> *opaqueModels)
 {
 	if( !scene )
 		return false;
@@ -269,15 +270,21 @@ bool			CShadowMapManager::renderModernShadowMasks(CScene *scene)
 	if( !driver || !driver->supportsModernShadows() )
 		return false;
 
-	// The per-view _ShadowCasters list is filled by the clip traversal, which
-	// runs after this early pass. Use the scene's registered caster list
-	// instead; the cascade light frustum clips the casters outside the mask.
+	// Prefer the opaque pass's models: every opaque object casts, whether or
+	// not the game registered it as a shadow caster. The registered list is
+	// the fallback for a pass that has no traversal (the water reflection and
+	// the env-map re-render never reach here, they keep the published masks).
 	std::vector<CTransform*> casters;
-	casters.reserve(64);
-	for(CScene::ItShadowCasterList it= scene->getShadowCasterListBegin();
-		it!= scene->getShadowCasterListEnd(); ++it)
+	if (opaqueModels && !opaqueModels->empty())
+		casters = *opaqueModels;
+	else
 	{
-		casters.push_back(*it);
+		casters.reserve(64);
+		for(CScene::ItShadowCasterList it= scene->getShadowCasterListBegin();
+			it!= scene->getShadowCasterListEnd(); ++it)
+		{
+			casters.push_back(*it);
+		}
 	}
 	if( casters.empty() )
 	{
