@@ -304,6 +304,22 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 
 	_Active = false;
 
+	// A zero-length or non-finite sun direction makes setArbitraryRotJ()
+	// produce a NaN camera, hence a NaN world -> mask matrix. Every bbox then
+	// compares false (all casters pass), and the receiver samples undefined
+	// UVs. Keep the last published masks for a frame instead: no visual change
+	// on a normal frame, no NaN anywhere on the odd one. Checked *before* any
+	// driver state is borrowed below, so an early-out cannot leave the scene
+	// with fog off, colour writes off or the mask's depth range.
+	const CVector	sun = scene->getSunDirection();
+	const CVector	camPos = scene->getRenderTrav().CamPos;
+	if (!(sun.x == sun.x) || !(sun.y == sun.y) || !(sun.z == sun.z) ||
+		sun.sqrnorm() < 1e-6f)
+	{
+		modernShadowDebugLog("skip", "badsun", scene, driver, NULL, 0, _Mask[0]);
+		return _Active;
+	}
+
 	CMaterial	&castMat = _CasterMaterial;
 	ITexture	*previousTarget = driver->getRenderTarget();
 	CViewport	bkupViewport;
@@ -347,21 +363,6 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		CModernShadowState	disabled;
 		disabled.MaskTexelUv = 1.f / (float)_Size;
 		driver->setModernShadowState(disabled);
-	}
-
-	const CVector	sun = scene->getSunDirection();
-	const CVector	camPos = scene->getRenderTrav().CamPos;
-
-	// A zero-length or non-finite sun direction makes setArbitraryRotJ()
-	// produce a NaN camera, hence a NaN world -> mask matrix. Every bbox then
-	// compares false (all casters pass), and the receiver samples undefined
-	// UVs. Keep the last published masks for a frame instead: no visual change
-	// on a normal frame, no NaN anywhere on the odd one.
-	if (!(sun.x == sun.x) || !(sun.y == sun.y) || !(sun.z == sun.z) ||
-		sun.sqrnorm() < 1e-6f)
-	{
-		modernShadowDebugLog("skip", "badsun", scene, driver, NULL, 0, _Mask[0]);
-		return _Active;
 	}
 
 	_NumCascades = 2;
