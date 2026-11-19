@@ -476,6 +476,15 @@ void			CShadowMapManager::renderGenerate(CScene *scene)
 			blurTarget = (i+1)&1;
 			const uint blurSource = i&1;
 			driverForShadowGeneration->setRenderTarget (_BlurTexture[blurTarget], 0, 0, numTotalCol*baseTextureSize, numTotalLine*baseTextureSize);
+			// Some drivers (Vulkan) install the sub-rect passed to
+			// setRenderTarget() as the viewport; GL keeps the caller's. The
+			// blur quads and fillBlackBorder() are in full-atlas coordinates,
+			// so a sub-rect viewport would shrink the cell on every blur pass
+			// (a ~1/4-size silhouette plus a cell-border line). Restore the
+			// full-screen viewport set above. GL already has it, so this is a
+			// no-op there; the Vulkan legacy manager is not reached while the
+			// modern masks are compiled in, but the fix belongs to this code.
+			driverForShadowGeneration->setupViewport(vp);
 
 			// blur
 			applyFakeGaussianBlur(driverForShadowGeneration, numPassSC, numTextW, numTextH, baseTextureSize, blurSource);
