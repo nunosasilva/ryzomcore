@@ -1026,7 +1026,9 @@ public:
 	  *
 	  * Works only if a texture is used as render target.
 	  *
-	  * This method invalidates the vertex buffer, the view and model matrices, the viewport and the frustum.
+	  * The quad-copy implementations invalidate the vertex buffer, the view and
+	  * model matrices, the viewport and the frustum. The Vulkan direct copy
+	  * restores the viewport and leaves those matrices alone.
 	  *
 	  * \param tex					the texture to render into.
 	  * \param offsetx				x position within the destination texture.
@@ -1046,17 +1048,6 @@ public:
 													uint32 height = 0,
 		                                            uint32 mipmapLevel = 0
 													) = 0;
-
-	/** True if copyTargetToTexture() copies the currently bound texture target
-	  * directly, without going through the window target and without a
-	  * setRenderTarget() round trip per copy.
-	  *
-	  * The shadow map manager uses this to copy every blurred caster cell out
-	  * of the atlas it is still rendering into. The GL drivers keep their
-	  * existing per-caster "bind the map, draw a copy quad, return" path (the
-	  * D3D implementation is a stub), so the default is false.
-	  */
-	virtual bool			supportsDirectTargetCopy() const { return false; }
 	// @}
 
 	/// Hack for bloom
@@ -1593,6 +1584,17 @@ public:
 	  */
 	virtual void			enableClipPlane(uint index, bool enable) = 0;
 	virtual void			setClipPlane(uint index, const NLMISC::CPlane &plane) = 0;
+
+	/** True if copyTargetToTexture() copies the currently bound texture target
+	  * directly, without a setRenderTarget() round trip per copy.
+	  *
+	  * Contract: the source is the offscreen target that is bound at call time,
+	  * the copy is exact (same format and orientation as a render-target read),
+	  * and a false return means the driver cannot do it and the caller must use
+	  * its own copy path. Kept at the end of the vtable so a separately built
+	  * driver DLL keeps the existing slots; the default is false (GL, D3D).
+	  */
+	virtual bool			supportsDirectTargetCopy() const { return false; }
 
 protected:
 	friend	class			IVBDrvInfos;
