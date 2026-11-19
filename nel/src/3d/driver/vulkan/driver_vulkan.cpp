@@ -1168,7 +1168,11 @@ bool CDriverVulkan::createRenderPass()
 	// switch, not per draw.
 	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	// Same for the stencil half of the attachment: the resume pass LOADs it
+	// (see _ResumeRenderPass below). The Vulkan pipeline currently disables
+	// the stencil test, but leaving it undefined across a switch would become
+	// a real bug the day it is enabled.
+	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
@@ -1236,7 +1240,8 @@ bool CDriverVulkan::createRenderPass()
 	// target while FXAA/Bloom are on, and a shadow mask switch inside the
 	// scene ends and resumes it.
 	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	// Stencil STORE as well: this pass LOADs it and can be resumed.
+	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	if (!checkVk(vkCreateRenderPass(_Device, &rpci, NULL, &_OffscreenRenderPass), "vkCreateRenderPass(offscreen)"))
