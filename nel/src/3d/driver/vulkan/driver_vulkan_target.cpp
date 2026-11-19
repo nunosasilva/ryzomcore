@@ -39,6 +39,8 @@
 #include "stdvulkan.h"
 #include "driver_vulkan.h"
 
+#include <cstdlib>
+
 using namespace std;
 using namespace NLMISC;
 using namespace NL3D;
@@ -682,6 +684,15 @@ bool CDriverVulkan::getRenderTargetSize(uint32 &width, uint32 &height)
 	// Same contract as the GL3 driver: the sizes are always valid, so callers
 	// can use them even though the return value is false.
 	return false;
+}
+
+bool CDriverVulkan::supportsDirectTargetCopy() const
+{
+	// Test switch: NLVK_NO_DIRECT_TARGET_COPY=1 forces the legacy per-caster
+	// quad copy, so the direct cell copy can be A/B'd on one machine and one
+	// frame. Only read once; the environment does not change at runtime.
+	static const bool disabled = getenv("NLVK_NO_DIRECT_TARGET_COPY") != NULL;
+	return !disabled;
 }
 
 bool CDriverVulkan::copyTargetToTexture(ITexture *tex, uint32 offsetx, uint32 offsety, uint32 x, uint32 y, uint32 width, uint32 height, uint32 mipmapLevel)
