@@ -106,6 +106,28 @@ const uint	NL_MODERN_SHADOW_LEVEL_COUNT =
 /// Depth margin kept around the casters' light-space extent (fraction of the
 /// cascade box), so a caster whose bbox is slightly off is not clipped.
 static const float	NL_MODERN_SHADOW_DEPTH_MARGIN = 0.02f;
+/// Sun-side extension of a cascade's depth range, in cascade-box lengths. The
+/// range is the box plus this much *toward the sun*, and it is a constant of
+/// the level, not a fit to the casters of the frame. Two reasons:
+///
+/// - A directional light projects every caster that lies up-sun of the box
+///   into it, however far away it is: distance along the sun does not matter,
+///   only the footprint (the image plane) does. The range must therefore
+///   contain the up-sun casters whose shadow lands in the box, and the previous
+///   exact fit (rawLo/rawHi over this frame's casters) made it, and with it the
+///   receiver tolerance of the *whole* cascade, jump whenever a large caster
+///   crossed the box edge. A two-centimetre step (A/D tap) could flip the
+///   tolerance of every shadowed fragment, which reads as the whole scene
+///   turning darker or lighter with the camera angle.
+/// - Constant per level also keeps the published depth scale stable across
+///   frames, so the masks do not swim when a caster enters or leaves the set.
+///
+/// The far side needs no extension: a caster beyond the box away from the sun
+/// cannot shadow anything inside it. Half a box length toward the sun covers a
+/// caster roughly 1.5 box lengths up-sun of the camera (the box already
+/// extends one half around it), which at the camp's sun reaches every caster
+/// whose shadow can land in the near cascade.
+static const float	NL_MODERN_SHADOW_DEPTH_SUN_EXTEND = 0.5f;
 /// Caster-side depth offset in metres along the sun (the equivalent of a
 /// polygon offset for the depth mask): the casters are drawn with the light
 /// camera's near plane pushed back by this much, so a caster's stored depth is
@@ -166,6 +188,17 @@ const char	*shadowDebugEnv()
 bool	shadowDebugEnabled()
 {
 	return *shadowDebugEnv() != 0;
+}
+
+/** NLVK_SHADOW_EXACT_RANGE: opt-in reproduction of the pre-2026-11-19 depth
+  *	range (fit to this frame's casters, no up-sun casters). Kept so the A/D
+  *	shade flip can be A/B'd on one machine with one binary; unset in normal
+  *	runs, where the range is the constant box extension.
+  */
+bool	modernShadowExactRange()
+{
+	static const bool	enabled = getenv("NLVK_SHADOW_EXACT_RANGE") != NULL;
+	return enabled;
 }
 
 } // anonymous namespace
@@ -668,54 +701,78 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// -- into the window depth. That is the same naming the legacy path
 		// uses with CShadowMapProjector::_XYZToUWVMatrix.
 		CMatrix	boxToMask = cameraMatrix.inverted();
-		float	rawLo = 0.f, rawHi = 1.f;
 		const float	texelUv = 1.f / (float)_Size[i];
 		const float	minTexels = level.MinTexels[i];
 		// Casters that can contribute to *this* cascade: their light-space bbox
-		// must overlap the box in the image plane and in depth, and it must be
-		// large enough to cover a readable shadow (a sub-texel prop at distance
-		// cannot paint one; the coarser far cascade of the balanced level asks
-		// for two texels). This is the main cost saver: the full set contains
-		// every caster of the scene, most of them far outside the near cascade.
+		// must overlap the box in the image plane and in the cascade's depth
+		// range, and it must be large enough to cover a readable shadow (a
+		// sub-texel prop at distance cannot paint one; the coarser far cascade
+		// of the balanced level asks for two texels). This is the main cost
+		// saver: the full set contains every caster of the scene, most of them
+		// far outside the near cascade.
+		//
+		// The depth range is constant (see NL_MODERN_SHADOW_DEPTH_SUN_EXTEND):
+		// its sun side contains the casters that stand between the sun and the
+		// box and therefore project into it, up to that constant extension; the
+		// far side stops at the box, beyond which nothing can shadow it.
+		const bool	exactRange = modernShadowExactRange();
+		const float	castDepthLo = exactRange ? 0.f : -NL_MODERN_SHADOW_DEPTH_SUN_EXTEND;
+		const float	castDepthHi = 1.f;
 		cascadeCasters.clear();
+		uint	upSunCasters = 0;
+		float	fittedLo = 0.f, fittedHi = 1.f;
 		for (uint c = 0; c < casterBoxes.size(); ++c)
 		{
 			CVector lo, hi;
 			lightSpaceAABBox(boxToMask, casterBoxes[c].Box, lo, hi);
 			if (hi.x < 0.f || lo.x > 1.f || hi.z < 0.f || lo.z > 1.f)
 				continue; // outside the image plane of the box: it draws nothing here
-			if (hi.y < 0.f || lo.y > 1.f)
-				continue; // entirely in front of or behind the box along the sun
+			if (hi.y < castDepthLo || lo.y > castDepthHi)
+				continue; // cannot project into the box along the sun
 			if ((hi.x - lo.x) < texelUv * minTexels && (hi.z - lo.z) < texelUv * minTexels)
 				continue; // smaller than one mask texel: no readable shadow
 			cascadeCasters.push_back(casterBoxes[c].Model);
-			rawLo = std::min(rawLo, lo.y - NL_MODERN_SHADOW_DEPTH_MARGIN);
-			rawHi = std::max(rawHi, hi.y + NL_MODERN_SHADOW_DEPTH_MARGIN);
+			// Fit the survivors, for the diagnostic line and for the opt-in
+			// NLVK_SHADOW_EXACT_RANGE path. The exact path is what used to be
+			// the only behaviour: the published depth scale then depended on
+			// which casters happened to be in the set this frame, so a caster
+			// crossing the box with the camera could change the receiver
+			// tolerance of the whole cascade.
+			fittedLo = std::min(fittedLo, lo.y - NL_MODERN_SHADOW_DEPTH_MARGIN);
+			fittedHi = std::max(fittedHi, hi.y + NL_MODERN_SHADOW_DEPTH_MARGIN);
+			if (hi.y < 0.f)
+				++upSunCasters;
 			if (i == 0)
 				++inBox0;
 		}
-		if (i == 0)
-			casterClassCensus(scene, cascadeCasters);
-		const float	depthLo = rawLo;
-		const float	depthHi = rawHi;
+		float	depthLo = castDepthLo - NL_MODERN_SHADOW_DEPTH_MARGIN;
+		float	depthHi = castDepthHi;
+		if (exactRange)
+		{
+			// Pre-fix behaviour, for the A/B only: fit the range to the casters
+			// of this frame, or keep the box when they all fit inside it.
+			const bool	fits = fittedHi - fittedLo <= 1.f;
+			depthLo = fits ? 0.f : fittedLo;
+			depthHi = fits ? 1.f : fittedHi;
+		}
 		const float	depthSpan = depthHi - depthLo;
 		if (i == 0)
 			span0 = depthSpan;
-		if (depthSpan <= 1.f)
+		if (i == 0)
+			casterClassCensus(scene, cascadeCasters);
+		if (shadowDebugEnabled())
 		{
-			// The common case: nothing sticks out, so the range stays exactly
-			// the box (depthLo == 0, depthSpan == 1) and no fit is applied.
-			cameraMatrix.setRot(iAxis * boxSize.x, jAxis * boxSize.y, kAxis * boxSize.z);
+			nlinfo("MODERNSHADOWCASCADE i=%u casters=%u upsun=%u range=[%.3f %.3f] span=%.3f exact=[%.3f %.3f] span=%.3f%s",
+				i, (unsigned)cascadeCasters.size(), upSunCasters,
+				depthLo, depthHi, depthSpan, fittedLo, fittedHi, fittedHi - fittedLo,
+				exactRange ? " exactrange" : "");
 		}
-		else
-		{
-			// The depth axis is J: put the near plane at depthLo and scale J
-			// by the extended span. J is a column of the camera rotation, so
-			// the world offset is simply jAxis * metres, and the position must
-			// be set directly (translate() would scale the offset again).
-			cameraMatrix.setPos(cameraMatrix.getPos() + jAxis * (depthLo * boxSize.y));
-			cameraMatrix.setRot(iAxis * boxSize.x, jAxis * (boxSize.y * depthSpan), kAxis * boxSize.z);
-		}
+		// The depth axis is J: put the near plane at depthLo and scale J by the
+		// span. J is a column of the camera rotation, so the world offset is
+		// simply jAxis * metres, and the position must be set directly
+		// (translate() would scale the offset again).
+		cameraMatrix.setPos(cameraMatrix.getPos() + jAxis * (depthLo * boxSize.y));
+		cameraMatrix.setRot(iAxis * boxSize.x, jAxis * (boxSize.y * depthSpan), kAxis * boxSize.z);
 
 		// The casters are rendered through a camera whose near plane is pushed
 		// back by NL_MODERN_SHADOW_CASTER_OFFSET, while the receivers keep
@@ -873,9 +930,9 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	{
 		char	extra[240];
 		snprintf(extra, sizeof(extra),
-			"cam=(%.1f %.1f %.1f) inbox=%u span=%.4g bad=%d sunraw=%.3f",
+			"cam=(%.1f %.1f %.1f) c0=%u span=%.4g bad=%d sunraw=%.3f sun=%.3f bias0=%.1fmm",
 			camPos.x, camPos.y, camPos.z, inBox0, span0,
-			bad0 ? 1 : 0, sunShareRaw);
+			bad0 ? 1 : 0, sunShareRaw, state.SunStrength, biasMillimetres[0]);
 		modernShadowDebugLog("publish", "ok", scene, driver, &state,
 			(uint)casters.size(), _Mask[0], extra);
 	}
