@@ -76,7 +76,10 @@ public:
 	void			addShadowReceiver(CTransform *model);
 
 	/** render ShadowMap with ShadowCasters. Generate ShadowMap only (with the AuxDriver).
-	 *	NB: current driver Frustum, ViewMatrix kept their initial state but ModelMatrix not.
+	 *	NB: the caster draws change the driver Frustum, ViewMatrix and ModelMatrix.
+	 *	The GL per-caster destination copy changes them again; the Vulkan direct
+	 *	copy does not. setupDriverCamera() at the end of renderGenerate()
+	 *	restores the scene camera.
 	 */
 	void			renderGenerate(CScene *scene);
 

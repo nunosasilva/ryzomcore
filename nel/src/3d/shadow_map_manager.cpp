@@ -318,6 +318,14 @@ void			CShadowMapManager::renderGenerate(CScene *scene)
 
 	uint	numSC= (uint)_GenerateShadowCasters.size();
 	uint	baseSC= 0;
+
+	// Vulkan copies a cell straight out of the blur atlas that is still
+	// bound. The old per-caster path below binds the destination map and
+	// draws a copy quad, which ends and resumes the main pass once per caster
+	// (and, now that the passes STORE depth, writes the whole window depth
+	// back each time). GL2/GL3 keep the quad path.
+	const bool	directCopy= driverForShadowGeneration->supportsDirectTargetCopy();
+
 	while(numSC>0)
 	{
 		uint	numPassSC= min(maxSCPerPass, numSC);
@@ -414,13 +422,6 @@ void			CShadowMapManager::renderGenerate(CScene *scene)
 
 		// Copy the last blur texture
 		_CopyMaterial.setTexture(0, _BlurTexture[blurTarget]);
-
-		// Vulkan copies a cell straight out of the blur atlas that is still
-		// bound. The old per-caster path below binds the destination map and
-		// draws a copy quad, which ends and resumes the main pass twice for
-		// every caster (and, now that the passes STORE depth, writes the whole
-		// window depth back each time). GL2/GL3 keep the quad path.
-		const bool	directCopy= driverForShadowGeneration->supportsDirectTargetCopy();
 
 		// Store Screen in ShadowMaps
 		// ********
