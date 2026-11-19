@@ -2945,13 +2945,13 @@ void updateClouds()
 	else
 		wc.WF = NULL;
 
-	if (ClientCfg.ManualWeatherSetup && !ForceTrueWeatherValue)
+	if ((ClientCfg.ManualWeatherSetup || ForcedWeatherValue >= 0.f) && !ForceTrueWeatherValue)
 	{
 		// Try to update the clouds quickly for manual test
 		if (CloudScape)
 		{
 			CCloudState cs;
-			WeatherManager.computeCloudState(ManualWeatherValue, CurrSeason, cs, wc.WF);
+			WeatherManager.computeCloudState(ForcedWeatherValue >= 0.f ? ForcedWeatherValue : ManualWeatherValue, CurrSeason, cs, wc.WF);
 			updateCloudScape(cs, wc, WeatherManager.getCurrWeatherState().WindIntensity, LightCycleManager.getLightLevel(), 1.f, InitCloudScape);
 			InitCloudScape = false;
 		}

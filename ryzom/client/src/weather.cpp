@@ -58,17 +58,35 @@ EGSPD::CSeason::TSeason	ManualSeasonValue = EGSPD::CSeason::Spring;
 bool                ForceTrueWeatherValue = false;
 float				DayNightCycleHour = 12.f;
 
+/// Parse a forced value. Empty strings, garbage and trailing text are
+/// rejected (atof would silently turn "typo" into hour 0).
+static bool parseForcedFloat(const char *name, float &value)
+{
+	const char *env = getenv(name);
+	if (!env || !*env)
+		return false;
+	char *end = NULL;
+	const double parsed = strtod(env, &end);
+	if (end == env)
+		return false;
+	while (*end == ' ' || *end == '\t')
+		++end;
+	if (*end != '\0')
+		return false;
+	value = (float)parsed;
+	return true;
+}
+
 /// Development and screenshot hook: RYZOM_FORCE_LIGHT_HOUR=<hour> pins the
 /// light cycle hour at startup, exactly like /setLightHour. Automated visual
 /// tests need the same light in every run, and the chat command cannot be
 /// scripted reliably.
 static float initForcedDayNightCycleHour()
 {
-	const char *env = getenv("RYZOM_FORCE_LIGHT_HOUR");
-	if (!env || !*env)
-		return -1.0f;
-	const float hour = (float)atof(env);
-	return hour >= 0.f ? hour : -1.0f;
+	float hour = -1.0f;
+	if (parseForcedFloat("RYZOM_FORCE_LIGHT_HOUR", hour) && hour >= 0.f)
+		return hour;
+	return -1.0f;
 }
 
 float				ForcedDayNightCycleHour = initForcedDayNightCycleHour();
@@ -76,16 +94,14 @@ float				ForcedDayNightCycleHour = initForcedDayNightCycleHour();
 /// Development and screenshot hook: RYZOM_FORCE_WEATHER=<0..1> selects a
 /// weather setup by hand (the value the R2ED weather slider uses), so a visual
 /// test does not run in rain or at dusk because the server moved on between
-/// runs. Negative or absent keeps the server weather.
+/// runs. The sky and the clouds are both pinned (updateWeatherManager and
+/// updateClouds). Negative or absent keeps the server weather.
 static float initForcedWeatherValue()
 {
-	const char *env = getenv("RYZOM_FORCE_WEATHER");
-	if (!env || !*env)
-		return -1.0f;
-	const float value = (float)atof(env);
-	if (value < 0.f)
-		return -1.0f;
-	return value > 1.f ? 1.f : value;
+	float value = -1.0f;
+	if (parseForcedFloat("RYZOM_FORCE_WEATHER", value) && value >= 0.f)
+		return value > 1.f ? 1.f : value;
+	return -1.0f;
 }
 
 float				ForcedWeatherValue = initForcedWeatherValue();
