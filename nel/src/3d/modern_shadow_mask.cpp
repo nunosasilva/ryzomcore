@@ -38,13 +38,18 @@ using namespace NLMISC;
 namespace NL3D {
 
 // Modern sun-shadow quality levels, selected by the client's ShadowsQuality
-// option (0 = performance, 1 = balanced, 2 = quality, 3 = ultra). Each level
-// names its cascades, their world half size around the camera, their mask
-// texture sizes and how often each cascade is rebuilt. The shader reads the
-// cascade count, the splits and one mask texel size per cascade from the
-// published state, so a level can change the mask sizes freely; only a
-// skipped cascade needs the last published matrix to be kept (see
-// _CascadeValid).
+// option (0 = very low, 1 = low, 2 = medium, 3 = ultra). Each level names its
+// cascades, their world half size around the camera, their mask texture sizes
+// and how often each cascade is rebuilt. The shader reads the cascade count,
+// the splits and one mask texel size per cascade from the published state, so
+// a level can change the mask sizes freely; only a skipped cascade needs the
+// last published matrix to be kept (see _CascadeValid).
+//
+// Every level keeps the same *area* (or a bigger one at the top); a level
+// trades resolution and refresh rate inside that area. Shrinking the boxes
+// (the old 48/70/80 m levels) put the edge of the dynamic shadows inside the
+// play area, which read as a hard boundary in the landscape and made the
+// cheap levels not worth using.
 namespace {
 
 struct CModernShadowLevel
@@ -64,27 +69,34 @@ struct CModernShadowLevel
 
 const CModernShadowLevel	NL_MODERN_SHADOW_LEVELS[] =
 {
-	// 0 = performance: one 48 m cascade, every frame, no far cascade at all.
-	// Outside its box the shader reads lit.
-	{ 1, { 48.f, 0.f, 0.f }, { 2048, 0, 0 }, { 1, 1, 1 }, { 1.f, 0.f, 0.f } },
-	// 1 = balanced: 40 m near at full rate and 70 m far at quarter the texel
-	// count, rebuilt every other frame. The far box is camera-centred, so a
-	// one-frame-old far matrix and mask stay valid at 40-70 m; the far mask's
-	// coarser texels also drop the sub-2-texel casters that cost draws and
-	// paint nothing readable at that distance.
-	{ 2, { 40.f, 70.f, 0.f }, { 2048, 1024, 0 }, { 1, 2, 1 }, { 1.f, 2.f, 0.f } },
-	// 2 = quality: the reference implementation (40 + 80 m, 2048² each,
-	// every frame).
-	{ 2, { 40.f, 80.f, 0.f }, { 2048, 2048, 0 }, { 1, 1, 1 }, { 1.f, 1.f, 0.f } },
-	// 3 = ultra: a third 160 m cascade so the dynamic shadows reach far past
-	// the play area and the baked/dynamic boundary in the landscape is out of
-	// sight. The near two cascades are the quality level's, so the cost of
-	// this level is entirely the far box. The mask's image plane is the AABB
-	// of the camera-centred cube, not the cube itself, so a texel of the far
-	// mask covers ~22 cm (about twice the quality level's far cascade): the
-	// far shadows are soft and coarse, which is what a 160 m boundary needs
-	// them to be.
-	{ 3, { 40.f, 90.f, 160.f }, { 2048, 2048, 2048 }, { 1, 1, 1 }, { 1.f, 1.f, 1.f } },
+	// 0 = very low: the full 40 + 90 + 160 m area with every mask at 1024²,
+	// and both far cascades rebuilt every other frame. The masks are half as
+	// fine as the low level's near cascade, so the shadows are softer and
+	// coarser everywhere, but they cover as much ground as the top level.
+	// The two half-rate cascades are staggered (see the frame counter below),
+	// so a frame builds the near box plus one of the far boxes, never both.
+	{ 3, { 40.f, 90.f, 160.f }, { 1024, 1024, 1024 }, { 1, 2, 2 }, { 1.f, 1.5f, 2.f } },
+	// 1 = low: the near 40 m box at 2048², the mid 90 m box at 1024² every
+	// frame and the far 160 m box at 1024² rebuilt every other frame. The
+	// far box is camera-centred, so a one-frame-old far matrix and mask stay
+	// valid at 90-160 m; the far mask's coarser texels also drop the
+	// sub-2-texel casters that cost draws and paint nothing readable there.
+	{ 3, { 40.f, 90.f, 160.f }, { 2048, 1024, 1024 }, { 1, 1, 2 }, { 1.f, 1.5f, 2.f } },
+	// 2 = medium: a larger area (40 + 110 + 200 m), the near and mid boxes at
+	// 2048² every frame, the far box at 1024² rebuilt every other frame. The
+	// far box is twice as large as the low level's, so its 1024² mask is
+	// coarse and its caster set is big; a 30 Hz refresh is invisible at
+	// 110-200 m and keeps this level between low and ultra.
+	{ 3, { 40.f, 110.f, 200.f }, { 2048, 2048, 1024 }, { 1, 1, 2 }, { 1.f, 1.5f, 2.f } },
+	// 3 = ultra: the reference level with the area pushed out to 40 + 120 +
+	// 240 m, all three masks at 2048² and rebuilt every frame. Dynamic
+	// shadows then reach well past the play area, and the baked/dynamic
+	// boundary in the landscape is far away. The far mask's texel is ~0.32 m
+	// (about 1.5x the old 160 m box's), so the far shadows are soft; the
+	// measured far cost is draw-bound (the extra area holds more casters),
+	// so the 1.5-texel cull is kept permissive to preserve the reference
+	// quality.
+	{ 3, { 40.f, 120.f, 240.f }, { 2048, 2048, 2048 }, { 1, 1, 1 }, { 1.f, 1.5f, 1.5f } },
 };
 const uint	NL_MODERN_SHADOW_LEVEL_COUNT =
 	sizeof(NL_MODERN_SHADOW_LEVELS) / sizeof(NL_MODERN_SHADOW_LEVELS[0]);
@@ -592,12 +604,14 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 	// Period-th frame. On a skipped frame nothing of that cascade is touched:
 	// its last published matrix, split, bias and mask content stay paired,
 	// which is what keeps its shadows from swimming when the camera moves
-	// between two rebuilds.
+	// between two rebuilds. The phase is offset by the cascade index, so two
+	// half-rate cascades do not rebuild on the same frame: the work per frame
+	// stays flat instead of alternating between a heavy and a light frame.
 	++_FrameCounter;
 	bool	rebuildCascade[3] = { true, true, true };
 	for (uint i = 0; i < _NumCascades; ++i)
 		rebuildCascade[i] = level.Period[i] <= 1 || !_CascadeValid[i] ||
-			(_FrameCounter % level.Period[i]) == 0;
+			((_FrameCounter + i) % level.Period[i]) == 0;
 	float	biasMillimetres[3] = { 0.f, 0.f, 0.f };
 	// Debug trace for cascade 0: how many casters project into the box, the
 	// light-space span the range actually used and whether a caster bbox had
