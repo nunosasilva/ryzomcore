@@ -773,6 +773,10 @@ bool CDriverVulkan::copyTargetToTexture(ITexture *tex, uint32 offsetx, uint32 of
 		return false;
 	if (dst == src)
 		return false;
+	// vkCmdCopyImage requires compatible formats. stretchRect() refuses a
+	// mismatch the same way; the caller falls back to its quad copy.
+	if (src->Format != dst->Format)
+		return false;
 
 	if (width == 0)
 		width = src->Width > x ? src->Width - x : 0;

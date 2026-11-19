@@ -1075,7 +1075,9 @@ public:
 	  *
 	  * Works only if a texture is used as render target.
 	  *
-	  * This method invalidates the vertex buffer, the view and model matrices, the viewport and the frustum.
+	  * The quad-copy implementations invalidate the vertex buffer, the view and
+	  * model matrices, the viewport and the frustum. The Vulkan direct copy
+	  * restores the viewport and leaves those matrices alone.
 	  *
 	  * \param tex					the texture to render into.
 	  * \param offsetx				x position within the destination texture.
