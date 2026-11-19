@@ -27,6 +27,8 @@
 #include "nel/3d/dru.h"
 #include "nel/3d/texture_mem.h"
 #include "nel/3d/visual_collision_manager.h"
+
+#include <cstdlib>
 #include "nel/misc/hierarchical_timer.h"
 #include "nel/misc/fast_floor.h"
 
@@ -412,6 +414,16 @@ void			CShadowMapManager::renderGenerate(CScene *scene)
 			blurTarget = (i+1)&1;
 			const uint blurSource = i&1;
 			driverForShadowGeneration->setRenderTarget (_BlurTexture[blurTarget], 0, 0, numTotalCol*baseTextureSize, numTotalLine*baseTextureSize);
+			// Some drivers (Vulkan) install the sub-rect passed to
+			// setRenderTarget() as the viewport; GL keeps the caller's. The
+			// blur quads and fillBlackBorder() are in full-atlas coordinates,
+			// so a sub-rect viewport would shrink the cell on every blur pass
+			// (the mini-shadow bug). Restore the full-screen viewport.
+			// NLVK_NO_SHADOW_BLUR_VIEWPORT_FIX=1 reproduces the old behaviour
+			// for the A/B that diagnosed this.
+			static const bool blurViewportFixDisabled = getenv("NLVK_NO_SHADOW_BLUR_VIEWPORT_FIX") != NULL;
+			if (!blurViewportFixDisabled)
+				driverForShadowGeneration->setupViewport(vp);
 
 			// blur
 			applyFakeGaussianBlur(driverForShadowGeneration, numPassSC, numTextW, numTextH, baseTextureSize, blurSource);
