@@ -1117,7 +1117,10 @@ bool CDriverVulkan::createRenderPass()
 	// once per switch, not per draw.
 	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	// Same for the stencil half of the attachment: the resume pass LOADs it.
+	// The Vulkan pipeline currently disables the stencil test, but keeping it
+	// undefined across a switch would become a real bug the day it is enabled.
+	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
@@ -1184,7 +1187,8 @@ bool CDriverVulkan::createRenderPass()
 	// through this target (FXAA/bloom) while a shadow-map bind ends and
 	// resumes it mid-frame. _ResumeRenderPass above also keeps STORE.
 	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	// Stencil STORE as well, for the same reason as the swapchain pass.
+	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	if (!checkVk(vkCreateRenderPass(_Device, &rpci, NULL, &_OffscreenRenderPass), "vkCreateRenderPass(offscreen)"))
