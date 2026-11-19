@@ -1282,6 +1282,7 @@ private:
 	void					countVertexFormat(uint32 flags, uint32 stride);
 	uint64					_StatsWindowStartNs;
 	uint64					_StatsWindowFrames;
+	uint64					_StatsLastTargetBinds;
 	/// Compile a glsl3vi snippet into the mega VP variants it can select.
 	bool					compileInsertVertexProgram(CVertexProgram *program, IProgram::CSource *insertSrc);
 

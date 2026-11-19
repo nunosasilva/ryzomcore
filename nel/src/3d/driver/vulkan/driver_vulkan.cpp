@@ -412,6 +412,7 @@ CDriverVulkan::CDriverVulkan()
 	forgetDrawState();
 	_StatsWindowStartNs = 0;
 	_StatsWindowFrames = 0;
+	_StatsLastTargetBinds = 0;
 	_GpuTimeQuery = VK_NULL_HANDLE;
 	_GpuTimeEnabled = false;
 	_GpuTimePeriod = 1.0;
@@ -2636,10 +2637,14 @@ bool CDriverVulkan::swapBuffers()
 				_StatsDraws ? (double)_StatsDescriptorSets / (double)_StatsDraws : 0.0,
 				(unsigned long long)(_StatsTextureBinds / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				_StatsDraws ? (double)_StatsTextureBinds / (double)_StatsDraws : 0.0);
-			// Cumulative, like the frame report above: the delta between two
-			// windows is the number of target binds (main <-> offscreen pass
-			// switches) the frames in between needed.
-			nlinfo("Vulkan stats: %llu target binds total", (unsigned long long)_RenderTargetBinds);
+			// Unlike the values above, the bind counter is cumulative, so
+			// report the delta of this window: each bind is a target switch
+			// (main <-> offscreen, water, bloom, FXAA).
+			const uint64 windowTargetBinds = _RenderTargetBinds - _StatsLastTargetBinds;
+			_StatsLastTargetBinds = _RenderTargetBinds;
+			nlinfo("Vulkan stats: %llu target binds/frame (%llu this window)",
+				(unsigned long long)(windowTargetBinds / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
+				(unsigned long long)windowTargetBinds);
 			nlinfo("Vulkan stats: vertex binds %llu/frame, %llu repeated the last one (%.1f%%); mega descriptor writes %llu/frame",
 				(unsigned long long)(_StatsVertexBinds / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				(unsigned long long)(_StatsVertexBindRepeats / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
