@@ -137,13 +137,17 @@ static const float	NL_MODERN_SHADOW_DEPTH_MARGIN = 0.02f;
 static const float	NL_MODERN_SHADOW_DEPTH_SUN_EXTEND = 450.f;
 /// Image-plane cull margin, in world metres. The cascade box is camera-centred,
 /// so a caster whose light-space bbox sits on the box face enters and leaves
-/// the set with a metre of camera movement. At the mats004 spot a 28.5 m mesh
-/// and several 7-8 m trees flipped exactly like that (`lo.x` 1.000 <-> 1.001)
-/// while the camera orbited. Keeping casters up to this far outside the face
-/// makes the set insensitive to that movement; their geometry is clipped at
-/// the box face, so the extra draws are almost free. Two metres covers the
-/// 1-2 m difference of the controlled pair.
-static const float	NL_MODERN_SHADOW_CULL_MARGIN_METRES = 2.f;
+/// the set when the camera moves. At the mats004 spot a 28.5 m mesh and several
+/// 7-8 m trees flipped exactly like that (`lo.x` 1.000 <-> 1.001`) while the
+/// camera orbited, and the user's 500 ms turn still flipped the hill shadow
+/// with a 2 m margin: the third-person camera sits at CameraDistance 9 m and a
+/// half-second camera turn (up to 2 rad/s) sweeps a chord of
+/// 2 * 9 * sin(0.5 rad) = 8.6 m. The margin is therefore derived from the
+/// orbit: the camera distance times the sine of the largest turn the keys can
+/// produce in half a second, rounded up to 9 m. Geometry outside the face is
+/// clipped, so the extra draws are the casters in a shell around the face
+/// (about two dozen per cascade at the mats004 spot, ~1 % of the draws).
+static const float	NL_MODERN_SHADOW_CULL_MARGIN_METRES = 9.f;
 /// Caster-side depth offset in metres along the sun (the equivalent of a
 /// polygon offset for the depth mask): the casters are drawn with the light
 /// camera's near plane pushed back by this much, so a caster's stored depth is
