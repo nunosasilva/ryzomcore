@@ -831,6 +831,8 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		CMatrix	xyzToUvw;
 		xyzToUvw.setRot(CVector::I, CVector::K, CVector::J);
 		_WorldToMask[i] = xyzToUvw * cameraMatrix.inverted();
+		// The receiver's split; the shader blends over +-3 m around it (see
+		// cascadeParams.y), so the hard line is not visible as a shadow pop.
 		_Split[i] = level.Radius[i];
 		// Receiver tolerance and soft-edge width, both in metres converted to
 		// the mask's normalized light-space depth. The texel size is the one of

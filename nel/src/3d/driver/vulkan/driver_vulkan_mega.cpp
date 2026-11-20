@@ -877,6 +877,24 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "  return dot(cmp, vec4(0.25));" << std::endl;
 		ss << "}" << std::endl;
 		ss << std::endl;
+		// Coverage of one cascade at a world position: the mask matrix, texel
+		// size, tolerance and softness of the requested cascade, and the
+		// out-of-box UV test. Used by the cascade blend band below.
+		ss << "float nlShadowCoverage(int idx, vec3 wsPos) {" << std::endl;
+		ss << "  vec4 p = idx == 2 ? (nlShadow.worldToMask2 * vec4(wsPos, 1.0)) : (idx == 1 ? (nlShadow.worldToMask1 * vec4(wsPos, 1.0)) : (nlShadow.worldToMask0 * vec4(wsPos, 1.0)));" << std::endl;
+		ss << "  float texel = idx == 2 ? nlShadow.receiveParams.w : (idx == 1 ? nlShadow.receiveParams.z : nlShadow.receiveParams.y);" << std::endl;
+		ss << "  float bias  = idx == 2 ? nlShadow.depthBias.z : (idx == 1 ? nlShadow.depthBias.y : nlShadow.depthBias.x);" << std::endl;
+		ss << "  float soft  = idx == 2 ? nlShadow.depthSoft.z : (idx == 1 ? nlShadow.depthSoft.y : nlShadow.depthSoft.x);" << std::endl;
+		ss << "  float dpt = fwidth(p.z) * texel / max(max(fwidth(p.xy).x, fwidth(p.xy).y), 1e-7);" << std::endl;
+		ss << "  vec2 uv = p.xy;" << std::endl;
+		ss << "  uv.y = 1.0 - uv.y;" << std::endl;
+		ss << "  float depth = clamp(p.z, 0.0, 1.0);" << std::endl;
+		ss << "  float cov = idx == 2 ? sampleSunMask(nlShadowMask2, uv, depth, bias, soft, dpt) : (idx == 1 ? sampleSunMask(nlShadowMask1, uv, depth, bias, soft, dpt) : sampleSunMask(nlShadowMask0, uv, depth, bias, soft, dpt));" << std::endl;
+		ss << "  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)" << std::endl;
+		ss << "    cov = 0.0;" << std::endl;
+		ss << "  return cov;" << std::endl;
+		ss << "}" << std::endl;
+		ss << std::endl;
 		ss << "void computeLightPP(int lightMode, vec3 dirOrPos, vec4 colDiff, vec4 colSpec," << std::endl;
 		ss << "                    float shininess, float constAttn, float linAttn, float quadAttn," << std::endl;
 		ss << "                    vec3 spotDir, float spotCutoff, float spotExp," << std::endl;
@@ -967,34 +985,35 @@ void megavkPPGenerate(std::string &result, bool fogOrPpl, bool cube, bool specul
 		ss << "  float nlCascadeCount = nlShadow.cascadeParams.x;" << std::endl;
 		ss << "  bool nlCascade1 = nlCascadeCount > 1.5 && nlCascadeDepth >= nlShadow.splits.x;" << std::endl;
 		ss << "  bool nlCascade2 = nlCascadeCount > 2.5 && nlCascadeDepth >= nlShadow.splits.y;" << std::endl;
-		ss << "  float nlMaskTexelUv = nlCascade2 ? nlShadow.receiveParams.w : (nlCascade1 ? nlShadow.receiveParams.z : nlShadow.receiveParams.y);" << std::endl;
-		ss << "  vec4 sunP = vec4(0.0);" << std::endl;
+		// Blended selection. A hard switch at a split makes a hill-sized
+		// shadow appear or disappear when the receiver crosses the line (the
+		// measured mats004/mats005 report: the two cameras were a metre or two
+		// apart). Inside a band of +-cascadeParams.y around a split the two
+		// cascades of the pair are both sampled and their *coverage* is mixed
+		// with a smooth weight, so no fragment flips between "lit" and
+		// "shadowed" in one frame and the band never double-darkens (a
+		// weighted average, not a sum).
+		ss << "  float nlBlendBand = nlShadow.cascadeParams.y;" << std::endl;
+		ss << "  bool nlBlend0 = nlCascadeCount > 1.5 && nlBlendBand > 0.0 && abs(nlCascadeDepth - nlShadow.splits.x) < nlBlendBand;" << std::endl;
+		ss << "  bool nlBlend1 = nlCascadeCount > 2.5 && nlBlendBand > 0.0 && abs(nlCascadeDepth - nlShadow.splits.y) < nlBlendBand;" << std::endl;
 		// params.x and receive are uniform UBO values, identical for every
-		// fragment of the draw, so the fwidth() below runs in uniform control
-		// flow (GLSL/SPIR-V leave derivatives undefined in a non-uniform
-		// branch). haveWsPos stays a per-fragment test after them: it guards
-		// the *sample*, which needs no derivative.
+		// fragment of the draw, so the fwidth() calls in nlShadowCoverage run
+		// in uniform control flow (GLSL/SPIR-V leave derivatives undefined in
+		// a non-uniform branch). haveWsPos stays a per-fragment test after
+		// them: it guards the *sample*, which needs no derivative.
 		ss << "  if (nlShadow.params.x > 0.5 && nlShadow.receiveParams.x > 0.5) {" << std::endl;
-		ss << "    sunP = nlCascade2 ? (nlShadow.worldToMask2 * vec4(shadowWsPos, 1.0)) : (nlCascade1 ? (nlShadow.worldToMask1 * vec4(shadowWsPos, 1.0)) : (nlShadow.worldToMask0 * vec4(shadowWsPos, 1.0)));" << std::endl;
-		ss << "    float nlDepthPerTexel = fwidth(sunP.z) * nlMaskTexelUv / max(max(fwidth(sunP.xy).x, fwidth(sunP.xy).y), 1e-7);" << std::endl;
 		ss << "    if (haveWsPos) {" << std::endl;
-		ss << "      vec2 sunUv = sunP.xy;" << std::endl;
-		// The masks are render targets: their row 0 is the top of the light
-		// camera image, while the cascade matrix maps the bottom of the light
-		// box to v = 0.
-		ss << "      sunUv.y = 1.0 - sunUv.y;" << std::endl;
-		// The mask range is the whole cascade box, so a receiver inside the box
-		// always maps to [0,1]. clamp() keeps the edge texels from testing as
-		// "behind" the empty clear value (0 = lit) through float error.
-		ss << "      float sunDepth = clamp(sunP.z, 0.0, 1.0);" << std::endl;
-		ss << "      if (nlCascade2)" << std::endl;
-		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask2, sunUv, sunDepth, nlShadow.depthBias.z, nlShadow.depthSoft.z, nlDepthPerTexel);" << std::endl;
-		ss << "      else if (nlCascade1)" << std::endl;
-		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask1, sunUv, sunDepth, nlShadow.depthBias.y, nlShadow.depthSoft.y, nlDepthPerTexel);" << std::endl;
-		ss << "      else" << std::endl;
-		ss << "        nlSunShadow = 1.0 - sampleSunMask(nlShadowMask0, sunUv, sunDepth, nlShadow.depthBias.x, nlShadow.depthSoft.x, nlDepthPerTexel);" << std::endl;
-		ss << "      if (sunUv.x < 0.0 || sunUv.x > 1.0 || sunUv.y < 0.0 || sunUv.y > 1.0)" << std::endl;
-		ss << "        nlSunShadow = 1.0;" << std::endl;
+		ss << "      float cov;" << std::endl;
+		ss << "      if (nlBlend0) {" << std::endl;
+		ss << "        float t = smoothstep(nlShadow.splits.x - nlBlendBand, nlShadow.splits.x + nlBlendBand, nlCascadeDepth);" << std::endl;
+		ss << "        cov = mix(nlShadowCoverage(0, shadowWsPos), nlShadowCoverage(1, shadowWsPos), t);" << std::endl;
+		ss << "      } else if (nlBlend1) {" << std::endl;
+		ss << "        float t = smoothstep(nlShadow.splits.y - nlBlendBand, nlShadow.splits.y + nlBlendBand, nlCascadeDepth);" << std::endl;
+		ss << "        cov = mix(nlShadowCoverage(1, shadowWsPos), nlShadowCoverage(2, shadowWsPos), t);" << std::endl;
+		ss << "      } else {" << std::endl;
+		ss << "        cov = nlShadowCoverage(nlCascade2 ? 2 : (nlCascade1 ? 1 : 0), shadowWsPos);" << std::endl;
+		ss << "      }" << std::endl;
+		ss << "      nlSunShadow = 1.0 - cov;" << std::endl;
 		// A single-cascade level covers one camera-centred box and nothing
 		// else: outside it, the result must be lit. The mask's light-space
 		// box is a superset of that world box (it is the AABB of the rotated

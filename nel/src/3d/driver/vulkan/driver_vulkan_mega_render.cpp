@@ -967,6 +967,12 @@ bool CDriverVulkan::bindMegaDescriptors(VkCommandBuffer cmd, CVertexBuffer &vb)
 	shadowData.receiveParams[2] = _ModernShadowState.MaskTexelUv[1];
 	shadowData.receiveParams[3] = _ModernShadowState.MaskTexelUv[2];
 	shadowData.cascadeParams[0] = (float)_ModernShadowState.NumCascades;
+	// Cascade blend half-width in metres: a receiver within this distance of a
+	// split samples both cascades of the pair and their coverage is mixed, so
+	// a hill-sized shadow cannot appear or disappear when it crosses the line.
+	// 3 m is wider than the 1-2 m camera difference of the controlled pair and
+	// narrower than the split spacing at every level.
+	shadowData.cascadeParams[1] = 3.f;
 	// Dev hook (temporary): false-colour the mask comparison on receivers.
 	{
 		static const bool debugView = getenv("NLVK_SHADOW_DEBUG_VIEW") != NULL;
