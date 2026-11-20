@@ -16,6 +16,8 @@
 
 #include "std3d.h"
 
+#include <cstdlib>
+
 #include "nel/3d/mesh_multi_lod_instance.h"
 #include "nel/3d/mesh_multi_lod.h"
 #include "nel/3d/coarse_mesh_manager.h"
@@ -300,15 +302,30 @@ void		CMeshMultiLodInstance::renderModernShadowCaster(IDriver *driver, CMaterial
 	// per caster.
 	driver->setupModelMatrix(getWorldMatrix());
 
-	// Exactly the slots CMeshMultiLod::render() draws this frame: Lod0, plus
-	// Lod1 while a LOD cross-fade is running. The mask has no alpha, but both
-	// meshes are on screen during the fade, so both are occluders. A coarse
-	// slot's MeshGeom holds the same triangles the coarse batch draws (see
-	// CMeshMultiLod::compileCoarseMeshes), just rendered through its normal
-	// pass list here.
-	renderSlotModernShadowCaster(driver, Lod0, castMat);
-	if (Lod1 != 0xffffffff)
-		renderSlotModernShadowCaster(driver, Lod1, castMat);
+	// The mask draws slot 0, the finest LOD, *not* the slot the visible pass
+	// picked. Lod0/Lod1 come from the load-balancing budget, which is per
+	// frame and per view: a camera turn changes the visible set, hence the
+	// budget, hence the slot, and a coarser slot can have a different
+	// silhouette. In the mask that reads as the shadow of a big caster
+	// changing shape or vanishing between two frames of a turn (the mats004/
+	// mats005 report). The depth mask has no per-pixel cost of its own beyond
+	// the triangles it draws, and a stable silhouette is worth more than the
+	// budget: slot 0 never depends on the view.
+	//
+	// NLVK_SHADOW_MASK_LOD_VISIBLE=1 restores the old behaviour (the visible
+	// Lod0, plus Lod1 during a cross-fade) so the two can be A/B'd on one
+	// machine; inert without the env var.
+	{
+		static const bool	visibleLod = getenv("NLVK_SHADOW_MASK_LOD_VISIBLE") != NULL;
+		if (visibleLod)
+		{
+			renderSlotModernShadowCaster(driver, Lod0, castMat);
+			if (Lod1 != 0xffffffff)
+				renderSlotModernShadowCaster(driver, Lod1, castMat);
+		}
+		else
+			renderSlotModernShadowCaster(driver, 0, castMat);
+	}
 }
 
 
