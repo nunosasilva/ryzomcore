@@ -135,6 +135,15 @@ static const float	NL_MODERN_SHADOW_DEPTH_MARGIN = 0.02f;
 /// with margin for a taller caster; the debug line's `cut`/`cutat` fields show
 /// whether anything is still dropped beyond it.
 static const float	NL_MODERN_SHADOW_DEPTH_SUN_EXTEND = 450.f;
+/// Image-plane cull margin, in world metres. The cascade box is camera-centred,
+/// so a caster whose light-space bbox sits on the box face enters and leaves
+/// the set with a metre of camera movement. At the mats004 spot a 28.5 m mesh
+/// and several 7-8 m trees flipped exactly like that (`lo.x` 1.000 <-> 1.001)
+/// while the camera orbited. Keeping casters up to this far outside the face
+/// makes the set insensitive to that movement; their geometry is clipped at
+/// the box face, so the extra draws are almost free. Two metres covers the
+/// 1-2 m difference of the controlled pair.
+static const float	NL_MODERN_SHADOW_CULL_MARGIN_METRES = 2.f;
 /// Caster-side depth offset in metres along the sun (the equivalent of a
 /// polygon offset for the depth mask): the casters are drawn with the light
 /// camera's near plane pushed back by this much, so a caster's stored depth is
@@ -727,6 +736,10 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// move with the cascade size or the sun elevation.
 		const float	sunExtendBox = NL_MODERN_SHADOW_DEPTH_SUN_EXTEND / boxSize.y;
 		const float	castDepthLo = exactRange ? 0.f : -sunExtendBox;
+		// Image-plane cull margin in box units (the plane spans boxSize.x/z
+		// world metres).
+		const float	cullMargin = NL_MODERN_SHADOW_CULL_MARGIN_METRES /
+			std::max(1.f, std::max(boxSize.x, boxSize.z));
 		const float	castDepthHi = 1.f;
 		cascadeCasters.clear();
 		uint	upSunCasters = 0;
@@ -737,7 +750,8 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		{
 			CVector lo, hi;
 			lightSpaceAABBox(boxToMask, casterBoxes[c].Box, lo, hi);
-			if (hi.x < 0.f || lo.x > 1.f || hi.z < 0.f || lo.z > 1.f)
+			if (hi.x < -cullMargin || lo.x > 1.f + cullMargin ||
+				hi.z < -cullMargin || lo.z > 1.f + cullMargin)
 				continue; // outside the image plane of the box: it draws nothing here
 			if (lo.y > castDepthHi)
 				continue; // beyond the box away from the sun: cannot shadow it
