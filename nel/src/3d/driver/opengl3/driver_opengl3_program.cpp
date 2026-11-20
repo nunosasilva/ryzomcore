@@ -1875,6 +1875,13 @@ void CDriverGL3::setupUniforms(TProgram program)
 			else
 				for (uint i = 0; i < IDRV_MAT_MAXTEXTURES; ++i)
 					uvr[i] = (sint32)i;
+			// Same LightMap override as the object UBO path: lightmap UV1,
+			// diffuse UV0. Non-LightMap draws keep the vertex buffer routing.
+			if (_LightMapUBOOverride.Active)
+			{
+				uvr[0] = 0;
+				uvr[1] = 1;
+			}
 			nglProgramUniform4iv(progId, uvrIdx, 1, uvr);
 		}
 	}
