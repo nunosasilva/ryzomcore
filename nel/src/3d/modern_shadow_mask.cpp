@@ -106,28 +106,35 @@ const uint	NL_MODERN_SHADOW_LEVEL_COUNT =
 /// Depth margin kept around the casters' light-space extent (fraction of the
 /// cascade box), so a caster whose bbox is slightly off is not clipped.
 static const float	NL_MODERN_SHADOW_DEPTH_MARGIN = 0.02f;
-/// Sun-side extension of a cascade's depth range, in cascade-box lengths. The
-/// range is the box plus this much *toward the sun*, and it is a constant of
-/// the level, not a fit to the casters of the frame. Two reasons:
+/// Sun-side extension of a cascade's depth range, in metres along the sun.
+/// The range is the box plus this much *toward the sun*, and it is a constant
+/// of the engine, not a fit to the casters of the frame:
 ///
 /// - A directional light projects every caster that lies up-sun of the box
 ///   into it, however far away it is: distance along the sun does not matter,
-///   only the footprint (the image plane) does. The range must therefore
-///   contain the up-sun casters whose shadow lands in the box, and the previous
-///   exact fit (rawLo/rawHi over this frame's casters) made it, and with it the
-///   receiver tolerance of the *whole* cascade, jump whenever a large caster
-///   crossed the box edge. A two-centimetre step (A/D tap) could flip the
-///   tolerance of every shadowed fragment, which reads as the whole scene
-///   turning darker or lighter with the camera angle.
-/// - Constant per level also keeps the published depth scale stable across
-///   frames, so the masks do not swim when a caster enters or leaves the set.
+///   only the footprint (the image plane) does. The client's sun direction is
+///   the continent's day setup and does not change with the hour (the light
+///   cycle reports _LightLevel 0 all day: only the colours follow the clock),
+///   so its elevation is ~12 degrees and every shadow is long at every hour.
+///   At the mats004 spot the casters whose shadows reach the box sat 171 m,
+///   335 m and 387 m up-sun in the three cascades (light-space depth -1.36,
+///   -0.88 and -0.51 box units). The previous half-box bound (44-250 m) culled
+///   them, and since the box is camera centred, a few metres of walking moved
+///   the bound across a caster and its big shadow popped in or out.
+/// - The previous behaviour, an exact fit to this frame's casters
+///   (rawLo/rawHi), made the published depth scale and the normalised receiver
+///   tolerance of the *whole* cascade depend on which casters happened to be in
+///   the set: a 50 ms A tap could flip every shadowed fragment. A constant is
+///   stable by construction; making it a world distance rather than a box
+///   fraction keeps it independent of the sun elevation too.
 ///
 /// The far side needs no extension: a caster beyond the box away from the sun
-/// cannot shadow anything inside it. Half a box length toward the sun covers a
-/// caster roughly 1.5 box lengths up-sun of the camera (the box already
-/// extends one half around it), which at the camp's sun reaches every caster
-/// whose shadow can land in the near cascade.
-static const float	NL_MODERN_SHADOW_DEPTH_SUN_EXTEND = 0.5f;
+/// cannot shadow anything inside it. The bound is also the cull: a caster
+/// farther up-sun than this is not drawn (it would be clipped by the range
+/// anyway). 450 m covers the 387 m the far cascade of the mats004 spot needs,
+/// with margin for a taller caster; the debug line's `cut`/`cutat` fields show
+/// whether anything is still dropped beyond it.
+static const float	NL_MODERN_SHADOW_DEPTH_SUN_EXTEND = 450.f;
 /// Caster-side depth offset in metres along the sun (the equivalent of a
 /// polygon offset for the depth mask): the casters are drawn with the light
 /// camera's near plane pushed back by this much, so a caster's stored depth is
@@ -716,10 +723,15 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 		// box and therefore project into it, up to that constant extension; the
 		// far side stops at the box, beyond which nothing can shadow it.
 		const bool	exactRange = modernShadowExactRange();
-		const float	castDepthLo = exactRange ? 0.f : -NL_MODERN_SHADOW_DEPTH_SUN_EXTEND;
+		// The sun-side bound in box units: a world distance, so it does not
+		// move with the cascade size or the sun elevation.
+		const float	sunExtendBox = NL_MODERN_SHADOW_DEPTH_SUN_EXTEND / boxSize.y;
+		const float	castDepthLo = exactRange ? 0.f : -sunExtendBox;
 		const float	castDepthHi = 1.f;
 		cascadeCasters.clear();
 		uint	upSunCasters = 0;
+		uint	beyondUpSun = 0;
+		float	farthestCut = 0.f;
 		float	fittedLo = 0.f, fittedHi = 1.f;
 		for (uint c = 0; c < casterBoxes.size(); ++c)
 		{
@@ -727,8 +739,16 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 			lightSpaceAABBox(boxToMask, casterBoxes[c].Box, lo, hi);
 			if (hi.x < 0.f || lo.x > 1.f || hi.z < 0.f || lo.z > 1.f)
 				continue; // outside the image plane of the box: it draws nothing here
-			if (hi.y < castDepthLo || lo.y > castDepthHi)
-				continue; // cannot project into the box along the sun
+			if (lo.y > castDepthHi)
+				continue; // beyond the box away from the sun: cannot shadow it
+			if (hi.y < castDepthLo)
+			{
+				// Up-sun of the constant bound: dropped by the range, counted
+				// so the debug line shows how much the bound leaves out.
+				++beyondUpSun;
+				farthestCut = std::min(farthestCut, lo.y);
+				continue;
+			}
 			if ((hi.x - lo.x) < texelUv * minTexels && (hi.z - lo.z) < texelUv * minTexels)
 				continue; // smaller than one mask texel: no readable shadow
 			cascadeCasters.push_back(casterBoxes[c].Model);
@@ -762,8 +782,8 @@ bool CModernShadowMask::render(CScene *scene, const std::vector<CTransform*> &ca
 			casterClassCensus(scene, cascadeCasters);
 		if (shadowDebugEnabled())
 		{
-			nlinfo("MODERNSHADOWCASCADE i=%u casters=%u upsun=%u range=[%.3f %.3f] span=%.3f exact=[%.3f %.3f] span=%.3f%s",
-				i, (unsigned)cascadeCasters.size(), upSunCasters,
+			nlinfo("MODERNSHADOWCASCADE i=%u casters=%u upsun=%u cut=%u cutat=%.3f range=[%.3f %.3f] span=%.3f exact=[%.3f %.3f] span=%.3f%s",
+				i, (unsigned)cascadeCasters.size(), upSunCasters, beyondUpSun, farthestCut,
 				depthLo, depthHi, depthSpan, fittedLo, fittedHi, fittedHi - fittedLo,
 				exactRange ? " exactrange" : "");
 		}
