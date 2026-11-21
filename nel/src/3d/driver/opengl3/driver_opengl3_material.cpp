@@ -1173,8 +1173,10 @@ void CDriverGL3::endLightMapMultiPass()
 	CMaterialDrvInfosGL3 *matDrv = getMatDrv(mat);
 	matDrv->MaterialUBOCurrent = 0;
 
-	// Clear lightmap override state
+	// Clear lightmap override state and force the next draw to rebuild the
+	// object UBO from its own vertex-buffer routing.
 	_LightMapUBOOverride.Active = false;
+	_LastObjectUBOValid = false;
 	if (_FogColorOverrideBlack)
 	{
 		_FogColorOverrideBlack = false;

@@ -551,6 +551,15 @@ void CDriverGL3::uploadObjectUBO()
 			data.uvRouting[i] = (sint32)i;
 	}
 
+	// LightMap draws sample the lightmap with UV1 and the diffuse texture with
+	// UV0, like the GL2 driver. The vertex buffer's generic routing can map the
+	// lightmap stage to UV0, which bleeds the lightmap atlas over the surface.
+	if (_LightMapUBOOverride.Active)
+	{
+		data.uvRouting[0] = 0;
+		data.uvRouting[1] = 1;
+	}
+
 	// TexGen modes
 	for (int i = 0; i < IDRV_MAT_MAXTEXTURES; ++i)
 		data.texGenMode[i] = m_VPBuiltinCurrent.TexGenMode[i];

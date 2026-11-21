@@ -633,6 +633,16 @@ void CDriverVulkan::stageMegaObjectUBO(CVertexBuffer &vb, CObjectUBOData &data)
 		data.uvRouting[i] = (sint32)route;
 	}
 
+	// LightMap draws with real lightmaps sample the lightmap with UV1 and the
+	// diffuse texture with UV0, like the GL2 driver. Restrict this to materials
+	// that actually have a lightmap: the LightMap shader is also used by
+	// unlightmapped character/NPC materials, which must keep their own routing.
+	if (isLightMapDraw() && _NLightMaps > 0)
+	{
+		data.uvRouting[0] = 0;
+		data.uvRouting[1] = 1;
+	}
+
 	// Texture coordinate generation, same mode values as the GL3 driver. The
 	// shadow receiver is the main user: it draws terrain triangles with no UVs
 	// and projects the shadow map through the stage's user texture matrix.
