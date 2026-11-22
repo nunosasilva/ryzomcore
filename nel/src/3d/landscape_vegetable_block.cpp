@@ -46,12 +46,14 @@ public:
 
 	CLVBSqrDistLUT()
 	{
-		// 0, 10, 20, 30, 40, 50
-		for(uint i=0;i<NL3D_VEGETABLE_BLOCK_NUMDIST+1;i++)
+		// 0, 20, 40, 60, 80, and the far edge (100 by default): every authored
+		// distance set now covers a 20m band.
+		for(uint i=0;i<NL3D_VEGETABLE_BLOCK_NUMDIST;i++)
 		{
 			Array[i]= i*NL3D_VEGETABLE_BLOCK_ELTDIST;
 			Array[i]= sqr(Array[i]);
 		}
+		Array[NL3D_VEGETABLE_BLOCK_NUMDIST]= sqr(NL3D_VEGETABLE_BLOCK_FARDIST);
 	}
 
 };
@@ -173,6 +175,10 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 	// Change of distance type??
 	if(newDistType!=_CurDistType)
 	{
+		static	const	bool	vegStateLog= getenv("RYZOM_VEG_STATE")!=NULL;
+		if(vegStateLog)
+			nlinfo("VEGSTATE: block (%.1f %.1f) dist %.1f cur %u -> %u", _Center.x, _Center.y, sqrtf(sqrDist), _CurDistType, newDistType);
+
 		// Erase or create IGs.
 		if(newDistType>_CurDistType)
 		{
@@ -184,6 +190,8 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 				{
 					if(_VegetableIG[j][i])
 					{
+						if(vegStateLog)
+							nlinfo("VEGSTATE:   delete d%u tile %u", i, j);
 						vegeManager->deleteIg(_VegetableIG[j][i]);
 						_VegetableIG[j][i] = nullptr;
 					}
@@ -202,6 +210,8 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 			// create new Igs, for all tiles
 			for(uint i=newDistType; i<_CurDistType; i++)
 			{
+				if(vegStateLog)
+					nlinfo("VEGSTATE:   create d%u", i);
 				createVegetableIGForDistType(i, vegeManager, ctx);
 			}
 
