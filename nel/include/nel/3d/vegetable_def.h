@@ -37,9 +37,16 @@ namespace NL3D
 #define	NL3D_VEGETABLE_VP_LUT_SIZE			64
 
 
-/// For Landscape Vegetable: Distance Types are: 10m, 20m, 30m, 40m, 50m.
+/// For Landscape Vegetable: Distance Types are the five bands
+/// 0-ELTDIST, ELTDIST-2*ELTDIST, ... 4*ELTDIST-FARDIST.
 #define	NL3D_VEGETABLE_BLOCK_NUMDIST	5
-#define	NL3D_VEGETABLE_BLOCK_ELTDIST	10.0f
+/// Width of one authored species-set band. 20m stretches all five sets over
+/// 0..100m; the last band ends at NL3D_VEGETABLE_BLOCK_FARDIST.
+#define	NL3D_VEGETABLE_BLOCK_ELTDIST	20.0f
+/// Far edge of the last distance bucket (== NUMDIST * ELTDIST). Only the last
+/// bucket's outer edge uses it; keeping NUMDIST at 5 preserves the .vegetset
+/// file format.
+#define	NL3D_VEGETABLE_BLOCK_FARDIST	(NL3D_VEGETABLE_BLOCK_NUMDIST * NL3D_VEGETABLE_BLOCK_ELTDIST)
 /// Blend apperance transition
 #define	NL3D_VEGETABLE_BLOCK_BLEND_TRANSITION_DIST	10.0f
 

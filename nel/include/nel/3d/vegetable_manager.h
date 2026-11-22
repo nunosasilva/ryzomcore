@@ -48,8 +48,33 @@ class	CVegetableLightEx;
 // ***************************************************************************
 // By default there is 20 layers.
 #define	NL3D_VEGETABLE_DEFAULT_NUM_BLEND_LAYER	20
-// default distance is 60 meters.
-#define	NL3D_VEGETABLE_DEFAULT_DIST_MAX			60.f
+// Default distance of the farthest blend layer. Must cover the farthest vegetable
+// bucket (NL3D_VEGETABLE_BLOCK_FARDIST) so that the far ZSort ring is layered and
+// fogged like the terrain, not left in front of the fog.
+#define	NL3D_VEGETABLE_DEFAULT_DIST_MAX			120.f
+
+// Far-layer tuning. Each authored distance set now covers a 20m band
+// (ELTDIST), so its generated annulus is 4x today's area: thin it to keep the
+// per-set instance count in check and scale the survivors up so the band's
+// outer edge keeps a legible screen size (and stays on a low enough texture
+// mip for the alpha test). Buckets 0..3 share one factor; the far bucket keeps
+// its own (thinner) factor.
+#define	NL3D_VEGETABLE_BAND_DENSITY_FACTOR		0.28f
+#define	NL3D_VEGETABLE_BAND_SCALE_FACTOR		1.40f
+#define	NL3D_VEGETABLE_FAR_DENSITY_FACTOR		0.22f
+#define	NL3D_VEGETABLE_FAR_SCALE_FACTOR			1.45f
+
+// Union experiment (code-only, reversible): the farthest bucket's IG (present
+// on every block within range) also generates the species lists of the lower
+// buckets, so the near-field species reach the far field instead of stopping at
+// their authored band. The copies reuse the lower band's own seed and scale, so
+// they are exact duplicates of a subset of that band's instances: crossing a
+// band boundary removes the band's own IG but leaves the same plants (thinner)
+// instead of swapping in other plants. Keeping the copies in bucket 4 only
+// means one copy per species (not one per carrier) and one density step per
+// band edge. Set NL3D_VEGETABLE_UNION_LOWER_SPECIES to 0 for the plain
+// per-band behaviour.
+#define	NL3D_VEGETABLE_UNION_LOWER_SPECIES		1
 
 class CVertexProgramVeget;
 
@@ -192,6 +217,34 @@ public:
 	/** Get density multiplicator [0,1], for performance reason for instance
 	 */
 	float			getGlobalDensity() const {return _GlobalDensity;}
+
+	/** Per-distance-bucket density/instance-scale multipliers used when generating
+	 *	instances. Every bucket now covers a 20m band, so buckets 0..3 use the
+	 *	band factor and the far bucket keeps its own thinner factor; the near
+	 *	field is not left at authored density (that is the point of the
+	 *	experiment: see NL3D_VEGETABLE_BAND_DENSITY_FACTOR).
+	 */
+	float			getDistDensityFactor(uint distType) const
+	{
+		return distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST ? NL3D_VEGETABLE_FAR_DENSITY_FACTOR : NL3D_VEGETABLE_BAND_DENSITY_FACTOR;
+	}
+	float			getDistInstanceScale(uint distType) const
+	{
+		return distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST ? NL3D_VEGETABLE_FAR_SCALE_FACTOR : NL3D_VEGETABLE_BAND_SCALE_FACTOR;
+	}
+
+	/** Union experiment: density multiplier applied to the lower buckets'
+	 *	species when they are generated into the farthest carrier's IG. The
+	 *	copies reuse the lower band's seed/scale (duplicates of a subset of that
+	 *	band), so the visible density of a species is its own band's count while
+	 *	the block is in band, then this fraction at every greater distance. Only
+	 *	bucket 4 carries, so buckets 0-3 keep their own list untouched.
+	 */
+	float			getUnionDensity(uint distType) const
+	{
+		static const float	kDensity[NL3D_VEGETABLE_BLOCK_NUMDIST] = {0.f, 0.f, 0.f, 0.f, 0.26f};
+		return distType < NL3D_VEGETABLE_BLOCK_NUMDIST ? kDensity[distType] : 0.f;
+	}
 
 	// @}
 

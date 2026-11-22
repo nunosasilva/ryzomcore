@@ -65,10 +65,6 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	uint							distAddSeed= tileVegetDesc.getVegetableSeed(distType);
 	uint							numVegetable= (uint)vegetableList.size();
 
-	// If no vegetables at all, skip.
-	if(numVegetable==0)
-		return;
-
 	// If any layer (2nd or 3rd) is set, but has no vegetable, then skip too
 	// This is to ensure "no vegetable under buildings".
 	if( Tiles[tt * OrderS + ts].Tile[1]!=NL_TILE_ELM_LAYER_EMPTY )
@@ -194,48 +190,136 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	// for all vegetable of this list, generate instances.
 	// =========================
 
-	// Get an array for each vegetable (static for speed).
+	// Union experiment: a bucket's IG also generates the species lists of the
+	// lower buckets, so the near-field species reach the far field instead of
+	// stopping at their authored band. Flattened source list: the bucket's own
+	// list at the band density/scale, then (for carrier buckets >= FIRST_DIST)
+	// every lower list at the union density, reusing that lower band's own seed
+	// and scale so the copies are duplicates of a subset of its instances.
+	struct	CVegetSource
+	{
+		const CVegetable	*Veget;
+		uint				Seed;
+		float				Density;
+		float				Scale;
+	};
+	static	std::vector<CVegetSource>	vegetSources;
+	vegetSources.clear();
+
+	// Primary source: this band's own species list.
+	float	distDensityFactor= getLandscape()->_VegetableManager->getDistDensityFactor(distType);
+	// Far-only tilesets (desert floor/canyon: all authored species are in the
+	// last band) have nothing in the lower bands, so the global far thinning
+	// would remove most of the biome's vegetation. Keep the authored density
+	// there; the lower-band check is exact and costs one list scan per IG.
+	if(distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST)
+	{
+		bool	lowerBandsEmpty= true;
+		for(uint k= 0; k<distType; ++k)
+		{
+			if(!tileVegetDesc.getVegetableList(k).empty())
+			{
+				lowerBandsEmpty= false;
+				break;
+			}
+		}
+		if(lowerBandsEmpty)
+			distDensityFactor= 1.f;
+	}
+	const	float	distInstanceScale= getLandscape()->_VegetableManager->getDistInstanceScale(distType);
+	for(i= 0; i<numVegetable; i++)
+	{
+		CVegetSource	src;
+		src.Veget= &vegetableList[i];
+		src.Seed= i + distAddSeed;
+		src.Density= distDensityFactor;
+		src.Scale= distInstanceScale;
+		vegetSources.push_back(src);
+	}
+
+#if NL3D_VEGETABLE_UNION_LOWER_SPECIES
+	// Union sources: lower bands' species, thinned for this carrier bucket and
+	// generated with the lower band's own seed and scale (exact duplicates of a
+	// subset of that band's instances, so a band edge never swaps the plants).
+	{
+		const	float	unionDensity= getLandscape()->_VegetableManager->getUnionDensity(distType);
+		if(unionDensity > 0.f)
+		{
+			for(uint k= 0; k<distType; ++k)
+			{
+				const std::vector<CVegetable>	&lowerList= tileVegetDesc.getVegetableList(k);
+				const uint	seed= tileVegetDesc.getVegetableSeed(k);
+				const float	lowerScale= getLandscape()->_VegetableManager->getDistInstanceScale(k);
+				for(uint v= 0; v<lowerList.size(); ++v)
+				{
+					CVegetSource	src;
+					src.Veget= &lowerList[v];
+					src.Seed= v + seed;
+					src.Density= unionDensity;
+					src.Scale= lowerScale;
+					vegetSources.push_back(src);
+				}
+			}
+		}
+	}
+#endif
+
+	// Get an array for each source (static for speed).
 	typedef		std::vector<NLMISC::CVector2f>	TPositionVector;
 	static	std::vector<TPositionVector>	instanceUVArray;
 	// realloc if necessary.
-	if(instanceUVArray.size() < numVegetable)
+	if(instanceUVArray.size() < vegetSources.size())
 	{
 		// clean.
 		contReset(instanceUVArray);
 		// realloc.
-		instanceUVArray.resize(numVegetable);
+		instanceUVArray.resize(vegetSources.size());
 	}
 
-	// First, for each vegetable, generate the number of instance to create, and their relative position.
-	for(i= 0; i<numVegetable; i++)
+	// First, for each source, generate the number of instance to create, and their relative position.
+	for(i= 0; i<(uint)vegetSources.size(); i++)
 	{
-		// get the vegetable
-		const CVegetable	&veget=	vegetableList[i];
-
-		// generate instance for this vegetable.
-		veget.generateGroupBiLinear(tilePos, tilePosBiLinear, tileNormal, NL3D_PATCH_TILE_AREA, i + distAddSeed, instanceUVArray[i]);
+		vegetSources[i].Veget->generateGroupBiLinear(tilePos, tilePosBiLinear, tileNormal, NL3D_PATCH_TILE_AREA,
+			vegetSources[i].Seed, vegetSources[i].Density, instanceUVArray[i]);
 	}
+
+	// With the union, a tile whose own band list is empty can still carry the
+	// lower bands' species. Only skip when there is nothing to generate at all.
+	if(vegetSources.empty())
+		return;
+
+#if NL3D_VEGETABLE_UNION_LOWER_SPECIES
+	if(getenv("RYZOM_VEG_STATE") != NULL)
+	{
+		nlinfo("VEGSTATE: tile %u d%u own %u union %u sources %u", tileId, distType, numVegetable,
+			(uint)(vegetSources.size() - numVegetable), (uint)vegetSources.size());
+	}
+#endif
 
 	// Then, now that we kno how many instance to generate for each vegetable, reserve space.
 	CVegetableInstanceGroupReserve	vegetIgReserve;
-	for(i= 0; i<numVegetable; i++)
+	for(i= 0; i<(uint)vegetSources.size(); i++)
 	{
-		// get the vegetable
-		const CVegetable	&veget=	vegetableList[i];
-
 		// reseve instance space for this vegetable.
 		// instanceUVArray[i].size() is the number of instances to create.
-		veget.reserveIgAddInstances(vegetIgReserve, (CVegetable::TVegetableWater)vegetWaterState, (uint)instanceUVArray[i].size());
+		vegetSources[i].Veget->reserveIgAddInstances(vegetIgReserve, (CVegetable::TVegetableWater)vegetWaterState, (uint)instanceUVArray[i].size());
 	}
 	// actual reseve memory of the ig.
 	getLandscape()->_VegetableManager->reserveIgCompile(vegetIg, vegetIgReserve);
 
+	// Enlarge the thinned instances of this band, and fade them over the last
+	// 10m of the band (the far bucket fades from 90m to FARDIST), so blocks do
+	// not pop in at a band edge.
+	const	float	blendDistMax= (distType+1 < NL3D_VEGETABLE_BLOCK_NUMDIST)
+		? (distType+1) * NL3D_VEGETABLE_BLOCK_ELTDIST
+		: NL3D_VEGETABLE_BLOCK_FARDIST;
 
-	// generate the instances for all the vegetables.
-	for(i= 0; i<numVegetable; i++)
+
+	// generate the instances for all the sources.
+	for(i= 0; i<(uint)vegetSources.size(); i++)
 	{
 		// get the vegetable
-		const CVegetable	&veget=	vegetableList[i];
+		const CVegetable	&veget=	*vegetSources[i].Veget;
 
 		// get the relatives position of the instances
 		std::vector<CVector2f>	&instanceUV= instanceUVArray[i];
@@ -259,7 +343,8 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 			// generate the instance of the vegetable
 			veget.generateInstance(vegetIg, matInstance, ambientF,
 				diffuseColorF[ (lumelT<<NL_LUMEL_BY_TILE_SHIFT) + lumelS ],
-				(distType+1) * NL3D_VEGETABLE_BLOCK_ELTDIST, (CVegetable::TVegetableWater)vegetWaterState, dlmUV8);
+				blendDistMax, (CVegetable::TVegetableWater)vegetWaterState, dlmUV8,
+				vegetSources[i].Scale);
 		}
 	}
 }
