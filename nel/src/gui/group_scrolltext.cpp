@@ -175,6 +175,10 @@ namespace NLGUI
 	//========================================================================
 	void CGroupScrollText::updateUnread()
 	{
+		// A scroll text whose 'text_list' group is missing is inert (see
+		// CCtrlScroll::setTarget): there is nothing to track.
+		if (!_List)
+			return;
 		// A skipped frame means the list was not displayed in between.
 		const CWidgetManager::SInterfaceTimes &times = CWidgetManager::getInstance()->getInterfaceTimes();
 		const bool firstCheck = _LastCheckMs == 0;

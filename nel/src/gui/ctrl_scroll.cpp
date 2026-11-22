@@ -962,6 +962,13 @@ namespace NLGUI
 	void CCtrlScroll::setTarget (CInterfaceGroup *pIG)
 	{
 		_Target = pIG;
+		// A scroll text whose 'text_list' group is missing calls this with NULL
+		// (CGroupScrollText::setup() logs it). Every other use of _Target in this
+		// class already tolerates NULL, so leave the control inert instead of
+		// dereferencing it here: that used to crash the client at login when the
+		// shard data created such a group.
+		if (pIG == NULL)
+			return;
 
 		if (_Vertical)
 		{
