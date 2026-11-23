@@ -172,8 +172,8 @@ void updateFromClientCfg()
 		{
 			if(ClientCfg.MicroVeget)
 			{
-				// Startup value: MicroVegetExtra is restart-to-apply.
-				Landscape->setVegetableExtra(ClientCfg.MicroVegetExtra);
+				// Startup value of the extra distance (metres, 0 = off).
+				Landscape->setVegetableExtra((float)ClientCfg.MicroVegetExtra);
 				// if configured, enable the vegetable and load the texture.
 				Landscape->enableVegetable(true);
 				// Default setup. TODO later by gameDev.
@@ -196,6 +196,17 @@ void updateFromClientCfg()
 	{
 		// Density (percentage to ratio)
 		if (Landscape) Landscape->setVegetableDensity(ClientCfg.MicroVegetDensity/100.f);
+	}
+
+	//---------------------------------------------------
+	if (ClientCfg.MicroVegetExtra != LastClientCfg.MicroVegetExtra)
+	{
+		// Extra microvegetation distance in metres (0 = off). Applies live:
+		// CLandscape::setVegetableExtra() rebuilds the vegetable instance groups,
+		// like the density slider above, and does nothing when the resolved layout
+		// did not change.
+		if (Landscape && ClientCfg.MicroVeget)
+			Landscape->setVegetableExtra((float)ClientCfg.MicroVegetExtra);
 	}
 
 	// GRAPHICS - SPECIAL EFFECTS

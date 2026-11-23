@@ -472,10 +472,12 @@ public:
 	 */
 	void		enableVegetable(bool enable);
 
-	/** Opt-in extended microvegetation (see CVegetableExtra). Must be called
-	 *	before the first vegetable block is created.
+	/** Opt-in extended microvegetation: 0 = stock 0..50m layout, otherwise the
+	 *	far edge in metres (see CVegetableExtra). Must be called before the first
+	 *	vegetable block is created, or while running: this implementation rebuilds
+	 *	the instance groups of the live blocks.
 	 */
-	void		setVegetableExtra(bool enable);
+	void		setVegetableExtra(float farEdgeM);
 
 	/** return if the vegetable management is actually activated:
 	 *	actually return _VerexShaderOk && _VegetableEnabled.

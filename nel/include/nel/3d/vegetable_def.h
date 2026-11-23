@@ -39,7 +39,9 @@ namespace NL3D
 
 /// For Landscape Vegetable: Distance Types are: 10m, 20m, 30m, 40m, 50m.
 /// The opt-in MicroVegetExtra mode (vegetable_extra.h) stretches the same five
-/// bands over 0..100m without changing this stock layout or the file format.
+/// bands over 0..MicroVegetExtra metres without changing this stock layout or
+/// the file format; the bucket count stays five, only the edges and the species
+/// each bucket holds change.
 #define	NL3D_VEGETABLE_BLOCK_NUMDIST	5
 #define	NL3D_VEGETABLE_BLOCK_ELTDIST	10.0f
 /// Blend apperance transition

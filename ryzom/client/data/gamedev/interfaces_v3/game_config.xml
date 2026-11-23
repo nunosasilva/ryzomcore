@@ -1225,19 +1225,21 @@
                   y="-2" />
         <!-- Literal label: the string bank shipped with the live data has no
              key for this new experimental option (a "ui..." key would render
-             as <NotExist:...>). It applies on the next login/zone load.
-             Do not reparent: posparent=mvd lands below the density slider;
-             x=-20 walks back from the slider's text column (+20 from lmv) to
-             the checkbox column, so the box glyph is on the same left edge as
-             the Micro-Vegetation one. Parenting to the page would need these
+             as <NotExist:...>). It is a slider, not a checkbox: the value is
+             the extra microvegetation distance in metres (0 = off), and it
+             applies live. min/max/step come from the MicroVegetExtra_min/_max/
+             _step cfg keys. Do not reparent: posparent=mvd lands below the
+             density slider, and x=0 keeps it in the slider's text column (+20
+             from lmv), which is where a scrollbar belongs; x=-20 would put it
+             in the checkbox column. Parenting to the page would need these
              offsets duplicated. -->
-        <instance template="tgcw_checkbox"
+        <instance template="tgcw_scrollbarint"
                   id="lmvx"
-                  text="Micro-vegetation Extra"
-                  tooltip="Applies on the next login / zone load"
+                  text="Micro-vegetation Extra (m)"
+                  tooltip="0 = off, 100 = farthest; applies live"
                   posparent="mvd"
                   posref="BL TL"
-                  x="-20"
+                  x="0"
                   y="-2" />
       </group>
       <ctrl style="skin_scroll"
@@ -3716,14 +3718,15 @@
                realtime="true"
                link="MicroVeget"
                preset="UI:TEMP:PRESET_LAND" />
-        <!-- Restart-to-apply: only writes the cfg key, no live rebuild.
-             realtime="false" is decorative on a boolbut (realtime is only
-             honoured by scrollbars); the restart-to-apply comes from nothing
-             in updateFromClientCfg() comparing MicroVegetExtra. -->
+        <!-- Live: the value is a distance in metres (0 = off), and
+             updateFromClientCfg() compares MicroVegetExtra and calls
+             CLandscape::setVegetableExtra(), which rebuilds the vegetable
+             instance groups. realtime="end_scroll" writes the cfg once per
+             drag, like the density slider, instead of on every pixel. -->
         <param ui="landscape:lmvx:c"
                type="cfg"
-               widget="boolbut"
-               realtime="false"
+               widget="sbint"
+               realtime="end_scroll"
                link="MicroVegetExtra"
                preset="UI:TEMP:PRESET_LAND" />
         <param ui="landscape:mvd:c"

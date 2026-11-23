@@ -1965,26 +1965,31 @@ void		CVegetableManager::setGlobalDensity(float density)
 }
 
 // ***************************************************************************
-void		CVegetableManager::setExtraEnabled(bool enabled)
+bool		CVegetableManager::setExtraFarEdgeM(float farEdgeM)
 {
 	// Idempotent: the layout only has to be installed once, before the first
-	// vegetable block is created. Re-setting the same value must not re-log.
-	if(_Extra.isEnabled() == enabled)
-		return;
+	// vegetable block is created. Re-setting the same value must not re-log, and
+	// the caller (CLandscape) must not rebuild the instance groups either. CVegetableExtra
+	// does the clamping, so it is the one that knows whether anything changed.
+	if(!_Extra.setFarEdgeM(farEdgeM))
+		return false;
 
-	_Extra.setEnabled(enabled);
 	// Invariant: the farthest ZSort layer must stay at least one blend
 	// transition past the vegetation far edge. If it ever clamps, every far
 	// sort block falls into the last layer and its back-to-front order
 	// degrades (see the layer assignment in render()).
-	_ZSortLayerDistMax= enabled ? CVegetableExtra::getZSortDistMax() : NL3D_VEGETABLE_DEFAULT_DIST_MAX;
-	if(enabled)
+	_ZSortLayerDistMax= _Extra.isEnabled()
+		? _Extra.getZSortDistMax()
+		: NL3D_VEGETABLE_DEFAULT_DIST_MAX;
+	if(_Extra.isEnabled())
 	{
-		nlinfo("VEGETABLE: distance layout extra: %u x %.0f m bands, far edge %.0f m, "
-			"union copies %.2f, zsort %.0f m",
-			CVegetableExtra::getNumBands(), CVegetableExtra::getBandDist(),
-			CVegetableExtra::getNumBands() * CVegetableExtra::getBandDist(),
-			CVegetableExtra::getUnionDensity(), _ZSortLayerDistMax);
+		nlinfo("VEGETABLE: distance layout %s: %u x %.0f m bands, far edge %.0f m, "
+			"density %s %.2f, zsort %.0f m",
+			_Extra.isMerged() ? "merged" : "carrier", CVegetableExtra::getNumBands(), _Extra.getBandDist(),
+			_Extra.getFarEdgeM(),
+			_Extra.isMerged() ? "merged" : "union",
+			_Extra.isMerged() ? CVegetableExtra::getMergedDensity() : CVegetableExtra::getUnionDensity(),
+			_ZSortLayerDistMax);
 	}
 	else
 	{
@@ -1992,6 +1997,7 @@ void		CVegetableManager::setExtraEnabled(bool enabled)
 			CVegetableExtra::getNumBands(), NL3D_VEGETABLE_BLOCK_ELTDIST,
 			CVegetableExtra::getNumBands() * NL3D_VEGETABLE_BLOCK_ELTDIST, _ZSortLayerDistMax);
 	}
+	return true;
 }
 
 

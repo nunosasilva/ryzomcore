@@ -391,7 +391,7 @@ CClientConfig::CClientConfig()
 	DisableVtxAGP		= false;					// Disable Hardware Vertex AGP.
 	DisableTextureShdr	= false;					// Disable Hardware Texture Shader.
 	MicroVeget			= true;						// Default is with MicroVeget.
-	MicroVegetExtra		= false;					// Opt-in 100m microvegetation.
+	MicroVegetExtra		= 0;                        // Microvegetation extra distance in m (0 = off).
 	MicroVegetDensity	= 100.0f;
 	HDEntityTexture		= false;
 	HDTextureInstalled	= false;
@@ -1115,8 +1115,8 @@ void CClientConfig::setValues()
 	READ_BOOL_FV(DisableTextureShdr)
 	// MicroVeget
 	READ_BOOL_FV(MicroVeget)
-	// MicroVeget Extra (extended 100m distance; applied on next login)
-	READ_BOOL_FV(MicroVegetExtra)
+	// MicroVeget Extra: distance in metres, 0 = off (see CVegetableExtra)
+	READ_INT_FV(MicroVegetExtra)
 	// MicroVeget Density
 	READ_FLOAT_FV(MicroVegetDensity)
 	// GlobalWindPower: Global Wind Power

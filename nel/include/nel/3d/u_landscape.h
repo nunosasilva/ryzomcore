@@ -230,13 +230,15 @@ public:
 	 */
 	virtual	void		enableVegetable(bool enable) =0;
 
-	/** Opt-in extended microvegetation (100m bands + band-edge union copies).
+	/** Opt-in extended microvegetation: 0 = stock 0..50m layout, otherwise the
+	 *	far edge of the microvegetation in metres (see CVegetableExtra).
 	 *	Call before the first zone/vegetable block is created (login or a full
-	 *	vegetable reload); it does not rebuild existing instance groups.
+	 *	vegetable reload); CLandscape's implementation also rebuilds the live
+	 *	instance groups, so the value can be changed while running.
 	 *	The default implementation ignores it, so other ULandscape users are
 	 *	not affected.
 	 */
-	virtual	void		setVegetableExtra(bool /*enable*/) {}
+	virtual	void		setVegetableExtra(float /*farEdgeM*/) {}
 
 	/** load a texture for the vegetable, lookup in CPath
 	 */

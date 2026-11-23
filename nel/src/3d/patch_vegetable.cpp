@@ -66,13 +66,14 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	uint							numVegetable= (uint)vegetableList.size();
 
 	// Stock path: no vegetables at all for this bucket, skip. In the opt-in
-	// extended mode a tile whose own bucket is empty can still carry the lower
-	// buckets' species in its farthest carrier (see vegetable_extra.h), so only
-	// that carrier must run the setup path; an empty non-far band provably has
-	// nothing to generate (the union copies exist only in the farthest one).
+	// extended mode a tile whose own bucket is empty can still have something
+	// to generate: the merged layout puts the higher bands in every bucket, the
+	// carrier layout only in its farthest one (see vegetable_extra.h). hasSources()
+	// is the exact predicate, so a bucket that cannot carry anything still skips
+	// the whole setup path.
 	const CVegetableExtra	&extra= getLandscape()->_VegetableManager->getExtra();
 	const bool				extraEnabled= extra.isEnabled();
-	if(numVegetable == 0 && !(extraEnabled && distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST))
+	if(numVegetable == 0 && !(extraEnabled && extra.hasSources(tileVegetDesc, distType)))
 		return;
 
 	// If any layer (2nd or 3rd) is set, but has no vegetable, then skip too
@@ -202,8 +203,9 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 
 	// In the regular path there is exactly one source per authored species of
 	// this bucket, at density/scale 1 and with the same seed as stock. The
-	// opt-in CVegetableExtra path also adds the lower bands' species to the
-	// farthest carrier (see vegetable_extra.h). Both go through the same loop.
+	// opt-in CVegetableExtra path builds a different list (see vegetable_extra.h).
+	// Both go through the same loop, and both set the per source reach: the
+	// distance where that source's instances fade to alpha 0.
 	static	std::vector<CVegetableExtra::CSource>	vegetSources;
 	vegetSources.clear();
 	if(extraEnabled)
@@ -219,6 +221,7 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 			src.Seed= i + distAddSeed;
 			src.Density= 1.f;
 			src.Scale= 1.f;
+			src.Reach= (distType+1) * NL3D_VEGETABLE_BLOCK_ELTDIST;
 			vegetSources.push_back(src);
 		}
 	}
@@ -247,25 +250,33 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 		return;
 
 	// Generated-IG state log, opt-in through RYZOM_VEG_STATE=1. The env lookup
-	// is cached: this runs once per generated IG (thousands per walk). "copies"
-	// is the number of source species copied from each lower band (union5
-	// style), which is what makes the copy-scope/density tuning measurable;
-	// only the farthest carrier copies, so every other bucket logs zeros.
+	// is cached: this runs once per generated IG (thousands per walk). It reports
+	// what the layout actually put in this instance group: for merged, how many
+	// species were taken from each authored band; for carrier, how many were
+	// copied from each lower band (union5 style), which is what makes the copy
+	// scope/density tuning measurable. Sources are attributed to a band by their
+	// reach, which is unique per band in both layouts.
 	static const bool	vegStateLog= getenv("RYZOM_VEG_STATE") != NULL;
 	if(extraEnabled && vegStateLog)
 	{
-		uint	copies[NL3D_VEGETABLE_BLOCK_NUMDIST]= { 0, 0, 0, 0, 0 };
-		if(distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST)
+		uint	perBand[NL3D_VEGETABLE_BLOCK_NUMDIST]= { 0, 0, 0, 0, 0 };
+		for(uint s= 0; s < vegetSources.size(); ++s)
 		{
-			for(i= 0; i<distType; ++i)
-				copies[i]= (uint)tileVegetDesc.getVegetableList(i).size();
+			for(uint k= 0; k < NL3D_VEGETABLE_BLOCK_NUMDIST; ++k)
+			{
+				if(vegetSources[s].Reach == extra.getBandFarDist(k))
+					perBand[k]++;
+			}
 		}
-		nlinfo("VEGSTATE: tile %u d%u own %u union %u copies %u/%u/%u/%u/%u "
-			"cden %.2f sources %u den %.2f scale %.2f",
-			tileId, distType, numVegetable, (uint)(vegetSources.size() - numVegetable),
-			copies[0], copies[1], copies[2], copies[3], copies[4],
-			CVegetableExtra::getUnionDensity(), (uint)vegetSources.size(),
-			extra.getOwnDensity(tileVegetDesc, distType), extra.getOwnScale(distType));
+		nlinfo("VEGSTATE: tile %u d%u own %u extra %u bands %u/%u/%u/%u/%u "
+			"mode %s den %.2f scale %.2f sources %u",
+			tileId, distType, numVegetable,
+			(uint)(vegetSources.size() > numVegetable ? vegetSources.size() - numVegetable : 0),
+			perBand[0], perBand[1], perBand[2], perBand[3], perBand[4],
+			extra.isMerged() ? "merged" : "carrier",
+			extra.isMerged() ? CVegetableExtra::getMergedDensity() : extra.getOwnDensity(tileVegetDesc, distType),
+			extra.isMerged() ? extra.getMergedScale(distType) : extra.getOwnScale(distType),
+			(uint)vegetSources.size());
 	}
 
 	// Then, now that we kno how many instance to generate for each vegetable, reserve space.
@@ -279,13 +290,12 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	// actual reseve memory of the ig.
 	getLandscape()->_VegetableManager->reserveIgCompile(vegetIg, vegetIgReserve);
 
-	// Distance where this bucket's instances fade to alpha 0. Stock: the outer
-	// edge of the 10m band. Extra: the outer edge of the 20m band (100m for the
-	// farthest one), so blocks do not pop in at a band edge.
-	const	float	blendDistMax= extraEnabled
-		? extra.getBlendDistMax(distType)
-		: (distType+1) * NL3D_VEGETABLE_BLOCK_ELTDIST;
-
+	// The distance where instances fade to alpha 0 is per source, not per bucket:
+	// the merged layout gives every species the reach of its own authored band,
+	// so a species is never generated where its alpha is already 0, and it never
+	// swaps at a bucket edge (see vegetable_extra.h). The stock and carrier paths
+	// set every source of the bucket to the bucket's own far edge, which is the
+	// single value this function used to compute.
 
 	// generate the instances for all the sources.
 	for(i= 0; i<(uint)vegetSources.size(); i++)
@@ -315,7 +325,7 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 			// generate the instance of the vegetable
 			veget.generateInstance(vegetIg, matInstance, ambientF,
 				diffuseColorF[ (lumelT<<NL_LUMEL_BY_TILE_SHIFT) + lumelS ],
-				blendDistMax, (CVegetable::TVegetableWater)vegetWaterState, dlmUV8,
+				vegetSources[i].Reach, (CVegetable::TVegetableWater)vegetWaterState, dlmUV8,
 				vegetSources[i].Scale);
 		}
 	}
