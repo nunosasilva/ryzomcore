@@ -1713,7 +1713,17 @@ void	CMeshGeom::updateSkeletonUsage(CSkeletonModel *sm, bool increment)
 		uint	boneId= _BonesIdExt[i];
 		// Some explicit Error.
 		if(boneId>=sm->Bones.size())
+		{
+			// The skin references a bone this skeleton does not have (bad or
+			// mismatched .max/.anim data). _BoneUsage is sized to Bones.size(),
+			// and the nlassert() inside inc/decBoneUsage is compiled out in release,
+			// so passing this index writes past the end of that vector and corrupts
+			// the heap (the corruption only shows up later, as a SIGABRT from free()).
+			// Skip the bone: the mesh is already broken for this skeleton, and the
+			// bone count mismatch is reported once per mesh/skeleton pair.
 			nlerror(" Skin is incompatible with Skeleton: tries to use bone %d", boneId);
+			continue;
+		}
 		// increment or decrement not Forced, because CMeshGeom use getActiveBoneSkinMatrix().
 		if(increment)
 			sm->incBoneUsage(boneId, CSkeletonModel::UsageNormal);

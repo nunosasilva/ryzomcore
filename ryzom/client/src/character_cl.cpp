@@ -842,8 +842,18 @@ bool CCharacterCL::build(const CEntitySheet *sheet)	// virtual
 	// Compute the first automaton.
 	_CurrentAutomaton = automatonType() + "_normal.automaton";
 
-	// Get the Character gender.
+	// Get the Character gender. GSGENDER::EGender also has neutral(2) and unknown(3),
+	// but the client keeps its per-gender data in CRaceStatsSheet::GenderInfos[2] and
+	// indexes it with _Gender (Skelfilename, AnimSetBaseName, LodCharacterName,...). An
+	// unvalidated 2/3 therefore reads past that array: the character then gets a garbage
+	// skeleton/skin pair and the mismatch surfaces much later as "Skin is incompatible
+	// with Skeleton". Same rule as CPlayerCL::updateVPVpa(): fall back to male.
 	_Gender = (GSGENDER::EGender)_Sheet->Gender;
+	if(_Gender != GSGENDER::male && _Gender != GSGENDER::female)
+	{
+		nlwarning("CC:build: neither a male nor a female (gender=%d) -> male selected.", (sint32)_Gender);
+		_Gender = GSGENDER::male;
+	}
 
 	// Initialize the internal time.
 	_LastFrameTime = ((double)T1) * 0.001;
