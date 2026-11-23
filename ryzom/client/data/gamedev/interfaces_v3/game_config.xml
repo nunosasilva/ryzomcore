@@ -1216,23 +1216,27 @@
                   posref="BL TL"
                   x="-20"
                   y="-12" />
+        <instance template="tgcw_scrollbarfloat"
+                  id="mvd"
+                  text="uiMicroVegetDensity"
+                  posparent="lmv"
+                  posref="BL TL"
+                  x="20"
+                  y="-2" />
         <!-- Literal label: the string bank shipped with the live data has no
              key for this new experimental option (a "ui..." key would render
-             as <NotExist:...>). It applies on the next login/zone load. -->
+             as <NotExist:...>). It applies on the next login/zone load.
+             posparent=mvd lands below the density slider; x=-20 walks back
+             from the slider's text column to the checkbox column (mvd sits at
+             x=+20 from lmv), so the box glyph is on the same left edge as the
+             Micro-Vegetation one. -->
         <instance template="tgcw_checkbox"
                   id="lmvx"
                   text="Micro-vegetation Extra"
                   tooltip="Applies on the next login / zone load"
-                  posparent="lmv"
+                  posparent="mvd"
                   posref="BL TL"
                   x="-20"
-                  y="-2" />
-        <instance template="tgcw_scrollbarfloat"
-                  id="mvd"
-                  text="uiMicroVegetDensity"
-                  posparent="lmvx"
-                  posref="BL TL"
-                  x="20"
                   y="-2" />
       </group>
       <ctrl style="skin_scroll"
