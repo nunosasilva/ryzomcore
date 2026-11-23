@@ -1216,10 +1216,21 @@
                   posref="BL TL"
                   x="-20"
                   y="-12" />
+        <!-- Literal label: the string bank shipped with the live data has no
+             key for this new experimental option (a "ui..." key would render
+             as <NotExist:...>). It applies on the next login/zone load. -->
+        <instance template="tgcw_checkbox"
+                  id="lmvx"
+                  text="Micro-vegetation Extra"
+                  tooltip="Applies on the next login / zone load"
+                  posparent="lmv"
+                  posref="BL TL"
+                  x="-20"
+                  y="-2" />
         <instance template="tgcw_scrollbarfloat"
                   id="mvd"
                   text="uiMicroVegetDensity"
-                  posparent="lmv"
+                  posparent="lmvx"
                   posref="BL TL"
                   x="20"
                   y="-2" />
@@ -3699,6 +3710,13 @@
                widget="boolbut"
                realtime="true"
                link="MicroVeget"
+               preset="UI:TEMP:PRESET_LAND" />
+        <!-- Restart-to-apply: only writes the cfg key, no live rebuild. -->
+        <param ui="landscape:lmvx:c"
+               type="cfg"
+               widget="boolbut"
+               realtime="false"
+               link="MicroVegetExtra"
                preset="UI:TEMP:PRESET_LAND" />
         <param ui="landscape:mvd:c"
                type="cfg"

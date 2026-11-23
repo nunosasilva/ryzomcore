@@ -265,6 +265,9 @@ struct CClientConfig
 	bool			DisableTextureShdr;
 	/// Enable/Disable MicroVeget.
 	bool			MicroVeget;
+	/// Extend microvegetation to 100m with band-edge union copies (opt-in).
+	/// Read at startup; changing it requires a relog/zone reload.
+	bool			MicroVegetExtra;
 	/// Density of microvegetation in %
 	float			MicroVegetDensity;
 	/// Enable/Disable High Def Entity Texture quality. By default its false

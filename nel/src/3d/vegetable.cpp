@@ -141,7 +141,7 @@ void	CVegetable::generateGroupEx(float nbInst, const CVector &posInWorld, const 
 	// modulate result by Global Manager density
 	nbInst*= _Manager->getGlobalDensity();
 
-	// thin the far bucket (extended annulus)
+	// CVegetableExtra: thin a stretched band (1 in the regular path)
 	nbInst*= densityScale;
 
 	// Now, 0<=nbInst<+oo. If we have 0.1, it means that we have 10% chance to spawn an instance.

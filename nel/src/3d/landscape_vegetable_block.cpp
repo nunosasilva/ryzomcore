@@ -46,14 +46,12 @@ public:
 
 	CLVBSqrDistLUT()
 	{
-		// 0, 20, 40, 60, 80, and the far edge (100 by default): every authored
-		// distance set now covers a 20m band.
-		for(uint i=0;i<NL3D_VEGETABLE_BLOCK_NUMDIST;i++)
+		// Stock layout: 0, 10, 20, 30, 40, 50.
+		for(uint i=0;i<NL3D_VEGETABLE_BLOCK_NUMDIST+1;i++)
 		{
 			Array[i]= i*NL3D_VEGETABLE_BLOCK_ELTDIST;
 			Array[i]= sqr(Array[i]);
 		}
-		Array[NL3D_VEGETABLE_BLOCK_NUMDIST]= sqr(NL3D_VEGETABLE_BLOCK_FARDIST);
 	}
 
 };
@@ -68,8 +66,9 @@ CLandscapeVegetableBlock::CLandscapeVegetableBlock()
 {
 	_VegetableClipBlock = nullptr;
 	_CurDistType= NL3D_VEGETABLE_BLOCK_NUMDIST;
-	// No instance group created yet: only a view center inside the farthest
-	// bucket can leave update() with nothing to do.
+	// No instance group created yet. init() caches the far bound of the active
+	// distance layout (stock 50m or extra 100m) so isInCurrentDistanceType()
+	// cannot skip the first update().
 	_SqrDistMin= CLVBSqrDistLUT::Array[NL3D_VEGETABLE_BLOCK_NUMDIST];
 	_SqrDistMax= FLT_MAX;
 
@@ -115,6 +114,13 @@ void			CLandscapeVegetableBlock::init(const CVector &center, CVegetableManager *
 		}
 	}
 
+	// No IG created yet: cache the far bound of the active distance layout so
+	// isInCurrentDistanceType() cannot skip the first update().
+	const CVegetableExtra	&extra= vegetManager->getExtra();
+	const float	*distLUT= extra.isEnabled() ? extra.getSqrDistLUT() : CLVBSqrDistLUT::Array;
+	_SqrDistMin= distLUT[NL3D_VEGETABLE_BLOCK_NUMDIST];
+	_SqrDistMax= FLT_MAX;
+
 	// append to list.
 	vblist.append(this);
 }
@@ -146,6 +152,10 @@ void			CLandscapeVegetableBlock::release(CVegetableManager *vegeManager, CTessLi
 
 	// reset state.
 	_CurDistType= NL3D_VEGETABLE_BLOCK_NUMDIST;
+	const CVegetableExtra	&extra= vegeManager->getExtra();
+	const float	*distLUT= extra.isEnabled() ? extra.getSqrDistLUT() : CLVBSqrDistLUT::Array;
+	_SqrDistMin= distLUT[NL3D_VEGETABLE_BLOCK_NUMDIST];
+	_SqrDistMax= FLT_MAX;
 
 	// remove from list.
 	vblist.remove(this);
@@ -156,13 +166,17 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 {
 	float	sqrDist= (viewCenter-_Center).sqrnorm();
 
+	// Stock 0..50m edges, or the opt-in 0..100m edges of CVegetableExtra.
+	const CVegetableExtra	&extra= vegeManager->getExtra();
+	const float	*distLUT= extra.isEnabled() ? extra.getSqrDistLUT() : CLVBSqrDistLUT::Array;
+
 	// compute new distance type. Incremental mode.
 	uint	newDistType= _CurDistType;
-	while(sqrDist<CLVBSqrDistLUT::Array[newDistType])
+	while(sqrDist<distLUT[newDistType])
 	{
 		newDistType--;
 	}
-	while(newDistType<NL3D_VEGETABLE_BLOCK_NUMDIST && sqrDist>CLVBSqrDistLUT::Array[newDistType+1])
+	while(newDistType<NL3D_VEGETABLE_BLOCK_NUMDIST && sqrDist>distLUT[newDistType+1])
 	{
 		newDistType++;
 	}
@@ -175,7 +189,9 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 	// Change of distance type??
 	if(newDistType!=_CurDistType)
 	{
-		static	const	bool	vegStateLog= getenv("RYZOM_VEG_STATE")!=NULL;
+		// Transition log for the extra path only; the regular path stays quiet.
+		static	const	bool	vegStateLogEnabled= getenv("RYZOM_VEG_STATE")!=NULL;
+		const	bool	vegStateLog= vegStateLogEnabled && extra.isEnabled();
 		if(vegStateLog)
 			nlinfo("VEGSTATE: block (%.1f %.1f) dist %.1f cur %u -> %u", _Center.x, _Center.y, sqrtf(sqrDist), _CurDistType, newDistType);
 
@@ -226,9 +242,9 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 		// copy new dist type, and cache the bucket bounds used by
 		// isInCurrentDistanceType() to skip this call while nothing can change.
 		_CurDistType= uint8(newDistType);
-		_SqrDistMin= CLVBSqrDistLUT::Array[newDistType];
+		_SqrDistMin= distLUT[newDistType];
 		_SqrDistMax= (newDistType < NL3D_VEGETABLE_BLOCK_NUMDIST)
-			? CLVBSqrDistLUT::Array[newDistType+1] : FLT_MAX;
+			? distLUT[newDistType+1] : FLT_MAX;
 	}
 
 

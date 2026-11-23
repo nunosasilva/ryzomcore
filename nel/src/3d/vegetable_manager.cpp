@@ -1964,6 +1964,27 @@ void		CVegetableManager::setGlobalDensity(float density)
 	_GlobalDensity= density;
 }
 
+// ***************************************************************************
+void		CVegetableManager::setExtraEnabled(bool enabled)
+{
+	_Extra.setEnabled(enabled);
+	_ZSortLayerDistMax= enabled ? CVegetableExtra::getZSortDistMax() : NL3D_VEGETABLE_DEFAULT_DIST_MAX;
+	if(enabled)
+	{
+		nlinfo("VEGETABLE: distance layout extra: %u x %.0f m bands, far edge %.0f m, "
+			"union copies %.2f, zsort %.0f m",
+			CVegetableExtra::getNumBands(), CVegetableExtra::getBandDist(),
+			CVegetableExtra::getBandFarDist(CVegetableExtra::getNumBands()),
+			CVegetableExtra::getUnionDensity(), _ZSortLayerDistMax);
+	}
+	else
+	{
+		nlinfo("VEGETABLE: distance layout stock: %u x %.0f m bands, far edge %.0f m, zsort %.0f m",
+			CVegetableExtra::getNumBands(), NL3D_VEGETABLE_BLOCK_ELTDIST,
+			CVegetableExtra::getNumBands() * NL3D_VEGETABLE_BLOCK_ELTDIST, _ZSortLayerDistMax);
+	}
+}
+
 
 // ***************************************************************************
 // ***************************************************************************

@@ -627,6 +627,8 @@ SOURCE_GROUP(vegetable FILES
         ../../include/nel/3d/vegetable_clip_block.h
         vegetable_def.cpp
         ../../include/nel/3d/vegetable_def.h
+        vegetable_extra.cpp
+        ../../include/nel/3d/vegetable_extra.h
         vegetable_instance_group.cpp
         ../../include/nel/3d/vegetable_instance_group.h
         vegetable_light_ex.cpp

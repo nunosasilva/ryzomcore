@@ -472,6 +472,11 @@ public:
 	 */
 	void		enableVegetable(bool enable);
 
+	/** Opt-in extended microvegetation (see CVegetableExtra). Must be called
+	 *	before the first vegetable block is created.
+	 */
+	void		setVegetableExtra(bool enable);
+
 	/** return if the vegetable management is actually activated:
 	 *	actually return _VerexShaderOk && _VegetableEnabled.
 	 */

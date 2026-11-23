@@ -172,6 +172,8 @@ void updateFromClientCfg()
 		{
 			if(ClientCfg.MicroVeget)
 			{
+				// Startup value: MicroVegetExtra is restart-to-apply.
+				Landscape->setVegetableExtra(ClientCfg.MicroVegetExtra);
 				// if configured, enable the vegetable and load the texture.
 				Landscape->enableVegetable(true);
 				// Default setup. TODO later by gameDev.

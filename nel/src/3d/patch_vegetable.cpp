@@ -65,6 +65,13 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	uint							distAddSeed= tileVegetDesc.getVegetableSeed(distType);
 	uint							numVegetable= (uint)vegetableList.size();
 
+	// Stock path: no vegetables at all for this bucket, skip. In the opt-in
+	// extended mode a tile whose own bucket is empty can still carry the lower
+	// buckets' species in its farthest carrier (see vegetable_extra.h).
+	const CVegetableExtra	&extra= getLandscape()->_VegetableManager->getExtra();
+	if(numVegetable == 0 && !extra.isEnabled())
+		return;
+
 	// If any layer (2nd or 3rd) is set, but has no vegetable, then skip too
 	// This is to ensure "no vegetable under buildings".
 	if( Tiles[tt * OrderS + ts].Tile[1]!=NL_TILE_ELM_LAYER_EMPTY )
@@ -187,82 +194,31 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	clamp(dlmUV8.V, _DLMContext->MinV8, _DLMContext->MaxV8);
 
 
-	// for all vegetable of this list, generate instances.
+	// For all sources of this tile, generate instances.
 	// =========================
 
-	// Union experiment: a bucket's IG also generates the species lists of the
-	// lower buckets, so the near-field species reach the far field instead of
-	// stopping at their authored band. Flattened source list: the bucket's own
-	// list at the band density/scale, then (for carrier buckets >= FIRST_DIST)
-	// every lower list at the union density, reusing that lower band's own seed
-	// and scale so the copies are duplicates of a subset of its instances.
-	struct	CVegetSource
-	{
-		const CVegetable	*Veget;
-		uint				Seed;
-		float				Density;
-		float				Scale;
-	};
-	static	std::vector<CVegetSource>	vegetSources;
+	// In the regular path there is exactly one source per authored species of
+	// this bucket, at density/scale 1 and with the same seed as stock. The
+	// opt-in CVegetableExtra path also adds the lower bands' species to the
+	// farthest carrier (see vegetable_extra.h). Both go through the same loop.
+	static	std::vector<CVegetableExtra::CSource>	vegetSources;
 	vegetSources.clear();
-
-	// Primary source: this band's own species list.
-	float	distDensityFactor= getLandscape()->_VegetableManager->getDistDensityFactor(distType);
-	// Far-only tilesets (desert floor/canyon: all authored species are in the
-	// last band) have nothing in the lower bands, so the global far thinning
-	// would remove most of the biome's vegetation. Keep the authored density
-	// there; the lower-band check is exact and costs one list scan per IG.
-	if(distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST)
+	if(extra.isEnabled())
 	{
-		bool	lowerBandsEmpty= true;
-		for(uint k= 0; k<distType; ++k)
-		{
-			if(!tileVegetDesc.getVegetableList(k).empty())
-			{
-				lowerBandsEmpty= false;
-				break;
-			}
-		}
-		if(lowerBandsEmpty)
-			distDensityFactor= 1.f;
+		extra.buildSources(tileVegetDesc, distType, vegetSources);
 	}
-	const	float	distInstanceScale= getLandscape()->_VegetableManager->getDistInstanceScale(distType);
-	for(i= 0; i<numVegetable; i++)
+	else
 	{
-		CVegetSource	src;
-		src.Veget= &vegetableList[i];
-		src.Seed= i + distAddSeed;
-		src.Density= distDensityFactor;
-		src.Scale= distInstanceScale;
-		vegetSources.push_back(src);
-	}
-
-#if NL3D_VEGETABLE_UNION_LOWER_SPECIES
-	// Union sources: lower bands' species, thinned for this carrier bucket and
-	// generated with the lower band's own seed and scale (exact duplicates of a
-	// subset of that band's instances, so a band edge never swaps the plants).
-	{
-		const	float	unionDensity= getLandscape()->_VegetableManager->getUnionDensity(distType);
-		if(unionDensity > 0.f)
+		for(i= 0; i<numVegetable; i++)
 		{
-			for(uint k= 0; k<distType; ++k)
-			{
-				const std::vector<CVegetable>	&lowerList= tileVegetDesc.getVegetableList(k);
-				const uint	seed= tileVegetDesc.getVegetableSeed(k);
-				const float	lowerScale= getLandscape()->_VegetableManager->getDistInstanceScale(k);
-				for(uint v= 0; v<lowerList.size(); ++v)
-				{
-					CVegetSource	src;
-					src.Veget= &lowerList[v];
-					src.Seed= v + seed;
-					src.Density= unionDensity;
-					src.Scale= lowerScale;
-					vegetSources.push_back(src);
-				}
-			}
+			CVegetableExtra::CSource	src;
+			src.Veget= &vegetableList[i];
+			src.Seed= i + distAddSeed;
+			src.Density= 1.f;
+			src.Scale= 1.f;
+			vegetSources.push_back(src);
 		}
 	}
-#endif
 
 	// Get an array for each source (static for speed).
 	typedef		std::vector<NLMISC::CVector2f>	TPositionVector;
@@ -283,18 +239,16 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 			vegetSources[i].Seed, vegetSources[i].Density, instanceUVArray[i]);
 	}
 
-	// With the union, a tile whose own band list is empty can still carry the
-	// lower bands' species. Only skip when there is nothing to generate at all.
+	// Nothing to generate for this bucket.
 	if(vegetSources.empty())
 		return;
 
-#if NL3D_VEGETABLE_UNION_LOWER_SPECIES
-	if(getenv("RYZOM_VEG_STATE") != NULL)
+	if(extra.isEnabled() && getenv("RYZOM_VEG_STATE") != NULL)
 	{
-		nlinfo("VEGSTATE: tile %u d%u own %u union %u sources %u", tileId, distType, numVegetable,
-			(uint)(vegetSources.size() - numVegetable), (uint)vegetSources.size());
+		nlinfo("VEGSTATE: tile %u d%u own %u union %u sources %u den %.2f scale %.2f", tileId, distType,
+			numVegetable, (uint)(vegetSources.size() - numVegetable), (uint)vegetSources.size(),
+			extra.getOwnDensity(tileVegetDesc, distType), extra.getOwnScale(distType));
 	}
-#endif
 
 	// Then, now that we kno how many instance to generate for each vegetable, reserve space.
 	CVegetableInstanceGroupReserve	vegetIgReserve;
@@ -307,12 +261,12 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	// actual reseve memory of the ig.
 	getLandscape()->_VegetableManager->reserveIgCompile(vegetIg, vegetIgReserve);
 
-	// Enlarge the thinned instances of this band, and fade them over the last
-	// 10m of the band (the far bucket fades from 90m to FARDIST), so blocks do
-	// not pop in at a band edge.
-	const	float	blendDistMax= (distType+1 < NL3D_VEGETABLE_BLOCK_NUMDIST)
-		? (distType+1) * NL3D_VEGETABLE_BLOCK_ELTDIST
-		: NL3D_VEGETABLE_BLOCK_FARDIST;
+	// Distance where this bucket's instances fade to alpha 0. Stock: the outer
+	// edge of the 10m band. Extra: the outer edge of the 20m band (100m for the
+	// farthest one), so blocks do not pop in at a band edge.
+	const	float	blendDistMax= extra.isEnabled()
+		? extra.getBlendDistMax(distType)
+		: (distType+1) * NL3D_VEGETABLE_BLOCK_ELTDIST;
 
 
 	// generate the instances for all the sources.

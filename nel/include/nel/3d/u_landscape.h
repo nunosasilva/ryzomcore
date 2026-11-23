@@ -230,6 +230,14 @@ public:
 	 */
 	virtual	void		enableVegetable(bool enable) =0;
 
+	/** Opt-in extended microvegetation (100m bands + band-edge union copies).
+	 *	Call before the first zone/vegetable block is created (login or a full
+	 *	vegetable reload); it does not rebuild existing instance groups.
+	 *	The default implementation ignores it, so other ULandscape users are
+	 *	not affected.
+	 */
+	virtual	void		setVegetableExtra(bool /*enable*/) {}
+
 	/** load a texture for the vegetable, lookup in CPath
 	 */
 	virtual	void		loadVegetableTexture(const std::string &textureFileName) =0;

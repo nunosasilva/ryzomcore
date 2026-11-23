@@ -3448,6 +3448,12 @@ bool		CLandscape::isVegetableActive() const
 }
 
 // ***************************************************************************
+void		CLandscape::setVegetableExtra(bool enable)
+{
+	_VegetableManager->setExtraEnabled(enable);
+}
+
+// ***************************************************************************
 void		CLandscape::loadVegetableTexture(const string &textureFileName)
 {
 	// load the texture in the manager

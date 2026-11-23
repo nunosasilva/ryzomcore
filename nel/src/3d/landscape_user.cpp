@@ -431,6 +431,13 @@ void		CLandscapeUser::enableVegetable(bool enable)
 }
 
 // ****************************************************************************
+void		CLandscapeUser::setVegetableExtra(bool enable)
+{
+	NL3D_HAUTO_UI_LANDSCAPE;
+	_Landscape->Landscape.setVegetableExtra(enable);
+}
+
+// ****************************************************************************
 void		CLandscapeUser::loadVegetableTexture(const std::string &textureFileName)
 {
 	NL3D_HAUTO_LOAD_LANDSCAPE;

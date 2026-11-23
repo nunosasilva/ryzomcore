@@ -81,7 +81,13 @@ const uint32 NL_VK_STAGING_RING_MAX = 64u * 1024u * 1024u;
 // ring stays at a few MiB.
 const uint32 NL_VK_VERTEX_RING_MAX = 1024u * 1024u * 1024u;
 const uint32 NL_VK_INDEX_RING_MAX = 64u * 1024u * 1024u;
-const uint32 NL_VK_UNIFORM_RING_MAX = 64u * 1024u * 1024u;
+// The stock 50m vegetation fits the 64 MiB ring, but the opt-in
+// MicroVegetExtra 100m mode roughly quadruples the vegetation draws (measured
+// ~3.1k total draws at the Silan camp vs ~1.8k stock). Its per-frame half of
+// 32 MiB is just short there: the ring reached the cap and the last draws of
+// the frame were dropped. 128 MiB gives a 64 MiB half, and the ring only grows
+// when a frame actually needs it, so the stock path keeps its smaller ring.
+const uint32 NL_VK_UNIFORM_RING_MAX = 128u * 1024u * 1024u;
 
 /// Size a ring buffer has to grow to for a `required`-byte upload: at least
 /// twice the request (the ring is split in per-frame halves), at least twice
