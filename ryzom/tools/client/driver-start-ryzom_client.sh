@@ -364,12 +364,21 @@ find_client_pid() {
 # from one install dir fight over the same log. Refuse the second one, and after
 # the client is up, watch the file it actually opened.
 log_holders() {
-	local p target
+	local p f target base
+	# NeL renames the log it has open (client.log -> clientNNN.log / client.log.previous),
+	# and a file descriptor follows the rename, so compare against the whole rotated
+	# set of this install dir, not one exact path.
+	base=$(dirname "$LOG")/${LOG##*/}
+	base=${base%%.*}
 	for p in /proc/[0-9]*; do
+		[ "$p" = "/proc/$$" ] && continue
 		[ -r "$p/fd" ] || continue
-		target=$(readlink "$p/fd/"* 2>/dev/null) || continue
-		[ "$target" = "$LOG" ] || continue
-		echo "${p#/proc/}"
+		for f in "$p"/fd/*; do
+			target=$(readlink "$f" 2>/dev/null) || continue
+			case "$target" in
+			"$LOG"|"$LOG".*|"$base".log*) echo "${p#/proc/}"; return 0 ;;
+			esac
+		done
 	done
 	return 0
 }
