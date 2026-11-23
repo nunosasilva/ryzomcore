@@ -358,7 +358,28 @@ find_client_pid() {
 	return 1
 }
 
+# The client picks its own log path (there is no cfg key for it): it is always
+# <install>/client.log, rotated to clientNNN.log. So LOG= only says what to *watch*;
+# pointing it somewhere else watches a file that never appears, and two clients
+# from one install dir fight over the same log. Refuse the second one, and after
+# the client is up, watch the file it actually opened.
+log_holders() {
+	local p target
+	for p in /proc/[0-9]*; do
+		[ -r "$p/fd" ] || continue
+		target=$(readlink "$p/fd/"* 2>/dev/null) || continue
+		[ "$target" = "$LOG" ] || continue
+		echo "${p#/proc/}"
+	done
+	return 0
+}
+
 start_client() {
+	local holder
+	holder=$(log_holders)
+	if [ -n "$holder" ]; then
+		die "another live process (pid $holder) already writes '$LOG': two clients from one install dir share one log. Use another install dir, or REUSE=1 for the tracked one."
+	fi
 	[ -f "$LOG" ] && mv -f "$LOG" "$LOG.previous"
 
 	case "$SCREEN" in
@@ -384,6 +405,26 @@ start_client() {
 		done
 		[ -n "${CLIENT_PID:-}" ] || die "client did not start in the virtual screen (see $HARNESS_DIR/gamescope.log)"
 	fi
+	adopt_log
+}
+
+# Adopt the log the client really opened. It rotates (client.log -> clientNNN.log),
+# so this is also what tells us the file to tail after a rotation.
+adopt_log() {
+	local f target
+	for f in /proc/"$CLIENT_PID"/fd/*; do
+		target=$(readlink "$f" 2>/dev/null) || continue
+		case "$target" in
+		*.log)
+			if [ "$target" != "$LOG" ]; then
+				info "watching the log the client opened: $target (LOG= said $LOG)"
+				LOG=$target
+			fi
+			return 0
+			;;
+		esac
+	done
+	return 0
 }
 
 client_display() {
@@ -399,6 +440,24 @@ client_display() {
 # ---------------------------------------------------------------------------
 
 # Returns 0 started, 2 account busy (retry), 3 timeout, 4 client died.
+# The client rotates its own log (client.log -> clientNNN.log) while it starts up,
+# and an opt-in verbose tag such as RYZOM_VEG_STATE=1 writes tens of thousands of
+# lines, so the marker we wait for can land in the rotated file. Search the whole
+# rotated set: they all belong to this run, the previous run went to LOG.previous.
+log_files=()
+collect_log_files() {
+	local f
+	log_files=()
+	for f in "${LOG%.*}"*.log; do
+		[ -f "$f" ] && log_files+=("$f")
+	done
+	return 0
+}
+log_grep() {
+	[ "${#log_files[@]}" -gt 0 ] || return 1
+	grep -aqiE "$1" "${log_files[@]}" 2>/dev/null
+}
+
 wait_for_client() {
 	local deadline=$((SECONDS + TIMEOUT))
 	local fail_re='already (logged|connected|in online state)|disconnected by the server|connection of ryzom failed|login failed'
@@ -407,18 +466,17 @@ wait_for_client() {
 		if ! kill -0 "$CLIENT_PID" 2>/dev/null; then
 			return 4
 		fi
-		if [ -f "$LOG" ] && grep -aqiE "$fail_re" "$LOG"; then
-			return 2
-		fi
+		collect_log_files
+		log_grep "$fail_re" && return 2
 		case "$WAIT_FOR" in
 		ingame)
-			grep -aq 'initInGame' "$LOG" 2>/dev/null && return 0
+			log_grep 'initInGame' && return 0
 			;;
 		login)
-			if grep -aq 'Connection of Ryzom success' "$LOG" 2>/dev/null; then
+			if log_grep 'Connection of Ryzom success'; then
 				# A busy account can disconnect right after the handshake.
 				sleep 3
-				grep -aqiE "$fail_re" "$LOG" && return 2
+				log_grep "$fail_re" && return 2
 				return 0
 			fi
 			;;
@@ -426,7 +484,7 @@ wait_for_client() {
 			if command -v xdotool >/dev/null 2>&1; then
 				DISPLAY=$(client_display)
 				[ -n "$DISPLAY" ] && [ -n "$(DISPLAY=$DISPLAY xdotool search --name Ryzom 2>/dev/null | head -1)" ] && return 0
-			elif grep -aq 'display created with' "$LOG" 2>/dev/null; then
+			elif log_grep 'display created with'; then
 				return 0
 			fi
 			;;
