@@ -895,7 +895,15 @@ VkPipeline CDriverVulkan::getPipeline(const CPipelineKey &key)
 	blendAttachment.srcAlphaBlendFactor = (VkBlendFactor)k.SrcBlend;
 	blendAttachment.dstAlphaBlendFactor = (VkBlendFactor)k.DstBlend;
 	blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
-	blendAttachment.colorWriteMask = k.ColorWriteMask ? k.ColorWriteMask : 0xF;
+	// A zero mask means "write no colour", not "unspecified". NeL uses that
+	// state for real draws (CFlareModel draws its occlusion and draw-query
+	// proxy meshes with all writes masked), and every pipeline key carries the
+	// current mask, initialised to 0xF, so the key is authoritative here. The
+	// old "0 means unset" fallback turned those proxies into untextured white
+	// polygons: the draw-query material has depth-compare ALWAYS, which is the
+	// hard white hexagon that used to be painted over trees and hillsides at
+	// the sun's screen position.
+	blendAttachment.colorWriteMask = (VkColorComponentFlags)k.ColorWriteMask;
 
 	VkPipelineColorBlendStateCreateInfo colorBlend;
 	memset(&colorBlend, 0, sizeof(colorBlend));
