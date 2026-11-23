@@ -67,9 +67,12 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 
 	// Stock path: no vegetables at all for this bucket, skip. In the opt-in
 	// extended mode a tile whose own bucket is empty can still carry the lower
-	// buckets' species in its farthest carrier (see vegetable_extra.h).
+	// buckets' species in its farthest carrier (see vegetable_extra.h), so only
+	// that carrier must run the setup path; an empty non-far band provably has
+	// nothing to generate (the union copies exist only in the farthest one).
 	const CVegetableExtra	&extra= getLandscape()->_VegetableManager->getExtra();
-	if(numVegetable == 0 && !extra.isEnabled())
+	const bool				extraEnabled= extra.isEnabled();
+	if(numVegetable == 0 && !(extraEnabled && distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST))
 		return;
 
 	// If any layer (2nd or 3rd) is set, but has no vegetable, then skip too
@@ -203,7 +206,7 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	// farthest carrier (see vegetable_extra.h). Both go through the same loop.
 	static	std::vector<CVegetableExtra::CSource>	vegetSources;
 	vegetSources.clear();
-	if(extra.isEnabled())
+	if(extraEnabled)
 	{
 		extra.buildSources(tileVegetDesc, distType, vegetSources);
 	}
@@ -243,10 +246,25 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	if(vegetSources.empty())
 		return;
 
-	if(extra.isEnabled() && getenv("RYZOM_VEG_STATE") != NULL)
+	// Generated-IG state log, opt-in through RYZOM_VEG_STATE=1. The env lookup
+	// is cached: this runs once per generated IG (thousands per walk). "copies"
+	// is the number of source species copied from each lower band (union5
+	// style), which is what makes the copy-scope/density tuning measurable;
+	// only the farthest carrier copies, so every other bucket logs zeros.
+	static const bool	vegStateLog= getenv("RYZOM_VEG_STATE") != NULL;
+	if(extraEnabled && vegStateLog)
 	{
-		nlinfo("VEGSTATE: tile %u d%u own %u union %u sources %u den %.2f scale %.2f", tileId, distType,
-			numVegetable, (uint)(vegetSources.size() - numVegetable), (uint)vegetSources.size(),
+		uint	copies[NL3D_VEGETABLE_BLOCK_NUMDIST]= { 0, 0, 0, 0, 0 };
+		if(distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST)
+		{
+			for(i= 0; i<distType; ++i)
+				copies[i]= (uint)tileVegetDesc.getVegetableList(i).size();
+		}
+		nlinfo("VEGSTATE: tile %u d%u own %u union %u copies %u/%u/%u/%u/%u "
+			"cden %.2f sources %u den %.2f scale %.2f",
+			tileId, distType, numVegetable, (uint)(vegetSources.size() - numVegetable),
+			copies[0], copies[1], copies[2], copies[3], copies[4],
+			CVegetableExtra::getUnionDensity(), (uint)vegetSources.size(),
 			extra.getOwnDensity(tileVegetDesc, distType), extra.getOwnScale(distType));
 	}
 
@@ -264,7 +282,7 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	// Distance where this bucket's instances fade to alpha 0. Stock: the outer
 	// edge of the 10m band. Extra: the outer edge of the 20m band (100m for the
 	// farthest one), so blocks do not pop in at a band edge.
-	const	float	blendDistMax= extra.isEnabled()
+	const	float	blendDistMax= extraEnabled
 		? extra.getBlendDistMax(distType)
 		: (distType+1) * NL3D_VEGETABLE_BLOCK_ELTDIST;
 

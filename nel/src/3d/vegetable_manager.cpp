@@ -1967,14 +1967,23 @@ void		CVegetableManager::setGlobalDensity(float density)
 // ***************************************************************************
 void		CVegetableManager::setExtraEnabled(bool enabled)
 {
+	// Idempotent: the layout only has to be installed once, before the first
+	// vegetable block is created. Re-setting the same value must not re-log.
+	if(_Extra.isEnabled() == enabled)
+		return;
+
 	_Extra.setEnabled(enabled);
+	// Invariant: the farthest ZSort layer must stay at least one blend
+	// transition past the vegetation far edge. If it ever clamps, every far
+	// sort block falls into the last layer and its back-to-front order
+	// degrades (see the layer assignment in render()).
 	_ZSortLayerDistMax= enabled ? CVegetableExtra::getZSortDistMax() : NL3D_VEGETABLE_DEFAULT_DIST_MAX;
 	if(enabled)
 	{
 		nlinfo("VEGETABLE: distance layout extra: %u x %.0f m bands, far edge %.0f m, "
 			"union copies %.2f, zsort %.0f m",
 			CVegetableExtra::getNumBands(), CVegetableExtra::getBandDist(),
-			CVegetableExtra::getBandFarDist(CVegetableExtra::getNumBands()),
+			CVegetableExtra::getNumBands() * CVegetableExtra::getBandDist(),
 			CVegetableExtra::getUnionDensity(), _ZSortLayerDistMax);
 	}
 	else

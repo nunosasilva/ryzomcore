@@ -86,10 +86,13 @@ public:
 	static float			getBlendTransitionDist() { return NL3D_VEGETABLE_BLOCK_BLEND_TRANSITION_DIST; }
 
 	/// Distance of the farthest ZSort blend layer needed by the extended mode.
-	/// It must cover the far bucket plus one blend transition (100 + 20).
+	/// It covers the 100m far edge plus one 20m band of margin. The alpha fade
+	/// itself is the 10m blend transition at the far edge
+	/// (getBlendTransitionDist()); the extra margin keeps the farthest sort
+	/// blocks out of the last-layer clamp instead of piling them on layer 19.
 	static float			getZSortDistMax() { return 120.f; }
 
-	/// Density of the lower-band copies in the farthest carrier.
+	/// Density of the lower-band copies in the farthest carrier (P2 knob).
 	static float			getUnionDensity() { return 0.26f; }
 	/// Far bucket density when every lower band is empty (desert/canyon).
 	static float			getFarOnlyDensity() { return 1.f; }

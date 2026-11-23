@@ -196,15 +196,17 @@ public:
 
 	/** Opt-in extended microvegetation strategy (client.cfg MicroVegetExtra).
 	 *	The instance generation calls it only while it is enabled; disabled, the
-	 *	stock 0..50m bands and authored densities are used.
+	 *	stock 0..50m bands and authored densities are used. Deliberately const:
+	 *	setExtraEnabled() is the only mutator, so the flag cannot be flipped
+	 *	behind the _ZSortLayerDistMax update.
 	 */
-	CVegetableExtra			&getExtra() { return _Extra; }
 	const CVegetableExtra	&getExtra() const { return _Extra; }
 
 	/** Enable/disable the extended microvegetation. Must be done before the
 	 *	first vegetable block is created (login / zone load). Also stretches the
 	 *	ZSort blend-layer range so the far field is layered and fogged like the
-	 *	terrain instead of being left in front of the fog.
+	 *	terrain instead of being left in front of the fog. An unchanged value is
+	 *	a no-op.
 	 */
 	void			setExtraEnabled(bool enabled);
 
