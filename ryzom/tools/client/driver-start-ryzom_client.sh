@@ -420,11 +420,15 @@ start_client() {
 # Adopt the log the client really opened. It rotates (client.log -> clientNNN.log),
 # so this is also what tells us the file to tail after a rotation.
 adopt_log() {
-	local f target
+	local f target base
+	# only the client's own log: the process also inherits stdout/stderr, which
+	# under gamescope is gamescope.log, and that is not what we want to tail.
+	base=$(dirname "$LOG")/${LOG##*/}
+	base=${base%%.*}
 	for f in /proc/"$CLIENT_PID"/fd/*; do
 		target=$(readlink "$f" 2>/dev/null) || continue
 		case "$target" in
-		*.log)
+		"$base".log*)
 			if [ "$target" != "$LOG" ]; then
 				info "watching the log the client opened: $target (LOG= said $LOG)"
 				LOG=$target
