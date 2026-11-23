@@ -36,11 +36,21 @@
 #   RETRY_DELAY=40         Seconds between attempts.
 #   EXTRA_ARGS="--nopatch 1"
 #                          Extra client arguments.
+#   ENV="NLVK_STATS=1 RYZOM_VEG_STATE=1"
+#                          Environment variables exported to the client
+#                          (through the virtual screen). DISPLAY and
+#                          RYZOM_HARNESS_* are reserved: the harness owns
+#                          them, so they are rejected here.
 #   GAMESCOPE_BACKEND=wayland|x11
 #                          gamescope backend (default: wayland when
 #                          WAYLAND_DISPLAY is set, otherwise x11).
 #   HARNESS_DIR=./tmp/harness
 #                          Where gamescope/Xvfb logs go. Never uses /tmp.
+#   REUSE=1              Return the tracked client for this account/slot if it
+#                          is still alive with the same executable and ENV; exit
+#                          6 when there is none.
+#   STOP=1               Stop only that tracked client, then exit 0.
+#   DRYRUN=1             Print the resolved command line, change nothing.
 #
 # On success it prints three KEY=VALUE lines and exits 0:
 #
@@ -85,6 +95,10 @@ TIMEOUT=${TIMEOUT:-180}
 RETRIES=${RETRIES:-3}
 RETRY_DELAY=${RETRY_DELAY:-40}
 EXTRA_ARGS=${EXTRA_ARGS---nopatch 1}
+ENV=${ENV:-}
+REUSE=${REUSE:-}
+STOP=${STOP:-}
+DRYRUN=${DRYRUN:-}
 GAMESCOPE_BACKEND=${GAMESCOPE_BACKEND:-}
 HARNESS_DIR=${HARNESS_DIR:-}
 
@@ -92,7 +106,7 @@ for arg in "$@"; do
 	case "$arg" in
 	-h|--help) usage ;;
 	DRIVER=*|SCREEN=*|CLIENT=*|ACCOUNT=*|PASSWORD=*|SLOT=*|RESOLUTION=*|\
-	WAIT_FOR=*|LOG=*|TIMEOUT=*|RETRIES=*|RETRY_DELAY=*|EXTRA_ARGS=*|\
+	WAIT_FOR=*|LOG=*|TIMEOUT=*|RETRIES=*|RETRY_DELAY=*|EXTRA_ARGS=*|ENV=*|REUSE=*|STOP=*|DRYRUN=*|\
 	GAMESCOPE_BACKEND=*|HARNESS_DIR=*)
 		key=${arg%%=*}
 		value=${arg#*=}
@@ -107,6 +121,17 @@ done
 [ -z "$WAIT_FOR" ] && { [ -n "$ACCOUNT" ] && WAIT_FOR=ingame || WAIT_FOR=window; }
 case "$WAIT_FOR" in ingame|login|window) ;; *) die "WAIT_FOR must be ingame, login or window";; esac
 case "$SCREEN" in gamescope|gamescope-headless|xvfb|none) ;; *) die "SCREEN must be gamescope, gamescope-headless, xvfb or none";; esac
+
+# Extra environment for the client: space separated VAR=value words. The
+# harness owns DISPLAY and RYZOM_HARNESS_*, so they may not be overridden.
+ENV_PASS=()
+for word in $ENV; do
+	[ "$word" = "${word#*=}" ] && die "ENV: '$word' has no VAR=value form"
+	case "${word%%=*}" in
+		DISPLAY|RYZOM_HARNESS_*) die "ENV: ${word%%=*} is reserved for the harness" ;;
+	esac
+	ENV_PASS+=("$word")
+done
 
 case "$RESOLUTION" in
 	*x*) SCREEN_W=${RESOLUTION%x*}; SCREEN_H=${RESOLUTION#*x} ;;
@@ -131,6 +156,83 @@ _CLIENT_TAG=$(stat -c '%s-%Y' "$CLIENT_ABS" 2>/dev/null | tr -d ' ' || true)
 export NLVK_PIPELINE_CACHE_PATH=${NLVK_PIPELINE_CACHE_PATH:-$HARNESS_DIR/pipeline-cache-$_CLIENT_TAG.bin}
 LOG=${LOG:-$PWD/client.log}
 LOG=$(readlink -m "$LOG")
+
+# ---------------------------------------------------------------------------
+# Client command line, and the one client we own
+# ---------------------------------------------------------------------------
+
+CLIENT_ARGS=()
+if [ -n "$ACCOUNT" ]; then
+	CLIENT_ARGS+=("$ACCOUNT" "$PASSWORD")
+	if [ -n "$SLOT" ]; then
+		CLIENT_ARGS+=(slot "$SLOT")
+	fi
+fi
+# shellcheck disable=SC2206  # word splitting of EXTRA_ARGS is intended
+CLIENT_ARGS+=($EXTRA_ARGS)
+
+# Each account/slot gets one tracked client. The token in its environment is
+# what proves a pid is ours: we never look for ryzom_client* by name, and we
+# never touch a client that was started some other way (notably --profile 0).
+STATE_ID="$ACCOUNT-slot${SLOT:-none}"
+STATE_FILE="$HARNESS_DIR/$STATE_ID.pid"
+STATE_TAG="ryzom-harness-$STATE_ID"
+
+# The tracked client, verified through /proc: same executable and our token.
+find_tracked() {
+	local pid exe
+	[ -f "$STATE_FILE" ] || return 1
+	read -r pid _ <"$STATE_FILE" 2>/dev/null
+	[ -n "$pid" ] || return 1
+	[ -r "/proc/$pid/environ" ] || return 1
+	exe=$(readlink "/proc/$pid/exe" 2>/dev/null)
+	[ "$exe" = "$CLIENT_ABS" ] || return 1
+	{ tr '\0' '\n' <"/proc/$pid/environ"; } 2>/dev/null | grep -qx "RYZOM_HARNESS_STATE=$STATE_TAG" || return 1
+	echo "$pid"
+}
+
+stop_tracked() {
+	local pid token p
+	pid=$(find_tracked) || { info "nothing tracked for $STATE_ID"; return 0; }
+	token=$(cut -d' ' -f2 "$STATE_FILE")
+	# the virtual screen was started with the same token: stop it through /proc,
+	# never by matching a process name.
+	for p in /proc/[0-9]*; do
+		[ -r "$p/environ" ] || continue
+		{ tr '\0' '\n' <"$p/environ"; } 2>/dev/null | grep -qx "RYZOM_HARNESS_TOKEN=$token" || continue
+		kill -TERM "${p#/proc/}" 2>/dev/null
+	done
+	for _ in $(seq 1 40); do
+		[ -r "/proc/$pid" ] || break
+		sleep 0.25
+	done
+	rm -f "$STATE_FILE"
+	info "stopped the tracked client for $STATE_ID (pid $pid)"
+}
+
+if [ -n "$DRYRUN" ]; then
+	printf 'DRYRUN: %s' "$CLIENT_ABS"; for a in "${CLIENT_ARGS[@]}"; do printf ' %s' "$a"; done; printf '\n'
+	printf 'DRYRUN: env %s\n' "${ENV:-<none>}"
+	printf 'DRYRUN: screen %s %sx%s, log %s, state %s\n' "$SCREEN" "$SCREEN_W" "$SCREEN_H" "$LOG" "$STATE_FILE"
+	exit 0
+fi
+
+if [ -n "$STOP" ]; then
+	stop_tracked
+	exit 0
+fi
+
+if [ -n "$REUSE" ]; then
+	if pid=$(find_tracked); then
+		CLIENT_PID=$pid
+		SCREEN_DISPLAY=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^DISPLAY=//p' | head -1)
+		printf 'DISPLAY=%s\nCLIENT_PID=%s\nLOG=%s\n' "${SCREEN_DISPLAY:-?}" "$CLIENT_PID" "$LOG"
+		info "reusing the tracked client for $STATE_ID (pid $CLIENT_PID)"
+		HARNESS_OK=1
+		exit 0
+	fi
+	exit 6
+fi
 
 # ---------------------------------------------------------------------------
 # client.cfg
@@ -215,7 +317,7 @@ start_screen() {
 		else
 			args+=(--backend "$backend")
 		fi
-		env RYZOM_HARNESS_TOKEN="$TOKEN" \
+		env ${ENV_PASS[@]+"${ENV_PASS[@]}"} RYZOM_HARNESS_STATE="$STATE_TAG" RYZOM_HARNESS_TOKEN="$TOKEN" \
 			gamescope "${args[@]}" -- "$CLIENT_ABS" "${CLIENT_ARGS[@]}" \
 			>>"$HARNESS_DIR/gamescope.log" 2>&1 &
 		SCREEN_PID=$!
@@ -257,28 +359,18 @@ find_client_pid() {
 }
 
 start_client() {
-	CLIENT_ARGS=()
-	if [ -n "$ACCOUNT" ]; then
-		CLIENT_ARGS+=("$ACCOUNT" "$PASSWORD")
-		if [ -n "$SLOT" ]; then
-			CLIENT_ARGS+=(slot "$SLOT")
-		fi
-	fi
-	# shellcheck disable=SC2206  # word splitting of EXTRA_ARGS is intended
-	CLIENT_ARGS+=($EXTRA_ARGS)
-
 	[ -f "$LOG" ] && mv -f "$LOG" "$LOG.previous"
 
 	case "$SCREEN" in
 	gamescope|gamescope-headless) start_screen ;;
 	xvfb)
 		start_screen
-		env DISPLAY="$SCREEN_DISPLAY" RYZOM_HARNESS_TOKEN="$TOKEN" \
+		env ${ENV_PASS[@]+"${ENV_PASS[@]}"} RYZOM_HARNESS_STATE="$STATE_TAG" DISPLAY="$SCREEN_DISPLAY" RYZOM_HARNESS_TOKEN="$TOKEN" \
 			"$CLIENT_ABS" "${CLIENT_ARGS[@]}" >>"$HARNESS_DIR/client.out" 2>&1 &
 		CLIENT_PID=$!
 		;;
 	none)
-		env RYZOM_HARNESS_TOKEN="$TOKEN" "$CLIENT_ABS" "${CLIENT_ARGS[@]}" \
+		env ${ENV_PASS[@]+"${ENV_PASS[@]}"} RYZOM_HARNESS_STATE="$STATE_TAG" RYZOM_HARNESS_TOKEN="$TOKEN" "$CLIENT_ABS" "${CLIENT_ARGS[@]}" \
 			>>"$HARNESS_DIR/client.out" 2>&1 &
 		CLIENT_PID=$!
 		;;
@@ -361,6 +453,7 @@ while :; do
 		display=$(client_display)
 		[ -n "$display" ] || die "started but no DISPLAY found for pid $CLIENT_PID"
 		HARNESS_OK=1
+		echo "$CLIENT_PID $TOKEN" >"$STATE_FILE"
 		echo "DISPLAY=$display"
 		echo "CLIENT_PID=$CLIENT_PID"
 		echo "LOG=$LOG"
