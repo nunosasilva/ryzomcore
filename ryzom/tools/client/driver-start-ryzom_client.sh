@@ -178,16 +178,28 @@ STATE_ID="$ACCOUNT-slot${SLOT:-none}"
 STATE_FILE="$HARNESS_DIR/$STATE_ID.pid"
 STATE_TAG="ryzom-harness-$STATE_ID"
 
-# The tracked client, verified through /proc: same executable and our token.
+# The tracked client, verified through /proc by our token. The token is unique
+# per account/slot launch, so it alone proves the pid is ours; requiring the
+# executable too would make STOP/REUSE depend on passing the same CLIENT= as the
+# launch did, which is a trap (STOP reports 'nothing tracked' for a client the
+# harness itself started).
 find_tracked() {
-	local pid exe
+	local pid
 	[ -f "$STATE_FILE" ] || return 1
 	read -r pid _ <"$STATE_FILE" 2>/dev/null
 	[ -n "$pid" ] || return 1
 	[ -r "/proc/$pid/environ" ] || return 1
+	{ tr '\0' '\n' <"/proc/$pid/environ"; } 2>/dev/null | grep -qx "RYZOM_HARNESS_STATE=$STATE_TAG" || return 1
+	echo "$pid"
+}
+
+# REUSE additionally requires the same executable: reusing a client that runs
+# another binary would silently test the wrong build.
+find_tracked_same_exe() {
+	local pid exe
+	pid=$(find_tracked) || return 1
 	exe=$(readlink "/proc/$pid/exe" 2>/dev/null)
 	[ "$exe" = "$CLIENT_ABS" ] || return 1
-	{ tr '\0' '\n' <"/proc/$pid/environ"; } 2>/dev/null | grep -qx "RYZOM_HARNESS_STATE=$STATE_TAG" || return 1
 	echo "$pid"
 }
 
@@ -223,7 +235,7 @@ if [ -n "$STOP" ]; then
 fi
 
 if [ -n "$REUSE" ]; then
-	if pid=$(find_tracked); then
+	if pid=$(find_tracked_same_exe); then
 		CLIENT_PID=$pid
 		SCREEN_DISPLAY=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^DISPLAY=//p' | head -1)
 		printf 'DISPLAY=%s\nCLIENT_PID=%s\nLOG=%s\n' "${SCREEN_DISPLAY:-?}" "$CLIENT_PID" "$LOG"
@@ -376,7 +388,13 @@ log_holders() {
 		for f in "$p"/fd/*; do
 			target=$(readlink "$f" 2>/dev/null) || continue
 			case "$target" in
-			"$LOG"|"$LOG".*|"$base".log*) echo "${p#/proc/}"; return 0 ;;
+			"$LOG"|"$LOG".*|"$base".log*)
+				# Only a client blocks the launch. A log viewer (tail, grep, an
+				# editor) holds the same file open without writing it, and watching
+				# the log is a normal thing to do while testing.
+				case "$(readlink "/proc/${p#/proc/}/exe" 2>/dev/null)" in
+				*/ryzom_client*|ryzom_client*) echo "${p#/proc/}"; return 0 ;;
+				esac ;;
 			esac
 		done
 	done

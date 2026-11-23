@@ -57,12 +57,16 @@ static const float	kVegExtraBandScale= 1.40f;
 static const float	kVegExtraFarDensity= 0.22f;
 static const float	kVegExtraFarScale= 1.45f;
 /*
- * Merged thinning factor. A band's annulus grows by (farEdge/50)^2 = 4 at
- * 100m, so 0.35 keeps the total instance count of the whole 0..100m disc in
- * the stock 0..50m budget while still doubling the near field density.
- * RYZOM_VEG_MERGED_DENSITY overrides it without a rebuild.
+ * Merged density/scale factors. A tile keeps generating its authored instance
+ * count per band; stretching a band only keeps those instances alive from
+ * farther away, it does not spread them over more ground. So 1.0 makes the
+ * close-up look identical to stock by construction, and the cost of the
+ * extension is purely the larger number of tiles that stay alive. Override
+ * with RYZOM_VEG_MERGED_DENSITY / RYZOM_VEG_MERGED_SCALE to thin the far field
+ * without a rebuild.
  */
-static const float	kVegMergedDensity= 0.35f;
+static const float	kVegMergedDensity= 1.0f;
+static const float	kVegMergedScale= 1.0f;
 
 
 // ***************************************************************************
@@ -154,9 +158,21 @@ float	CVegetableExtra::getMergedDensity()
 
 
 // ***************************************************************************
-float	CVegetableExtra::getMergedScale(uint band) const
+float	CVegetableExtra::getMergedScale()
 {
-	return band + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST ? kVegExtraFarScale : kVegExtraBandScale;
+	static const float	sScale= []()
+	{
+		const char	*env= getenv("RYZOM_VEG_MERGED_SCALE");
+		if(env == NULL)
+			return kVegMergedScale;
+		float	v= 0.f;
+		fromString(std::string(env), v);
+		if(v <= 0.f)
+			return kVegMergedScale;
+		clamp(v, 0.f, 4.f);
+		return v;
+	}();
+	return sScale;
 }
 
 
@@ -168,14 +184,9 @@ bool	CVegetableExtra::hasSources(const CTileVegetableDesc &tileVegetDesc, uint d
 
 	if(_Merged)
 	{
-		// Bucket distType carries every band from distType to the last one,
-		// so an empty authored band is not a reason to skip the bucket.
-		for(uint k= distType; k < NL3D_VEGETABLE_BLOCK_NUMDIST; ++k)
-		{
-			if(!tileVegetDesc.getVegetableList(k).empty())
-				return true;
-		}
-		return false;
+		// Merged keeps one authored list per bucket, exactly like stock: an empty
+		// band means there is nothing to generate in that bucket.
+		return !tileVegetDesc.getVegetableList(distType).empty();
 	}
 
 	// Carrier: only the farthest bucket can copy the lower bands.
@@ -223,43 +234,20 @@ void	CVegetableExtra::buildSources(const CTileVegetableDesc &tileVegetDesc, uint
 	if(distType >= NL3D_VEGETABLE_BLOCK_NUMDIST)
 		return;
 
-	if(_Merged)
-	{
-		// Merged: this bucket holds bands distType..last. A band is skipped only
-		// where its reach is already inside the bucket's near edge, which is
-		// exactly the bands below distType: those species have alpha 0 for the
-		// whole time the block sits in this bucket or farther out, and they come
-		// back at their own reach edge, at alpha 0, when the camera closes in.
-		// Every source keeps its authored band's seed, scale and reach, so the
-		// instances of a band are bit-identical in all the buckets that hold it.
-		const float	density= getMergedDensity();
-		for(uint k= distType; k < NL3D_VEGETABLE_BLOCK_NUMDIST; ++k)
-		{
-			const std::vector<CVegetable>	&list= tileVegetDesc.getVegetableList(k);
-			const uint					bandSeed= tileVegetDesc.getVegetableSeed(k);
-			const float					bandScale= getMergedScale(k);
-			const float					bandReach= getBandFarDist(k);
-			for(uint v= 0; v < list.size(); ++v)
-			{
-				CSource	src;
-				src.Veget= &list[v];
-				src.Seed= v + bandSeed;
-				src.Density= density;
-				src.Scale= bandScale;
-				src.Reach= bandReach;
-				sources.push_back(src);
-			}
-		}
-		return;
-	}
-
+	// Both layouts keep the bucket's own authored band, and both fade it at
+	// that band's far edge. That is not a free choice: CLandscapeVegetableBlock
+	// keeps every bucket i >= _CurDistType alive at the same time, so a species
+	// placed in several buckets is drawn several times over the same ground,
+	// and each bucket crossing adds or removes one of those copies at full alpha
+	// (pop-in). One list per bucket with reach == the bucket's far edge makes
+	// the alpha reach 0 exactly where the bucket stops being alive: no duplicate
+	// copy, no pop, and no geometry generated past the distance where it would
+	// be invisible.
 	const bool	isFarBand= (distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST);
-	const float	ownDensity= getOwnDensity(tileVegetDesc, distType);
-	const float	ownScale= getOwnScale(distType);
-	// Carrier: every source of the bucket fades at the bucket's own far edge.
 	const float	bandReach= getBandFarDist(distType);
+	const float	density= _Merged ? getMergedDensity() : getOwnDensity(tileVegetDesc, distType);
+	const float	scale= _Merged ? getMergedScale() : getOwnScale(distType);
 
-	// Primary sources: this band's own species list, with its own seed.
 	const std::vector<CVegetable>	&ownList= tileVegetDesc.getVegetableList(distType);
 	const uint						ownSeed= tileVegetDesc.getVegetableSeed(distType);
 	for(uint i= 0; i < ownList.size(); ++i)
@@ -267,17 +255,18 @@ void	CVegetableExtra::buildSources(const CTileVegetableDesc &tileVegetDesc, uint
 		CSource	src;
 		src.Veget= &ownList[i];
 		src.Seed= i + ownSeed;
-		src.Density= ownDensity;
-		src.Scale= ownScale;
+		src.Density= density;
+		src.Scale= scale;
 		src.Reach= bandReach;
 		sources.push_back(src);
 	}
 
-	// Union copies: only the farthest bucket carries them. The copies reuse the
-	// lower band's own seed and own scale, so they are duplicates of a subset
-	// of that band's instances; crossing a band edge keeps the same plants and
-	// only thins them from the authored density to the union density.
-	if(!isFarBand)
+	// Carrier only: the farthest bucket additionally copies the lower bands. The
+	// copies reuse the lower band's own seed and own scale, so they are duplicates
+	// of a subset of that band's instances; crossing a band edge keeps the same
+	// plants and only thins them from the authored density to the union density.
+	// Kept for A/B against merged, not as a candidate default.
+	if(_Merged || !isFarBand)
 		return;
 
 	for(uint k= 0; k < distType; ++k)

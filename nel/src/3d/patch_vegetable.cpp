@@ -275,7 +275,7 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 			perBand[0], perBand[1], perBand[2], perBand[3], perBand[4],
 			extra.isMerged() ? "merged" : "carrier",
 			extra.isMerged() ? CVegetableExtra::getMergedDensity() : extra.getOwnDensity(tileVegetDesc, distType),
-			extra.isMerged() ? extra.getMergedScale(distType) : extra.getOwnScale(distType),
+			extra.isMerged() ? CVegetableExtra::getMergedScale() : extra.getOwnScale(distType),
 			(uint)vegetSources.size());
 	}
 

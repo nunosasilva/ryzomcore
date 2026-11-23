@@ -1235,7 +1235,7 @@
              offsets duplicated. -->
         <instance template="tgcw_scrollbarint"
                   id="lmvx"
-                  text="Micro-vegetation Extra (m)"
+                  text="Micro-vegetation Extra"
                   tooltip="0 = off, 100 = farthest; applies live"
                   posparent="mvd"
                   posref="BL TL"
@@ -3727,6 +3727,8 @@
                type="cfg"
                widget="sbint"
                realtime="end_scroll"
+               ui_view="landscape:lmvx:c_res"
+               ui_unit="uigcUnitMeters"
                link="MicroVegetExtra"
                preset="UI:TEMP:PRESET_LAND" />
         <param ui="landscape:mvd:c"
