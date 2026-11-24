@@ -185,6 +185,15 @@ float	CVegetableExtra::getMergedScale()
 
 
 // ***************************************************************************
+bool	CVegetableExtra::hasAnySources(uint distType) const
+{
+	// Stock, merged-band and carrier can put something in every bucket.
+	if(!isEnabled() || !_Merged || !_MergedIntoFar)
+		return true;
+	return distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST;
+}
+
+
 bool	CVegetableExtra::hasSources(const CTileVegetableDesc &tileVegetDesc, uint distType) const
 {
 	if(distType >= NL3D_VEGETABLE_BLOCK_NUMDIST)

@@ -129,7 +129,14 @@ void			CLandscapeVegetableBlock::init(const CVector &center, CVegetableManager *
 // ***************************************************************************
 void			CLandscapeVegetableBlock::release(CVegetableManager *vegeManager, CTessList<CLandscapeVegetableBlock> &vblist)
 {
-	// release all Igs, and all Sbs.
+	// State log: this is the only path that removes vegetation WITHOUT a distance
+	// type change. The landscape tessellation recreates vegetable blocks when its
+	// patches split or merge, so a block that was already holding instance groups
+	// can be dropped and re-created at a different distance bucket - which is what
+	// makes a patch of plants vanish or change species while walking, at full alpha
+	// and regardless of the bucket edges. Counted under RYZOM_VEG_STATE.
+	static const bool	vegStateLog= getenv("RYZOM_VEG_STATE") != NULL;
+	uint	releasedIg= 0;
 	for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
 	{
 		// release IGs first.
@@ -137,6 +144,8 @@ void			CLandscapeVegetableBlock::release(CVegetableManager *vegeManager, CTessLi
 		{
 			if(_VegetableIG[j][i])
 			{
+				if(!_VegetableIG[j][i]->isEmpty())
+					releasedIg++;
 				vegeManager->deleteIg(_VegetableIG[j][i]);
 				_VegetableIG[j][i] = nullptr;
 			}
@@ -150,12 +159,21 @@ void			CLandscapeVegetableBlock::release(CVegetableManager *vegeManager, CTessLi
 		}
 	}
 
+	// _CurDistType is the distance bucket the block was in, which is the proxy
+	// for how far the camera was: a block released with live instance groups while
+	// in a near bucket is vegetation that disappears at full alpha.
+	if(vegStateLog && releasedIg > 0)
+		nlinfo("VEGSTATE: block (%.1f %.1f) release with %u live ig, bucket %u",
+			_Center.x, _Center.y, releasedIg, (uint)_CurDistType);
+
 	// reset state.
 	_CurDistType= NL3D_VEGETABLE_BLOCK_NUMDIST;
-	const CVegetableExtra	&extra= vegeManager->getExtra();
-	const float	*distLUT= extra.isEnabled() ? extra.getSqrDistLUT() : CLVBSqrDistLUT::Array;
-	_SqrDistMin= distLUT[NL3D_VEGETABLE_BLOCK_NUMDIST];
-	_SqrDistMax= FLT_MAX;
+	{
+		const CVegetableExtra	&extra= vegeManager->getExtra();
+		const float				*distLUT= extra.isEnabled() ? extra.getSqrDistLUT() : CLVBSqrDistLUT::Array;
+		_SqrDistMin= distLUT[NL3D_VEGETABLE_BLOCK_NUMDIST];
+		_SqrDistMax= FLT_MAX;
+	}
 
 	// remove from list.
 	vblist.remove(this);
@@ -223,9 +241,14 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 			CLandscapeVegetableBlockCreateContext	ctx;
 			ctx.init(_Patch, _Ts, _Tt);
 
-			// create new Igs, for all tiles
+			// create new Igs, for all tiles. A bucket this layout can never fill
+			// (merged-far only fills the farthest one) is skipped: no instance group
+			// is allocated per tile just to be deleted again, and the state log stays
+			// honest about what was actually created.
 			for(uint i=newDistType; i<_CurDistType; i++)
 			{
+				if(!extra.hasAnySources(i))
+					continue;
 				if(vegStateLog)
 					nlinfo("VEGSTATE:   create d%u", i);
 				createVegetableIGForDistType(i, vegeManager, ctx);

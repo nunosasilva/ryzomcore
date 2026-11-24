@@ -161,13 +161,20 @@ public:
 	 */
 	bool					isMergedIntoFar() const { return _MergedIntoFar; }
 
-	/** True if the bucket's instance group has anything to generate for this
-	 *	tileset. merged-band and carrier use the bucket's own authored list, so an
-	 *	empty band is an empty bucket (carrier can still fill its farthest one from
-	 *	the lower bands); merged-far generates everything in the farthest bucket
-	 *	and nothing in the others.
+	/** True if this tileset's bucket has anything to generate. merged-band and
+	 *	carrier use the bucket's own authored list, so an empty band is an empty
+	 *	bucket (carrier can still fill its farthest one from the lower bands);
+	 *	merged-far generates everything in the farthest bucket and nothing in the
+	 *	others.
 	 */
 	bool					hasSources(const CTileVegetableDesc &tileVegetDesc, uint distType) const;
+
+	/** True if ANY tileset can put something in this bucket - the same rule
+	 *	without the tileset. merged-far only ever fills the farthest bucket, so
+	 *	CLandscapeVegetableBlock::update() can skip creating the instance groups
+	 *	for the others instead of allocating one per tile just to delete it again.
+	 */
+	bool					hasAnySources(uint distType) const;
 
 	/// Density of the lower-band copies in the farthest carrier (carrier only).
 	static float			getUnionDensity() { return 0.26f; }
