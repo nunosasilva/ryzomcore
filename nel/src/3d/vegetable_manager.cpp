@@ -1985,7 +1985,8 @@ bool		CVegetableManager::setExtraFarEdgeM(float farEdgeM)
 	{
 		nlinfo("VEGETABLE: distance layout %s: %u x %.0f m bands, far edge %.0f m, "
 			"density %s %.2f, zsort %.0f m",
-			_Extra.isMerged() ? "merged" : "carrier", CVegetableExtra::getNumBands(), _Extra.getBandDist(),
+			_Extra.isMerged() ? (_Extra.isMergedIntoFar() ? "merged-far" : "merged-band") : "carrier",
+			CVegetableExtra::getNumBands(), _Extra.getBandDist(),
 			_Extra.getFarEdgeM(),
 			_Extra.isMerged() ? "merged" : "union",
 			_Extra.isMerged() ? CVegetableExtra::getMergedDensity() : CVegetableExtra::getUnionDensity(),

@@ -72,13 +72,21 @@ static const float	kVegMergedScale= 1.0f;
 // ***************************************************************************
 CVegetableExtra::CVegetableExtra() :
 	_FarEdgeM(0.f),
-	_Merged(true)
+	_Merged(true),
+	_MergedIntoFar(true)
 {
 	// RYZOM_VEG_EXTRA_MODE=carrier selects the retired layout for A/B runs.
 	// Read once per process; it must not change while blocks are alive.
 	const char	*modeEnv= getenv("RYZOM_VEG_EXTRA_MODE");
 	if(modeEnv != NULL)
 		_Merged= (stricmp(modeEnv, "carrier") != 0);
+
+	// RYZOM_VEG_MERGED_INTO=band puts every authored band back into its own
+	// bucket instead of all of them into the farthest one. Same rule as above:
+	// read once, the buckets already alive would have to be rebuilt.
+	const char	*intoEnv= getenv("RYZOM_VEG_MERGED_INTO");
+	if(intoEnv != NULL)
+		_MergedIntoFar= (stricmp(intoEnv, "band") != 0);
 
 	buildLUT();
 }
@@ -184,8 +192,14 @@ bool	CVegetableExtra::hasSources(const CTileVegetableDesc &tileVegetDesc, uint d
 
 	if(_Merged)
 	{
-		// Merged keeps one authored list per bucket, exactly like stock: an empty
-		// band means there is nothing to generate in that bucket.
+		if(_MergedIntoFar)
+		{
+			// Everything lives in the farthest bucket; the others stay empty so
+			// crossing their edge cannot change what is on screen.
+			return (distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST) && !tileVegetDesc.empty();
+		}
+		// merged-band keeps one authored list per bucket, exactly like stock: an
+		// empty band means there is nothing to generate in that bucket.
 		return !tileVegetDesc.getVegetableList(distType).empty();
 	}
 
@@ -234,15 +248,50 @@ void	CVegetableExtra::buildSources(const CTileVegetableDesc &tileVegetDesc, uint
 	if(distType >= NL3D_VEGETABLE_BLOCK_NUMDIST)
 		return;
 
-	// Both layouts keep the bucket's own authored band, and both fade it at
-	// that band's far edge. That is not a free choice: CLandscapeVegetableBlock
-	// keeps every bucket i >= _CurDistType alive at the same time, so a species
-	// placed in several buckets is drawn several times over the same ground,
-	// and each bucket crossing adds or removes one of those copies at full alpha
-	// (pop-in). One list per bucket with reach == the bucket's far edge makes
-	// the alpha reach 0 exactly where the bucket stops being alive: no duplicate
-	// copy, no pop, and no geometry generated past the distance where it would
-	// be invisible.
+	// The constraint every layout here obeys: CLandscapeVegetableBlock keeps
+	// every bucket i >= _CurDistType alive at the same time, so a species placed
+	// in several buckets is drawn several times over the same ground, and each
+	// bucket crossing adds or removes one of those copies at full alpha (pop-in).
+	// So a species must live in exactly one bucket. What differs is which bucket,
+	// and that decides where its alpha fade sits.
+	// merged-far: the whole authored population of the tileset goes into the
+	// farthest bucket, every source reaching the far edge. It is the only bucket
+	// that is alive at every distance (update() keeps [Cur..4]), so a tile is
+	// generated once, when its block crosses in past the far edge, and no bucket
+	// crossing can create or delete anything any more: no fade-in ring, no band
+	// vanishing, and each species is still generated exactly once. The reach is
+	// the far edge for all of them, so there is a single alpha fade, at the far
+	// edge, exactly where the block stops being alive.
+	if(_Merged && _MergedIntoFar)
+	{
+		if(distType + 1 != NL3D_VEGETABLE_BLOCK_NUMDIST)
+			return;
+		for(uint k= 0; k < NL3D_VEGETABLE_BLOCK_NUMDIST; ++k)
+		{
+			const std::vector<CVegetable>	&bandList= tileVegetDesc.getVegetableList(k);
+			const uint						bandSeed= tileVegetDesc.getVegetableSeed(k);
+			for(uint i= 0; i < bandList.size(); ++i)
+			{
+				CSource	src;
+				src.Veget= &bandList[i];
+				// The band's own seed: the instance positions of a species do not
+				// depend on the layout, so merged-far close up matches stock exactly.
+				src.Seed= i + bandSeed;
+				src.Density= getMergedDensity();
+				src.Scale= getMergedScale();
+				src.Reach= getBandFarDist(NL3D_VEGETABLE_BLOCK_NUMDIST - 1);
+				src.Band= k;
+				sources.push_back(src);
+			}
+		}
+		return;
+	}
+
+	// merged-band / carrier: the bucket's own authored band, faded at that band's
+	// far edge. Nothing is duplicated and nothing is generated where it would be
+	// invisible, but a species is only alive from its own bucket's near edge outwards:
+	// it fades in across the whole band and the whole band is deleted when the block
+	// centre crosses back out past that edge.
 	const bool	isFarBand= (distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST);
 	const float	bandReach= getBandFarDist(distType);
 	const float	density= _Merged ? getMergedDensity() : getOwnDensity(tileVegetDesc, distType);
@@ -258,6 +307,7 @@ void	CVegetableExtra::buildSources(const CTileVegetableDesc &tileVegetDesc, uint
 		src.Density= density;
 		src.Scale= scale;
 		src.Reach= bandReach;
+		src.Band= distType;
 		sources.push_back(src);
 	}
 
@@ -282,6 +332,7 @@ void	CVegetableExtra::buildSources(const CTileVegetableDesc &tileVegetDesc, uint
 			src.Density= getUnionDensity();
 			src.Scale= lowerScale;
 			src.Reach= bandReach;
+			src.Band= k;
 			sources.push_back(src);
 		}
 	}

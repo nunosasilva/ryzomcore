@@ -65,15 +65,22 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	uint							distAddSeed= tileVegetDesc.getVegetableSeed(distType);
 	uint							numVegetable= (uint)vegetableList.size();
 
-	// Stock path: no vegetables at all for this bucket, skip. In the opt-in
-	// extended mode a tile whose own bucket is empty can still have something
-	// to generate: the merged layout puts the higher bands in every bucket, the
-	// carrier layout only in its farthest one (see vegetable_extra.h). hasSources()
-	// is the exact predicate, so a bucket that cannot carry anything still skips
-	// the whole setup path.
+	// A bucket that cannot carry anything for this tileset: skip the whole setup
+	// path (tile lights, lightmap UV, instance generation). Stock: no authored
+	// species for this bucket. Extended mode: whatever the layout decides to put
+	// in this bucket - hasSources() is the exact predicate (merged-far fills only
+	// the farthest bucket, carrier can fill its farthest one from the lower bands
+	// alone, merged-band uses the bucket's own list). Note hasSources() must be
+	// asked even when the bucket's own list is not empty: with merged-far a non-empty
+	// band 0..3 still generates nothing, and the setup cost would be pure waste.
 	const CVegetableExtra	&extra= getLandscape()->_VegetableManager->getExtra();
 	const bool				extraEnabled= extra.isEnabled();
-	if(numVegetable == 0 && !(extraEnabled && extra.hasSources(tileVegetDesc, distType)))
+	if(extraEnabled)
+	{
+		if(!extra.hasSources(tileVegetDesc, distType))
+			return;
+	}
+	else if(numVegetable == 0)
 		return;
 
 	// If any layer (2nd or 3rd) is set, but has no vegetable, then skip too
@@ -222,6 +229,7 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 			src.Density= 1.f;
 			src.Scale= 1.f;
 			src.Reach= (distType+1) * NL3D_VEGETABLE_BLOCK_ELTDIST;
+			src.Band= distType;
 			vegetSources.push_back(src);
 		}
 	}
@@ -250,30 +258,29 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 		return;
 
 	// Generated-IG state log, opt-in through RYZOM_VEG_STATE=1. The env lookup
-	// is cached: this runs once per generated IG (thousands per walk). It reports
-	// what the layout actually put in this instance group: for merged, how many
-	// species were taken from each authored band; for carrier, how many were
-	// copied from each lower band (union5 style), which is what makes the copy
-	// scope/density tuning measurable. Sources are attributed to a band by their
-	// reach, which is unique per band in both layouts.
+	// is cached: this runs once per generated IG (thousands per walk). 'd%u' is the
+	// bucket being generated, 'own' the size of that bucket's authored list, 'sources'
+	// what the layout actually put in the instance group, and 'bands' how many of
+	// those sources came from each of the five authored lists - which is what makes
+	// the layout difference visible in the log: merged-band one band, merged-far all
+	// five, carrier the own band plus the lower ones copied into the far bucket.
+	// Attribution is by CSource::Band, not by reach: with merged-far every source
+	// shares the far edge as its reach, so reach no longer identifies the band.
 	static const bool	vegStateLog= getenv("RYZOM_VEG_STATE") != NULL;
 	if(extraEnabled && vegStateLog)
 	{
 		uint	perBand[NL3D_VEGETABLE_BLOCK_NUMDIST]= { 0, 0, 0, 0, 0 };
 		for(uint s= 0; s < vegetSources.size(); ++s)
 		{
-			for(uint k= 0; k < NL3D_VEGETABLE_BLOCK_NUMDIST; ++k)
-			{
-				if(vegetSources[s].Reach == extra.getBandFarDist(k))
-					perBand[k]++;
-			}
+			if(vegetSources[s].Band < NL3D_VEGETABLE_BLOCK_NUMDIST)
+				perBand[vegetSources[s].Band]++;
 		}
 		nlinfo("VEGSTATE: tile %u d%u own %u extra %u bands %u/%u/%u/%u/%u "
 			"mode %s den %.2f scale %.2f sources %u",
 			tileId, distType, numVegetable,
 			(uint)(vegetSources.size() > numVegetable ? vegetSources.size() - numVegetable : 0),
 			perBand[0], perBand[1], perBand[2], perBand[3], perBand[4],
-			extra.isMerged() ? "merged" : "carrier",
+			extra.isMerged() ? (extra.isMergedIntoFar() ? "merged-far" : "merged-band") : "carrier",
 			extra.isMerged() ? CVegetableExtra::getMergedDensity() : extra.getOwnDensity(tileVegetDesc, distType),
 			extra.isMerged() ? CVegetableExtra::getMergedScale() : extra.getOwnScale(distType),
 			(uint)vegetSources.size());
