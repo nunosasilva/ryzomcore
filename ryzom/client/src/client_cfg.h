@@ -33,6 +33,7 @@
 #include "nel/misc/vector.h"
 #include "nel/misc/rgba.h"
 #include "nel/misc/config_file.h"
+#include "nel/3d/vegetable_def.h"
 
 #include "nel/sound/sound_anim_manager.h"
 
