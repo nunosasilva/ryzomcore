@@ -95,7 +95,15 @@ CVegetableExtra::CVegetableExtra() :
 // ***************************************************************************
 bool	CVegetableExtra::setFarEdgeM(float metres)
 {
-	clamp(metres, 0.f, 100.f);
+	// QA override: RYZOM_VEG_FAR_EDGE_M replaces the distance an enabled request
+	// asks for, so a measurement run can try 50/75/100 m without a cfg slider. Read
+	// once per process, like the other RYZOM_VEG_* selectors: changing it while
+	// blocks are alive would need the instance groups rebuilt.
+	static const char	*farEdgeEnv= getenv("RYZOM_VEG_FAR_EDGE_M");
+	if(metres > 0.f && farEdgeEnv != NULL)
+		metres= (float)atof(farEdgeEnv);
+
+	clamp(metres, 0.f, NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST);
 	// A value between 0 and the stock far edge would give bands narrower than
 	// the stock 10m ones (a degenerate layout). The key used to be a boolean,
 	// so treat any 0<x as "on, minimum extension" and land on the stock far

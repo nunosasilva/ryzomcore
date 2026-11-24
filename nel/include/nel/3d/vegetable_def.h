@@ -47,6 +47,24 @@ namespace NL3D
 /// Blend apperance transition
 #define	NL3D_VEGETABLE_BLOCK_BLEND_TRANSITION_DIST	10.0f
 
+/// client.cfg MicroVegetExtra is a switch (0 = off, 1 = on). When it is on, this
+/// is the distance in metres the microvegetation reaches; CVegetableExtra splits
+/// it in five bands. RYZOM_VEG_FAR_EDGE_M overrides it for measurement only.
+#define	NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST	100.0f
+
+/// Why CPatch::generateTileVegetable() generated no instance for one tile. Filled
+/// only when the caller passes a pointer (diagnostic runs under RYZOM_VEG_STATE);
+/// it is what tells 'this layout puts nothing here' apart from 'this tile has no
+/// material yet', which look identical on screen.
+enum	TVegSkipReason
+{
+	VegSkipGenerated = 0, /// instances were generated
+	VegSkipWaterOff,      /// the tile says VegetableDisabled (under water)
+	VegSkipNoTile,        /// Tile[0] is NL_TILE_ELM_LAYER_EMPTY: no material to read
+	VegSkipNoSource,      /// this layout/tileset has no species for this bucket
+	VegSkipUnderBuilding, /// a 2nd/3rd layer without vegetable: no veg under buildings
+};
+
 
 /// The number of Quadrant for vegetable sorting.
 #define	NL3D_VEGETABLE_NUM_QUADRANT		8

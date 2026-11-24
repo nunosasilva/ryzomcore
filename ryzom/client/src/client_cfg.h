@@ -265,10 +265,18 @@ struct CClientConfig
 	bool			DisableTextureShdr;
 	/// Enable/Disable MicroVeget.
 	bool			MicroVeget;
-	/// Microvegetation extra distance, in metres: 0 = off (stock 0..50m),
-	/// otherwise how far the microvegetation reaches (max 100m). Changing it
-	/// rebuilds the vegetable instance groups, like MicroVegetDensity does.
+	/// Microvegetation switch: 0 = off (stock 0..50m layout), 1 = on, where the
+	/// microvegetation takes over the stock layout and reaches the fixed distance
+	/// of NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST. Changing it rebuilds the vegetable
+	/// instance groups, like MicroVegetDensity does.
 	sint32			MicroVegetExtra;
+	/// The resolved far edge in metres, for CLandscape::setVegetableExtra(). Kept
+	/// here because the cfg key is a switch while the NeL API takes metres: this is
+	/// the single place that translates one into the other.
+	float			microVegetExtraFarEdgeM() const
+	{
+		return MicroVegetExtra != 0 ? NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST : 0.f;
+	}
 	/// Density of microvegetation in %
 	float			MicroVegetDensity;
 	/// Enable/Disable High Def Entity Texture quality. By default its false

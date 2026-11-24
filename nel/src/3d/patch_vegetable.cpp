@@ -43,7 +43,7 @@ namespace NL3D
 
 // ***************************************************************************
 void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distType, uint ts, uint tt,
-	CLandscapeVegetableBlockCreateContext &vbCreateCtx)
+	CLandscapeVegetableBlockCreateContext &vbCreateCtx, TVegSkipReason *skipReason)
 {
 	uint	i;
 
@@ -54,10 +54,26 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	CTileElement::TVegetableInfo	vegetWaterState= Tiles[tt * OrderS + ts].getVegetableState();
 	// If vegetable disabled, skip!
 	if(vegetWaterState == CTileElement::VegetableDisabled)
+	{
+		if(skipReason)
+			*skipReason= VegSkipWaterOff;
 		return;
+	}
 
 	// get the tileId under this tile (<=> the tile material)
 	uint	tileId= Tiles[tt * OrderS + ts].Tile[0];
+
+	// No material on this tile (zone not fully loaded, or a hole in the tiles):
+	// getTileVegetableDesc() would answer with its static empty desc, which is
+	// indistinguishable from a tileset that has no species. Named separately because
+	// the first is temporary - the tile gets its material on the next bucket change -
+	// and the second is authored.
+	if(tileId == NL_TILE_ELM_LAYER_EMPTY)
+	{
+		if(skipReason)
+			*skipReason= VegSkipNoTile;
+		return;
+	}
 
 	// get list of vegetable for this tile, and for hist distanceType category.
 	const CTileVegetableDesc		&tileVegetDesc= getLandscape()->getTileVegetableDesc(tileId);
@@ -78,10 +94,18 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	if(extraEnabled)
 	{
 		if(!extra.hasSources(tileVegetDesc, distType))
+		{
+			if(skipReason)
+				*skipReason= VegSkipNoSource;
 			return;
+		}
 	}
 	else if(numVegetable == 0)
+	{
+		if(skipReason)
+			*skipReason= VegSkipNoSource;
 		return;
+	}
 
 	// If any layer (2nd or 3rd) is set, but has no vegetable, then skip too
 	// This is to ensure "no vegetable under buildings".
@@ -91,9 +115,17 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 		uint	tileId2= Tiles[tt * OrderS + ts].Tile[2];
 		// NB: test distType
 		if(getLandscape()->getTileVegetableDesc(tileId1).empty())
+		{
+			if(skipReason)
+				*skipReason= VegSkipUnderBuilding;
 			return;
+		}
 		if(tileId2!=NL_TILE_ELM_LAYER_EMPTY && getLandscape()->getTileVegetableDesc(tileId2).empty())
+		{
+			if(skipReason)
+				*skipReason= VegSkipUnderBuilding;
 			return;
+		}
 	}
 
 

@@ -275,6 +275,21 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 
 
 // ***************************************************************************
+/// Name a TVegSkipReason for the state log.
+static const char	*vegSkipReasonName(TVegSkipReason reason)
+{
+	switch(reason)
+	{
+		case VegSkipWaterOff:      return "vegetable disabled on this tile";
+		case VegSkipNoTile:        return "no tile material loaded";
+		case VegSkipNoSource:      return "no species for this bucket";
+		case VegSkipUnderBuilding: return "under a building layer";
+		default:                   return "generated";
+	}
+}
+
+
+// ***************************************************************************
 void			CLandscapeVegetableBlock::createVegetableIGForDistType(uint i, CVegetableManager *vegeManager,
 	CLandscapeVegetableBlockCreateContext &vbCreateCtx)
 {
@@ -299,13 +314,31 @@ void			CLandscapeVegetableBlock::createVegetableIGForDistType(uint i, CVegetable
 			CVegetableInstanceGroup		*vegetIg= vegeManager->createIg(_VegetableSortBlock[tileId]);
 			_VegetableIG[tileId][i]= vegetIg;
 
-			// generate
-			_Patch->generateTileVegetable(vegetIg, i, tms, tmt, vbCreateCtx);
+			// generate. Under RYZOM_VEG_STATE ask why an empty instance group is empty:
+			// a tile whose material is not loaded yet (VegSkipNoTile) is temporary and
+			// will only be retried on this block's next distance change, which the merged
+			// layout makes rare - that is how a patch of ground stays bare.
+			static const bool	vegStateLog= getenv("RYZOM_VEG_STATE") != NULL;
+			TVegSkipReason	skipReason= VegSkipGenerated;
+			_Patch->generateTileVegetable(vegetIg, i, tms, tmt, vbCreateCtx, vegStateLog ? &skipReason : NULL);
 
 			// If the ig is empty, delete him. This optimize rendering because no useless ig are
 			// tested for rendering. This speed up some 1/10 of ms...
 			if(vegetIg->isEmpty())
 			{
+				if(vegStateLog)
+				{
+					static uint	emptyIgCount= 0;
+					emptyIgCount++;
+					// the first ones in detail, then only the running total: enough to
+					// tell the causes apart without flooding the log on a long run.
+					if(emptyIgCount <= 60)
+						nlinfo("VEGSTATE:   ig d%u tile %u EMPTY (%s) at (%.1f %.1f) tileId %u",
+							i, tileId, vegSkipReasonName(skipReason), _Center.x, _Center.y,
+							_Patch->getTileIdAt(_Ts + (tileId & 1), _Tt + (tileId >> 1)));
+					else if((emptyIgCount & 0xFF) == 0)
+						nlinfo("VEGSTATE:   %u empty ig so far (last %s)", emptyIgCount, vegSkipReasonName(skipReason));
+				}
 				vegeManager->deleteIg(vegetIg);
 				_VegetableIG[tileId][i] = nullptr;
 			}

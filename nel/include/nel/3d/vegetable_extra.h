@@ -36,10 +36,15 @@ class CVegetable;
 /**
  * Opt-in extension of the microvegetation distance (client.cfg MicroVegetExtra).
  *
- * MicroVegetExtra is a length in metres, 0 = off: it is the far edge of the
- * microvegetation. The stock landscape has five authored species sets over
- * 0..50m (10m each) and nothing beyond; the extended layout stretches the same
- * five sets over 0..MicroVegetExtra m (MicroVegetExtra/5 m each).
+ * client.cfg MicroVegetExtra is a switch: 0 = off, 1 = on. When it is on, the
+ * microvegetation takes over the stock layout and reaches
+ * NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST (100m); the distance is a constant of NeL,
+ * not a user knob. This class keeps taking the far edge in metres, because
+ * RYZOM_VEG_FAR_EDGE_M overrides it for measurement, and because a future
+ * per-biome distance would come through the same API.
+ *
+ * The stock landscape has five authored species sets over 0..50m (10m each) and
+ * nothing beyond; the extended layout spreads the same sets over 0..far edge.
  *
  * The five distance buckets of CLandscapeVegetableBlock are kept as they are
  * (the .vegetset file format keeps five species sets, and the block state

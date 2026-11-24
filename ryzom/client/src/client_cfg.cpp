@@ -391,7 +391,7 @@ CClientConfig::CClientConfig()
 	DisableVtxAGP		= false;					// Disable Hardware Vertex AGP.
 	DisableTextureShdr	= false;					// Disable Hardware Texture Shader.
 	MicroVeget			= true;						// Default is with MicroVeget.
-	MicroVegetExtra		= 0;                        // Microvegetation extra distance in m (0 = off).
+	MicroVegetExtra		= 0;                        // Microvegetation switch: 0 = off, 1 = on.
 	MicroVegetDensity	= 100.0f;
 	HDEntityTexture		= false;
 	HDTextureInstalled	= false;

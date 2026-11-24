@@ -28,6 +28,7 @@
 #include "nel/misc/geom_ext.h"
 #include "nel/misc/object_vector.h"
 #include "nel/3d/tile_element.h"
+#include "nel/3d/vegetable_def.h"
 #include "nel/3d/tile_color.h"
 #include "nel/3d/tess_block.h"
 #include "nel/3d/tile_light_influence.h"
@@ -1171,9 +1172,16 @@ private:
 		generate the vegetables for a given tile in the vegetable manager.
 		instances are added to vegetIg.
 		Warning! Use OptFastFloor()! So call must be enclosed with a OptFastFloorBegin()/OptFastFloorEnd().
+
+		skipReason (optional) receives the TVegSkipReason when nothing was generated
+		for this tile. NULL (the stock call) keeps the behaviour and the cost as they are.
 	*/
 	void		generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distType, uint ts, uint tt,
-		CLandscapeVegetableBlockCreateContext &vbCreateCtx);
+		CLandscapeVegetableBlockCreateContext &vbCreateCtx, TVegSkipReason *skipReason= NULL);
+
+	/// The tile material id under one tile (NL_TILE_ELM_LAYER_EMPTY if none). Used
+	/// by the vegetable state log to name the tile an empty instance group sits on.
+	uint		getTileIdAt(uint ts, uint tt) const	{return Tiles[tt * OrderS + ts].Tile[0];}
 
 	// same as computeTileLightmapPrecomputed(), but brut result, not modified by colorTable.
 	void		getTileLumelmapPrecomputed(uint ts, uint tt, uint8 *dest, uint stride);

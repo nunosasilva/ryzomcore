@@ -1225,21 +1225,21 @@
                   y="-2" />
         <!-- Literal label: the string bank shipped with the live data has no
              key for this new experimental option (a "ui..." key would render
-             as <NotExist:...>). It is a slider, not a checkbox: the value is
-             the extra microvegetation distance in metres (0 = off), and it
-             applies live. min/max/step come from the MicroVegetExtra_min/_max/
-             _step cfg keys. Do not reparent: posparent=mvd lands below the
-             density slider, and x=0 keeps it in the slider's text column (+20
-             from lmv), which is where a scrollbar belongs; x=-20 would put it
-             in the checkbox column. Parenting to the page would need these
-             offsets duplicated. -->
-        <instance template="tgcw_scrollbarint"
+             as <NotExist:...>). It is a checkbox, not a slider: MicroVegetExtra
+             is a switch (0 = off, 1 = on) and the distance it reaches is a
+             constant of NeL (NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST), so there is
+             nothing to scale and no _min/_max/_step keys. Do not reparent: posparent=mvd
+             lands below the density slider, and x=-20 walks back from the slider's
+             text column (+20 from lmv) to the checkbox column, so the box glyph
+             is on the same left edge as the Micro-Vegetation one. Parenting to
+             the page would need these offsets duplicated. -->
+        <instance template="tgcw_checkbox"
                   id="lmvx"
                   text="Micro-vegetation Extra"
-                  tooltip="0 = off, 100 = farthest; applies live"
+                  tooltip="Takes over the microvegetation; applies live"
                   posparent="mvd"
                   posref="BL TL"
-                  x="0"
+                  x="-20"
                   y="-2" />
       </group>
       <ctrl style="skin_scroll"
@@ -3718,17 +3718,15 @@
                realtime="true"
                link="MicroVeget"
                preset="UI:TEMP:PRESET_LAND" />
-        <!-- Live: the value is a distance in metres (0 = off), and
-             updateFromClientCfg() compares MicroVegetExtra and calls
+        <!-- Switch (0 = off, 1 = on). Applying it live does not come from this
+             param - realtime is only honoured by scrollbars - but from
+             updateFromClientCfg() comparing MicroVegetExtra and calling
              CLandscape::setVegetableExtra(), which rebuilds the vegetable
-             instance groups. realtime="end_scroll" writes the cfg once per
-             drag, like the density slider, instead of on every pixel. -->
+             instance groups. Same shape as the MicroVeget checkbox above. -->
         <param ui="landscape:lmvx:c"
                type="cfg"
-               widget="sbint"
-               realtime="end_scroll"
-               ui_view="landscape:lmvx:c_res"
-               ui_unit="uigcUnitMeters"
+               widget="boolbut"
+               realtime="true"
                link="MicroVegetExtra"
                preset="UI:TEMP:PRESET_LAND" />
         <param ui="landscape:mvd:c"
