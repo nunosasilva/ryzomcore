@@ -46,7 +46,7 @@ public:
 
 	CLVBSqrDistLUT()
 	{
-		// Stock layout: 0, 10, 20, 30, 40, 50.
+		// 0, 10, 20, 30, 40, 50
 		for(uint i=0;i<NL3D_VEGETABLE_BLOCK_NUMDIST+1;i++)
 		{
 			Array[i]= i*NL3D_VEGETABLE_BLOCK_ELTDIST;
@@ -62,13 +62,21 @@ float		CLVBSqrDistLUT::Array[NL3D_VEGETABLE_BLOCK_NUMDIST+1];
 
 
 // ***************************************************************************
+/* Stock bands, or the doubled bands when MicroVegetExtra is enabled. */
+static const float *getSqrDistLUT(const CVegetableManager *vegetManager)
+{
+	const CVegetableExtra	&extra= vegetManager->getExtra();
+	return extra.isEnabled() ? extra.getSqrDistLUT() : CLVBSqrDistLUT::Array;
+}
+
+
+// ***************************************************************************
 CLandscapeVegetableBlock::CLandscapeVegetableBlock()
 {
 	_VegetableClipBlock = nullptr;
 	_CurDistType= NL3D_VEGETABLE_BLOCK_NUMDIST;
-	// No instance group created yet. init() caches the far bound of the active
-	// distance layout (stock 50m or extra 100m) so isInCurrentDistanceType()
-	// cannot skip the first update().
+	// No instance group created yet: only a view center inside the farthest
+	// bucket can leave update() with nothing to do.
 	_SqrDistMin= CLVBSqrDistLUT::Array[NL3D_VEGETABLE_BLOCK_NUMDIST];
 	_SqrDistMax= FLT_MAX;
 
@@ -114,11 +122,10 @@ void			CLandscapeVegetableBlock::init(const CVector &center, CVegetableManager *
 		}
 	}
 
-	// No IG created yet: cache the far bound of the active distance layout so
-	// isInCurrentDistanceType() cannot skip the first update().
-	const CVegetableExtra	&extra= vegetManager->getExtra();
-	const float	*distLUT= extra.isEnabled() ? extra.getSqrDistLUT() : CLVBSqrDistLUT::Array;
-	_SqrDistMin= distLUT[NL3D_VEGETABLE_BLOCK_NUMDIST];
+	// No instance group created yet: cache the far bound of the active layout
+	// (stock 50m or extra 100m), so isInCurrentDistanceType() cannot skip the
+	// first update().
+	_SqrDistMin= getSqrDistLUT(vegetManager)[NL3D_VEGETABLE_BLOCK_NUMDIST];
 	_SqrDistMax= FLT_MAX;
 
 	// append to list.
@@ -152,9 +159,7 @@ void			CLandscapeVegetableBlock::release(CVegetableManager *vegeManager, CTessLi
 
 	// reset state.
 	_CurDistType= NL3D_VEGETABLE_BLOCK_NUMDIST;
-	const CVegetableExtra	&extra= vegeManager->getExtra();
-	const float	*distLUT= extra.isEnabled() ? extra.getSqrDistLUT() : CLVBSqrDistLUT::Array;
-	_SqrDistMin= distLUT[NL3D_VEGETABLE_BLOCK_NUMDIST];
+	_SqrDistMin= getSqrDistLUT(vegeManager)[NL3D_VEGETABLE_BLOCK_NUMDIST];
 	_SqrDistMax= FLT_MAX;
 
 	// remove from list.
@@ -165,10 +170,7 @@ void			CLandscapeVegetableBlock::release(CVegetableManager *vegeManager, CTessLi
 void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableManager *vegeManager)
 {
 	float	sqrDist= (viewCenter-_Center).sqrnorm();
-
-	// Stock 0..50m edges, or the opt-in 0..100m edges of CVegetableExtra.
-	const CVegetableExtra	&extra= vegeManager->getExtra();
-	const float	*distLUT= extra.isEnabled() ? extra.getSqrDistLUT() : CLVBSqrDistLUT::Array;
+	const float	*distLUT= getSqrDistLUT(vegeManager);
 
 	// compute new distance type. Incremental mode.
 	uint	newDistType= _CurDistType;
@@ -189,12 +191,6 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 	// Change of distance type??
 	if(newDistType!=_CurDistType)
 	{
-		// Transition log for the extra path only; the regular path stays quiet.
-		static	const	bool	vegStateLogEnabled= getenv("RYZOM_VEG_STATE")!=NULL;
-		const	bool	vegStateLog= vegStateLogEnabled && extra.isEnabled();
-		if(vegStateLog)
-			nlinfo("VEGSTATE: block (%.1f %.1f) dist %.1f cur %u -> %u", _Center.x, _Center.y, sqrtf(sqrDist), _CurDistType, newDistType);
-
 		// Erase or create IGs.
 		if(newDistType>_CurDistType)
 		{
@@ -206,8 +202,6 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 				{
 					if(_VegetableIG[j][i])
 					{
-						if(vegStateLog)
-							nlinfo("VEGSTATE:   delete d%u tile %u", i, j);
 						vegeManager->deleteIg(_VegetableIG[j][i]);
 						_VegetableIG[j][i] = nullptr;
 					}
@@ -226,8 +220,6 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 			// create new Igs, for all tiles
 			for(uint i=newDistType; i<_CurDistType; i++)
 			{
-				if(vegStateLog)
-					nlinfo("VEGSTATE:   create d%u", i);
 				createVegetableIGForDistType(i, vegeManager, ctx);
 			}
 

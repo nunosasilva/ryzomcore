@@ -230,11 +230,10 @@ public:
 	 */
 	virtual	void		enableVegetable(bool enable) =0;
 
-	/** Opt-in extended microvegetation (100m bands + band-edge union copies).
-	 *	Call before the first zone/vegetable block is created (login or a full
-	 *	vegetable reload); it does not rebuild existing instance groups.
-	 *	The default implementation ignores it, so other ULandscape users are
-	 *	not affected.
+	/** Opt-in doubled microvegetation distance: five 20m bands from 0 to 100m
+	 *	instead of the stock five 10m bands from 0 to 50m. Call before the
+	 *	first zone/vegetable block is created; existing blocks are not rebuilt.
+	 *	The default implementation ignores it, so other users are unaffected.
 	 */
 	virtual	void		setVegetableExtra(bool /*enable*/) {}
 

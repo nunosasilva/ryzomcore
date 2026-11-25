@@ -49,7 +49,7 @@ class	CVegetableLightEx;
 // ***************************************************************************
 // By default there is 20 layers.
 #define	NL3D_VEGETABLE_DEFAULT_NUM_BLEND_LAYER	20
-// Default distance is 60 meters.
+// default distance is 60 meters.
 #define	NL3D_VEGETABLE_DEFAULT_DIST_MAX			60.f
 
 class CVertexProgramVeget;
@@ -194,20 +194,10 @@ public:
 	 */
 	float			getGlobalDensity() const {return _GlobalDensity;}
 
-	/** Opt-in extended microvegetation strategy (client.cfg MicroVegetExtra).
-	 *	The instance generation calls it only while it is enabled; disabled, the
-	 *	stock 0..50m bands and authored densities are used. Deliberately const:
-	 *	setExtraEnabled() is the only mutator, so the flag cannot be flipped
-	 *	behind the _ZSortLayerDistMax update.
+	/** Opt-in doubled microvegetation distance. Set it before the first
+	 *	vegetable block is created.
 	 */
 	const CVegetableExtra	&getExtra() const { return _Extra; }
-
-	/** Enable/disable the extended microvegetation. Must be done before the
-	 *	first vegetable block is created (login / zone load). Also stretches the
-	 *	ZSort blend-layer range so the far field is layered and fogged like the
-	 *	terrain instead of being left in front of the fog. An unchanged value is
-	 *	a no-op.
-	 */
 	void			setExtraEnabled(bool enabled);
 
 	// @}
@@ -419,7 +409,7 @@ private:
 	/// For Alpha Blend rdrPass, ordering into layers.
 	uint					_NumZSortBlendLayers;
 	float					_ZSortLayerDistMax;
-	/// Opt-in extended microvegetation (100m bands + band-edge union copies).
+	/// Opt-in doubled microvegetation distance (100m bands).
 	CVegetableExtra			_Extra;
 	CScene					*_ZSortScene;
 	std::vector<CVegetableBlendLayerModel*>		_ZSortModelLayers;

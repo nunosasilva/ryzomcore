@@ -3450,18 +3450,6 @@ bool		CLandscape::isVegetableActive() const
 // ***************************************************************************
 void		CLandscape::setVegetableExtra(bool enable)
 {
-	// Restart-to-apply is deliberate: a vegetable block caches the bucket
-	// bounds of the layout that was active when it was created, so changing
-	// the layout live would leave those blocks on the old LUT. Do not add a
-	// live rebuild here; warn when the new value cannot apply yet.
-	if(_VegetableManager->getExtra().isEnabled() == enable)
-		return;
-	if(_VegetableBlockList.size() != 0)
-	{
-		nlwarning("VEGETABLE: MicroVegetExtra set to %s while %d vegetable block(s) are alive; "
-			"existing blocks keep the old distance layout until the next zone load / restart",
-			enable ? "on" : "off", _VegetableBlockList.size());
-	}
 	_VegetableManager->setExtraEnabled(enable);
 }
 

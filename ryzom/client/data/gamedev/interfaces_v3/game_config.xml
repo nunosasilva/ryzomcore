@@ -1224,17 +1224,14 @@
                   x="20"
                   y="-2" />
         <!-- Literal label: the string bank shipped with the live data has no
-             key for this new experimental option (a "ui..." key would render
-             as <NotExist:...>). It applies on the next login/zone load.
-             Do not reparent: posparent=mvd lands below the density slider;
-             x=-20 walks back from the slider's text column (+20 from lmv) to
-             the checkbox column, so the box glyph is on the same left edge as
-             the Micro-Vegetation one. Parenting to the page would need these
-             offsets duplicated. -->
+             key for this experimental option (a "ui..." key would render as
+             <NotExist:...>). It applies on the next login / zone load.
+             posparent=mvd lands below the density slider; x=-20 puts the box
+             glyph on the same left edge as the Micro-Vegetation checkbox. -->
         <instance template="tgcw_checkbox"
                   id="lmvx"
                   text="Micro-vegetation Extra"
-                  tooltip="Applies on the next login / zone load"
+                  tooltip="Doubles the five bands (50m -> 100m); applies on the next login / zone load"
                   posparent="mvd"
                   posref="BL TL"
                   x="-20"
@@ -3716,10 +3713,8 @@
                realtime="true"
                link="MicroVeget"
                preset="UI:TEMP:PRESET_LAND" />
-        <!-- Restart-to-apply: only writes the cfg key, no live rebuild.
-             realtime="false" is decorative on a boolbut (realtime is only
-             honoured by scrollbars); the restart-to-apply comes from nothing
-             in updateFromClientCfg() comparing MicroVegetExtra. -->
+        <!-- Only writes the cfg key; MicroVegetExtra is applied on the next
+             login / zone load, there is no live rebuild. -->
         <param ui="landscape:lmvx:c"
                type="cfg"
                widget="boolbut"

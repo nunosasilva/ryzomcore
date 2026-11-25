@@ -472,8 +472,8 @@ public:
 	 */
 	void		enableVegetable(bool enable);
 
-	/** Opt-in extended microvegetation (see CVegetableExtra). Must be called
-	 *	before the first vegetable block is created.
+	/** Opt-in doubled microvegetation distance (client.cfg MicroVegetExtra).
+	 *	Must be called before the first vegetable block is created.
 	 */
 	void		setVegetableExtra(bool enable);
 

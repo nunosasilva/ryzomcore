@@ -123,7 +123,7 @@ void	CVegetable::registerToManager(CVegetableManager *manager)
 
 
 // ***************************************************************************
-void	CVegetable::generateGroupEx(float nbInst, const CVector &posInWorld, const CVector &surfaceNormal, uint vegetSeed, float densityScale, std::vector<CVector2f> &instances) const
+void	CVegetable::generateGroupEx(float nbInst, const CVector &posInWorld, const CVector &surfaceNormal, uint vegetSeed, std::vector<CVector2f> &instances) const
 {
 	nlassert(_Manager);
 
@@ -140,9 +140,6 @@ void	CVegetable::generateGroupEx(float nbInst, const CVector &posInWorld, const 
 
 	// modulate result by Global Manager density
 	nbInst*= _Manager->getGlobalDensity();
-
-	// CVegetableExtra: thin a stretched band (1 in the regular path)
-	nbInst*= densityScale;
 
 	// Now, 0<=nbInst<+oo. If we have 0.1, it means that we have 10% chance to spawn an instance.
 	// So add a "random" value (with help of a noise with High frequency)
@@ -174,7 +171,7 @@ void	CVegetable::generateGroupEx(float nbInst, const CVector &posInWorld, const 
 
 
 // ***************************************************************************
-void	CVegetable::generateGroup(const CVector &posInWorld, const CVector &surfaceNormal, float area, uint vegetSeed, float densityScale, std::vector<CVector2f> &instances) const
+void	CVegetable::generateGroup(const CVector &posInWorld, const CVector &surfaceNormal, float area, uint vegetSeed, std::vector<CVector2f> &instances) const
 {
 	// number of instances to generate
 	float	dens= Density.eval(posInWorld);
@@ -183,12 +180,12 @@ void	CVegetable::generateGroup(const CVector &posInWorld, const CVector &surface
 	float	nbInst= area * dens;
 
 	// modulate by normal and generate them.
-	generateGroupEx(nbInst, posInWorld, surfaceNormal, vegetSeed, densityScale, instances);
+	generateGroupEx(nbInst, posInWorld, surfaceNormal, vegetSeed, instances);
 }
 
 
 // ***************************************************************************
-void	CVegetable::generateGroupBiLinear(const CVector &posInWorld, const CVector posInWorldBorder[4], const CVector &surfaceNormal, float area, uint vegetSeed, float densityScale, std::vector<CVector2f> &instances) const
+void	CVegetable::generateGroupBiLinear(const CVector &posInWorld, const CVector posInWorldBorder[4], const CVector &surfaceNormal, float area, uint vegetSeed, std::vector<CVector2f> &instances) const
 {
 	sint	i;
 	const	float evenDistribFact= 12.25f;		// an arbitrary value to have a higher frequency for random.
@@ -217,7 +214,7 @@ void	CVegetable::generateGroupBiLinear(const CVector &posInWorld, const CVector 
 
 	// generate instances on the patch
 	// ==================
-	generateGroupEx(nbInstAverage, posInWorld, surfaceNormal, vegetSeed, densityScale, instances);
+	generateGroupEx(nbInstAverage, posInWorld, surfaceNormal, vegetSeed, instances);
 
 
 
@@ -306,7 +303,7 @@ void	CVegetable::reserveIgAddInstances(CVegetableInstanceGroupReserve &vegetIgRe
 // ***************************************************************************
 void	CVegetable::generateInstance(CVegetableInstanceGroup *ig, const NLMISC::CMatrix &posInWorld,
 		const NLMISC::CRGBAF &modulateAmbientColor, const NLMISC::CRGBAF &modulateDiffuseColor, float blendDistMax,
-		TVegetableWater vegetWaterState, CVegetableUV8 dlmUV, float instanceScale) const
+		TVegetableWater vegetWaterState, CVegetableUV8 dlmUV) const
 {
 	nlassert(_Manager);
 
@@ -330,7 +327,7 @@ void	CVegetable::generateInstance(CVegetableInstanceGroup *ig, const NLMISC::CMa
 		CVector		scale;
 		scale.x= scale.y= Sxy.eval(seed);
 		scale.z= Sz.eval(seed);
-		randomMat.scale(scale * instanceScale);
+		randomMat.scale(scale);
 	}
 
 	// Final Matrix.
