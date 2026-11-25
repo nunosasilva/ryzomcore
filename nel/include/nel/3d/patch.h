@@ -1183,6 +1183,20 @@ private:
 	/// by the vegetable state log to name the tile an empty instance group sits on.
 	uint		getTileIdAt(uint ts, uint tt) const	{return Tiles[tt * OrderS + ts].Tile[0];}
 
+	/** Identity of the tile data that microvegetation generation reads: the three
+	 *	tile ids and the vegetable/water state of the tile. A vegetable block
+	 *	caches this per tile and regenerates only the tiles whose key changed, so
+	 *	a tile material arriving or being replaced (zone/region transition,
+	 *	tessellation churn) refreshes exactly the affected blocks, and the blocks
+	 *	whose tile data is unchanged keep their instance groups untouched.
+	 */
+	uint64		getTileVegetableKey(uint ts, uint tt) const
+	{
+		const CTileElement	&tile= Tiles[tt * OrderS + ts];
+		return ((uint64)tile.Tile[0] << 32) | ((uint64)tile.Tile[1] << 16) | (uint64)tile.Tile[2]
+			| ((uint64)tile.getVegetableState() << 48);
+	}
+
 	// same as computeTileLightmapPrecomputed(), but brut result, not modified by colorTable.
 	void		getTileLumelmapPrecomputed(uint ts, uint tt, uint8 *dest, uint stride);
 	/** same as computeTileLightmapPixelPrecomputed, but brut result, not modified by colorTable.

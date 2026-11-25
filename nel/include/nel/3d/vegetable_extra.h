@@ -6,11 +6,10 @@
 // published by the Free Software Foundation, either version 3 of the
 // License, or (at your option) any later version.
 //
-// This program is distributed in the hope that it will be useful, but WITHOUT
-// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-// FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public License as
-// published by the Free Software Foundation, either version 3 of the
-// License, or (at your option) any later version.
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
@@ -34,58 +33,45 @@ class CVegetable;
 
 // ***************************************************************************
 /**
- * Opt-in extension of the microvegetation distance (client.cfg MicroVegetExtra).
+ * Opt-in extended microvegetation (client.cfg MicroVegetExtra).
  *
- * client.cfg MicroVegetExtra is a switch: 0 = off, 1 = on. When it is on, the
- * microvegetation takes over the stock layout and reaches
- * NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST (100m); the distance is a constant of NeL,
- * not a user knob. This class keeps taking the far edge in metres, because
- * RYZOM_VEG_FAR_EDGE_M overrides it for measurement, and because a future
- * per-biome distance would come through the same API.
+ * MicroVegetExtra is a switch: 0 = off, 1 = on. Off, this class is not used at
+ * all and CPatch::generateTileVegetable() runs the stock path byte for byte
+ * (five authored bands over 0..50m, authored densities/scales, no merged-far).
  *
- * The stock landscape has five authored species sets over 0..50m (10m each) and
- * nothing beyond; the extended layout spreads the same sets over 0..far edge.
+ * On, the microvegetation takes over the stock layout: every authored species
+ * list of the tileset is generated into the farthest of the five distance
+ * buckets and reaches NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST (100m) instead of the
+ * stock 0..50m. The `.vegetset` file format is untouched; only the bucket
+ * contents and the bucket edges change.
  *
- * The five distance buckets of CLandscapeVegetableBlock are kept as they are
- * (the .vegetset file format keeps five species sets, and the block state
- * machine creates/deletes instance group 'i' when the view center crosses the
- * bucket edges). Only the layout policy inside this class changes: which species
- * go into which bucket, and how far each of them reaches.
- *
- * Both layouts keep the five buckets and put the bucket's OWN authored species
- * list in it; they differ only in what happens to the bands that a bucket
- * would otherwise leave empty. The rule that constrains them:
+ * Why one bucket (the farthest):
  * CLandscapeVegetableBlock::update() keeps every bucket i >= _CurDistType
- * alive at the same time, and the vertex program fades a source's alpha to 0
- * at its own reach. So a species must live in exactly ONE bucket, and its reach
- * must be that bucket's far edge; anything else draws the same plants several
- * times over the same ground and makes them appear/disappear at full alpha on
- * every bucket crossing (pop-in).
+ * alive at the same time ([Cur..4]), so the farthest bucket is the only one
+ * that is alive at every distance. Generating a species there means it is
+ * created once - when the block enters the far edge - and is never created or
+ * deleted again while walking: no ring, no band vanishing, still exactly one
+ * copy of each species.
  *
- * - merged-band: the bucket's authored band, stretched to the wider band
- *   and faded at the wider far edge. Nothing is duplicated, nothing is generated
- *   where it would be invisible, and the close-up look is stock by construction.
- *   But a species is then only alive from its own bucket's near edge outwards,
- *   so it fades in across the whole band (a visible ring at the band midpoint)
- *   and the whole band vanishes when the block centre crosses back out past
- *   that edge. At 100m that reads as rings at ~35/55/75 m and large areas of
- *   grass disappearing at 20/40/60/80 m.
- * - merged-far (default): every authored species goes into the FARTHEST bucket,
- *   reaching the far edge. The farthest bucket is the only one alive at every
- *   distance (alive == [Cur..4]), so a tile's whole authored population is
- *   created once - when the block crosses in past the far edge - and is never
- *   created or deleted again while walking: no ring, no vanishing, still exactly
- *   one copy of each species. Close up it is the same union of species the stock
- *   layout shows (under 10m all five buckets are alive), so the look is stock;
- *   the price is that the far field now carries the full population, which is
- *   what RYZOM_VEG_MERGED_DENSITY thins.
- * - carrier: the merged-band layout plus the farthest bucket copying the lower
- *   bands (thinned). Duplicates instances over the same ground; kept only for
- *   A/B comparison.
+ * The two previous experiments are not kept, because both made plants appear or
+ * disappear at full alpha on a bucket crossing:
+ * - one authored band per bucket (each band stretched to its bucket) fades each
+ *   band in across its whole width and deletes it wholesale at the bucket edge;
+ *   at 100m that reads as rings at ~35/55/75m and large areas of grass
+ *   disappearing at 20/40/60/80m;
+ * - copying the lower bands into the farthest bucket duplicates instances over
+ *   the same ground and draws them several times at the same pixels.
+ * The rule that any future layout must keep: because [Cur..4] are alive
+ * together and the vertex program fades each source to alpha 0 at its own
+ * reach, a species must live in exactly one bucket, and its reach must be that
+ * bucket's far edge. Here: one bucket, one reach (the far edge).
  *
- * When MicroVegetExtra is 0, nothing here is used: the stock 0..50m LUT, the
- * authored lists and the authored densities/scales are generated by the regular
- * path, byte for byte.
+ * Density/scale: a tile keeps its authored instance count and scale per band
+ * (1.0), so the close-up is stock by construction; stretching a band only keeps
+ * those instances alive from farther away. The cost of the extension is the
+ * larger number of tiles that stay alive, not more instances per tile. The
+ * RYZOM_VEG_MERGED_DENSITY / RYZOM_VEG_MERGED_SCALE environment overrides exist
+ * for measurement runs only; they are read once per process.
  */
 class CVegetableExtra
 {
@@ -107,115 +93,71 @@ public:
 		*/
 		float				Reach;
 		/** Which of the five authored species lists this source came from. The
-		 *	bucket it is generated into and its reach are independent of it (the
-		 *	merged-far layout puts every band into one bucket), so this is what
-		 *	lets the RYZOM_VEG_STATE log attribute instances to a band.
+		 *	bucket it is generated into and its reach are independent of it (every
+		 *	band goes into the farthest bucket), so this is what lets the
+		 *	RYZOM_VEG_STATE log attribute instances to a band.
 		 */
 		uint				Band;
 	};
 
 	CVegetableExtra();
 
-	/** Master switch + length: 0 = stock layout, otherwise the far edge in
-	 *	metres (clamped to [0,100]). Returns true only if the layout actually
-	 *	changed, which is how CVegetableManager decides whether the caller has
-	 *	to rebuild the instance groups. A legacy value of 1 (the key used to be a
-	 *	boolean) means "on, minimum extension" and lands on the stock 50m far edge.
+	/** Master switch: false = stock layout, true = merged-far layout. Returns true
+	 *	only if the layout actually changed, which is how CVegetableManager decides
+	 *	whether the caller has to rebuild the instance groups.
 	 */
-	bool					setFarEdgeM(float metres);
-	/// Resolved far edge in metres (0 = stock layout). Clamped by setFarEdgeM().
+	bool					setEnabled(bool enabled);
+	bool					isEnabled() const { return _Enabled; }
+
+	/// Distance the extended layout reaches, in metres (meaningful when enabled).
 	float					getFarEdgeM() const { return _FarEdgeM; }
-	bool					isEnabled() const { return _FarEdgeM > 0.f; }
-
-	/// Number of distance buckets (the .vegetset file format keeps five).
-	static uint				getNumBands() { return NL3D_VEGETABLE_BLOCK_NUMDIST; }
-	/// Width of one band in the extended mode, in metres.
+	/// Width of one distance bucket in the extended layout, in metres.
 	float					getBandDist() const { return _FarEdgeM / (float)NL3D_VEGETABLE_BLOCK_NUMDIST; }
-	/// Far edge of a bucket in the extended mode.
-	float					getBandFarDist(uint distType) const;
-	/// Near edge of a bucket in the extended mode.
-	float					getBandNearDist(uint distType) const;
-
 	/// Squared bucket edges used by the block distance state machine.
 	/// Index 0..NUMDIST; the last entry is the far edge.
 	const float				*getSqrDistLUT() const { return _SqrDistLUT; }
 
-	/// Distance where the instances of a bucket reach alpha 0 in the extended
-	/// mode (only meaningful for the carrier layout: merged sets the reach
-	/// per source, see CSource::Reach). The fade starts at
-	/// getBlendDistMax() - getBlendTransitionDist().
-	float					getBlendDistMax(uint distType) const { return getBandFarDist(distType); }
-	/// Width of the alpha fade at a band edge (stock 10m transition).
-	static float			getBlendTransitionDist() { return NL3D_VEGETABLE_BLOCK_BLEND_TRANSITION_DIST; }
-
-	/// Distance of the farthest ZSort blend layer needed by the extended mode:
-	/// the far edge plus one band of margin, which keeps the farthest sort
-	/// blocks out of the last-layer clamp instead of piling them on layer 19.
+	/// Distance of the farthest ZSort blend layer needed by the extended layout:
+	/// the far edge plus one band of margin, which keeps the farthest sort blocks
+	/// out of the last-layer clamp instead of piling them on the last layer.
 	float					getZSortDistMax() const { return _FarEdgeM + getBandDist(); }
 
-	/// 'merged' layout (default), vs the retired 'carrier' one. Read once
-	/// from RYZOM_VEG_EXTRA_MODE.
-	bool					isMerged() const { return _Merged; }
-	/** Which bucket the merged layout generates the authored bands into:
-	 *	- far (default): the farthest bucket only, see the class comment.
-	 *	- band: each band into its own bucket (RYZOM_VEG_MERGED_INTO=band), kept
-	 *	  for A/B. Cheaper in the far field, but each band fades in across its
-	 *	  whole width and is deleted wholesale at the bucket edge.
-	 * Read once per process, like RYZOM_VEG_EXTRA_MODE: changing it would need
-	 * the already-alive buckets rebuilt, which is what setFarEdgeM() triggers.
-	 */
-	bool					isMergedIntoFar() const { return _MergedIntoFar; }
-
-	/** True if this tileset's bucket has anything to generate. merged-band and
-	 *	carrier use the bucket's own authored list, so an empty band is an empty
-	 *	bucket (carrier can still fill its farthest one from the lower bands);
-	 *	merged-far generates everything in the farthest bucket and nothing in the
-	 *	others.
+	/** True if this tileset's bucket has anything to generate. On, every authored
+	 *	list lives in the farthest bucket and the other buckets are empty.
 	 */
 	bool					hasSources(const CTileVegetableDesc &tileVegetDesc, uint distType) const;
 
 	/** True if ANY tileset can put something in this bucket - the same rule
-	 *	without the tileset. merged-far only ever fills the farthest bucket, so
-	 *	CLandscapeVegetableBlock::update() can skip creating the instance groups
-	 *	for the others instead of allocating one per tile just to delete it again.
+	 *	without the tileset. Only the farthest bucket can ever be filled, so
+	 *	CLandscapeVegetableBlock::update() skips creating the instance groups of
+	 *	the others instead of allocating one per tile just to delete it again.
 	 */
 	bool					hasAnySources(uint distType) const;
 
-	/// Density of the lower-band copies in the farthest carrier (carrier only).
-	static float			getUnionDensity() { return 0.26f; }
-	/// Far bucket density when every lower band is empty (carrier only).
-	static float			getFarOnlyDensity() { return 1.f; }
-	/** Density of every source in merged mode. A tile keeps its authored instance
-	 *	count per band, so 1.0 reproduces the stock close-up exactly; stretching a
-	 *	band only keeps those instances alive from farther away. Override with
-	 *	RYZOM_VEG_MERGED_DENSITY to thin the far field without a rebuild.
+	/** Density of every source in the extended layout. 1.0 reproduces the stock
+	 *	close-up exactly; override with RYZOM_VEG_MERGED_DENSITY for measurement.
 	 */
 	static float			getMergedDensity();
-	/** Scale of every source in merged mode, 1.0 = authored scale. Same rationale
-	 *	as getMergedDensity(); RYZOM_VEG_MERGED_SCALE overrides it.
+	/** Scale of every source in the extended layout, 1.0 = authored scale; same
+	 *	rationale as getMergedDensity(). RYZOM_VEG_MERGED_SCALE overrides it.
 	 */
 	static float			getMergedScale();
 
-	/// Density/scale multiplier of a bucket's own authored list (carrier only).
-	float					getOwnDensity(const CTileVegetableDesc &tileVegetDesc, uint distType) const;
-	float					getOwnScale(uint distType) const;
-
-	/** Build the lists generated by one tile's bucket in extended mode.
-	 *	- merged-band: the bucket's own authored list, at the merged density/scale,
-	 *	  reaching the bucket's far edge.
-	 *	- merged-far: in the farthest bucket only, every authored list of the tileset,
-	 *	  each source keeping its own band seed and reaching the far edge.
-	 *	- carrier: the same list at the band density/scale, then (in the farthest
-	 *	  bucket only) every lower list at the union density.
+	/** Fill 'sources' with the lists generated for one tile's bucket in the
+	 *	extended layout: in the farthest bucket, every authored list of the
+	 *	tileset, each source keeping its own band seed and reaching the far edge.
+	 *	The other buckets produce nothing.
 	 */
 	void					buildSources(const CTileVegetableDesc &tileVegetDesc, uint distType,
 								std::vector<CSource> &sources) const;
 
 private:
+	bool					_Enabled;
+	/// Distance the extended layout reaches (NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST,
+	/// or RYZOM_VEG_FAR_EDGE_M for measurement runs). Always built, so the LUT is
+	/// valid even while the switch is off; the stock LUT is used then.
 	float					_FarEdgeM;
-	bool					_Merged;
-	bool					_MergedIntoFar;
-	/// getBandFarDist(i)^2, monotonically increasing.
+	/// (band width * i)^2, monotonically increasing: the bucket edges.
 	float					_SqrDistLUT[NL3D_VEGETABLE_BLOCK_NUMDIST + 1];
 
 	void					buildLUT();

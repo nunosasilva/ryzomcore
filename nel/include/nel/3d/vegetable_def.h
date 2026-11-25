@@ -38,10 +38,10 @@ namespace NL3D
 
 
 /// For Landscape Vegetable: Distance Types are: 10m, 20m, 30m, 40m, 50m.
-/// The opt-in MicroVegetExtra mode (vegetable_extra.h) stretches the same five
-/// bands over 0..MicroVegetExtra metres without changing this stock layout or
-/// the file format; the bucket count stays five, only the edges and the species
-/// each bucket holds change.
+/// The opt-in MicroVegetExtra mode (vegetable_extra.h) keeps five buckets but
+/// stretches their edges to 20m each over 0..100m, and puts every authored
+/// species list in the farthest bucket. The stock layout and the .vegetset file
+/// format are unchanged; only the bucket edges and contents change.
 #define	NL3D_VEGETABLE_BLOCK_NUMDIST	5
 #define	NL3D_VEGETABLE_BLOCK_ELTDIST	10.0f
 /// Blend apperance transition
@@ -49,7 +49,7 @@ namespace NL3D
 
 /// client.cfg MicroVegetExtra is a switch (0 = off, 1 = on). When it is on, this
 /// is the distance in metres the microvegetation reaches; CVegetableExtra splits
-/// it in five bands. RYZOM_VEG_FAR_EDGE_M overrides it for measurement only.
+/// it in five equal buckets. RYZOM_VEG_FAR_EDGE_M overrides it for measurement only.
 #define	NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST	100.0f
 
 /// Why CPatch::generateTileVegetable() generated no instance for one tile. Filled
@@ -60,7 +60,7 @@ enum	TVegSkipReason
 {
 	VegSkipGenerated = 0, /// instances were generated
 	VegSkipWaterOff,      /// the tile says VegetableDisabled (under water)
-	VegSkipNoTile,        /// Tile[0] is NL_TILE_ELM_LAYER_EMPTY: no material to read
+	VegSkipNoTile,        /// Tile[0] is NL_TILE_ELM_LAYER_EMPTY: no tile data to read
 	VegSkipNoSource,      /// this layout/tileset has no species for this bucket
 	VegSkipUnderBuilding, /// a 2nd/3rd layer without vegetable: no veg under buildings
 };

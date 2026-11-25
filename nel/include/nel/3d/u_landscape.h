@@ -230,15 +230,15 @@ public:
 	 */
 	virtual	void		enableVegetable(bool enable) =0;
 
-	/** Opt-in extended microvegetation: 0 = stock 0..50m layout, otherwise the
-	 *	far edge of the microvegetation in metres (see CVegetableExtra).
+	/** Opt-in extended microvegetation: false = stock 0..50m layout, true = the
+	 *	merged-far 0..100m layout (see CVegetableExtra).
 	 *	Call before the first zone/vegetable block is created (login or a full
 	 *	vegetable reload); CLandscape's implementation also rebuilds the live
 	 *	instance groups, so the value can be changed while running.
 	 *	The default implementation ignores it, so other ULandscape users are
 	 *	not affected.
 	 */
-	virtual	void		setVegetableExtra(float /*farEdgeM*/) {}
+	virtual	void		setVegetableExtra(bool /*enabled*/) {}
 
 	/** load a texture for the vegetable, lookup in CPath
 	 */

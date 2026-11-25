@@ -29,6 +29,7 @@
 #include "nel/misc/fast_floor.h"
 #include "nel/3d/light_influence_interpolator.h"
 #include "nel/3d/patchdlm_context.h"
+#include "nel/3d/landscape_vegetable_block.h"
 #include "nel/misc/hierarchical_timer.h"
 #include "nel/3d/u_landscape.h"
 
@@ -972,10 +973,23 @@ void			CPatch::appendTileMaterialToRenderList(CTileMaterial *tm)
 	addRefDLMContext();
 	// NB: do it before creating the vegetableBlock, because vegetables use DLM Uvs.
 
-	// if was no tiles before in this tessBlock, create a Vegetable block.
-	//==========
-	// one Tile <=> was 0 before
-	if( TessBlocks[numtb].TileMaterialRefCount == 1 && getLandscape()->isVegetableActive() )
+	// If a vegetable block already exists for this tessblock, never create a second
+	// one: mark it dirty so its next update regenerates only what changed. This
+	// covers a tile that arrives after the block was created (the other tiles of
+	// the 2x2 block may not have had a material yet, or this is a material
+	// replacement), and a block that survived a ground LOD merge in the extra
+	// layout (see removeTileMaterialFromRenderList).
+	if( TessBlocks[numtb].VegetableBlock != nullptr )
+	{
+		// The block's generation reads the patch tiles, not the tile materials, so
+		// mark it dirty and let its next update() compare the tile keys and
+		// regenerate only the tiles whose data actually changed - at the block's
+		// current buckets. This is the zone/region-transition case: a new zone makes
+		// the border re-tessellate and append/remove materials tessblock by
+		// tessblock, and the blocks that gained data are exactly the ones refreshed.
+		TessBlocks[numtb].VegetableBlock->markDirty();
+	}
+	else if( TessBlocks[numtb].TileMaterialRefCount == 1 && getLandscape()->isVegetableActive() )
 	{
 		createVegetableBlock(numtb, tm->TileS, tm->TileT);
 	}
@@ -1013,13 +1027,36 @@ void			CPatch::removeTileMaterialFromRenderList(CTileMaterial *tm)
 	// The master block contains the whole patch TileMaterialRefCount
 	MasterBlock.TileMaterialRefCount--;
 
-	// if no more tiles in this tessBlock, delete the vegetable Block.
+	// if no more tiles in this tessBlock, the vegetable block may have to go.
 	//==========
 	// if no more tiles in this tessBlock
-	if( TessBlocks[numtb].TileMaterialRefCount==0 )
+	if( TessBlocks[numtb].TileMaterialRefCount==0 && TessBlocks[numtb].VegetableBlock != nullptr )
 	{
-		// release the vegetableBlock (if any)
-		releaseVegetableBlock(numtb);
+		// The extra layout keeps the vegetable block across a ground LOD merge. The
+		// patch is still compiled and its tile data (what the vegetation is
+		// generated from) is unchanged; destroying the block here deletes every one
+		// of its live instance groups at once, which is what makes the visible 100m
+		// field lose whole patches while walking across a zone/region border (the
+		// border rebind force-merges the tiles of the neighbouring patches). Mark it
+		// dirty instead: its next update() compares the tile keys and leaves the
+		// instance groups untouched, and the block is released normally when the
+		// patch itself is released or the vegetable layout is rebuilt.
+		// Stock keeps its historical lifetime: release as soon as the tile materials
+		// are gone, so MicroVegetExtra = 0 behaves exactly as before.
+		const CVegetableExtra	&extra= getLandscape()->_VegetableManager->getExtra();
+		if(extra.isEnabled())
+			TessBlocks[numtb].VegetableBlock->markDirty();
+		else
+			releaseVegetableBlock(numtb);
+	}
+	else if( TessBlocks[numtb].VegetableBlock != nullptr )
+	{
+		// A material left but the tessblock still has some: the block's instance
+		// groups may now describe a tile whose data changed (replacement: remove
+		// then append; tile edit). Same block-granularity refresh as on append; if
+		// the tile data is identical the refresh compares the keys and does
+		// nothing.
+		TessBlocks[numtb].VegetableBlock->markDirty();
 	}
 
 	// Destroy if necessary the TessBlocks.

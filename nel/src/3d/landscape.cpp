@@ -744,8 +744,9 @@ void			CLandscape::refine(const CVector &refineCenter)
 		for(;vegetBlock != nullptr; vegetBlock= (CLandscapeVegetableBlock*)vegetBlock->Next)
 		{
 			// Most blocks stay in the same distance bucket every frame; skip the
-			// call (and its instance-group work) when the bucket cannot change.
-			if (!vegetBlock->isInCurrentDistanceType(refineCenter))
+			// call (and its instance-group work) when the bucket cannot change and
+			// no tile of the block changed.
+			if (vegetBlock->needsUpdate(refineCenter))
 				vegetBlock->update(refineCenter, _VegetableManager);
 		}
 
@@ -3448,21 +3449,24 @@ bool		CLandscape::isVegetableActive() const
 }
 
 // ***************************************************************************
-void		CLandscape::setVegetableExtra(float farEdgeM)
+void		CLandscape::setVegetableExtra(bool enabled)
 {
-	// The manager does the clamping, so it is the one that knows whether the
-	// layout actually changed: asking for the layout that is already installed must
-	// not rebuild every instance group of the loaded zones.
-	if(!_VegetableManager->setExtraFarEdgeM(farEdgeM))
+	// The manager knows whether the layout actually changed: asking for the layout
+	// that is already installed must not rebuild every instance group of the
+	// loaded zones.
+	if(!_VegetableManager->setExtraEnabled(enabled))
 		return;
-
 
 	// A vegetable block caches the bucket bounds of the layout that was active
 	// when it was created (CLandscapeVegetableBlock::init/update read the LUT), so
-	// changing the length live needs the same delete+recreate pair as
+	// changing the switch live needs the same delete+recreate pair as
 	// setVegetableDensity(): releasing the blocks of a patch drops their instance
 	// groups and their cached distance state, recreating them re-inits them on the
-	// new LUT. This is what makes the MicroVegetExtra slider live.
+	// new LUT. This is what makes the MicroVegetExtra checkbox live.
+	// Nothing to do before the first zone is loaded.
+	if(_VegetableBlockList.size() == 0)
+		return;
+
 	for(ItZoneMap it= Zones.begin();it!=Zones.end();it++)
 	{
 		// for all patch.

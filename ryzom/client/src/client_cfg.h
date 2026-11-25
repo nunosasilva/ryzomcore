@@ -33,7 +33,6 @@
 #include "nel/misc/vector.h"
 #include "nel/misc/rgba.h"
 #include "nel/misc/config_file.h"
-#include "nel/3d/vegetable_def.h"
 
 #include "nel/sound/sound_anim_manager.h"
 
@@ -267,17 +266,14 @@ struct CClientConfig
 	/// Enable/Disable MicroVeget.
 	bool			MicroVeget;
 	/// Microvegetation switch: 0 = off (stock 0..50m layout), 1 = on, where the
-	/// microvegetation takes over the stock layout and reaches the fixed distance
-	/// of NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST. Changing it rebuilds the vegetable
-	/// instance groups, like MicroVegetDensity does.
+	/// microvegetation takes over the stock layout and reaches the fixed 100m
+	/// distance of NeL (NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST). It is a switch, not
+	/// a distance: the reader below normalises every value to 0/1, so a cfg left
+	/// over from the slider build (50, 100, ...) simply means "on". Changing it
+	/// rebuilds the vegetable instance groups, like MicroVegetDensity does.
 	sint32			MicroVegetExtra;
-	/// The resolved far edge in metres, for CLandscape::setVegetableExtra(). Kept
-	/// here because the cfg key is a switch while the NeL API takes metres: this is
-	/// the single place that translates one into the other.
-	float			microVegetExtraFarEdgeM() const
-	{
-		return MicroVegetExtra != 0 ? NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST : 0.f;
-	}
+	/// True when MicroVegetExtra is on, for CLandscape::setVegetableExtra().
+	bool			microVegetExtraEnabled() const { return MicroVegetExtra != 0; }
 	/// Density of microvegetation in %
 	float			MicroVegetDensity;
 	/// Enable/Disable High Def Entity Texture quality. By default its false

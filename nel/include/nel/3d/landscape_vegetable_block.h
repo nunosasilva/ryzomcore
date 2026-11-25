@@ -73,16 +73,28 @@ public:
 	 */
 	void			update(const CVector &viewCenter, CVegetableManager *vegeManager);
 
-	/** True if viewCenter is still inside this block's current distance bucket,
-	 *	so update() would not create or delete any instance group. Cheap enough
-	 *	to call for every block every frame; keeps the per-frame refine loop
-	 *	from calling update() on blocks that cannot change.
+	/** True if update() has to run: the view center left this block's current
+	 *	distance bucket (a bucket edge is crossed, so instance groups must be
+	 *	created/deleted), or a tile of this block changed since the last update
+	 *	(markDirty() from CPatch when a tile material arrives or is replaced).
+	 *	Cheap enough to call for every block every frame; this is what keeps the
+	 *	per-frame refine loop from calling update() on blocks that cannot change.
 	 */
-	bool			isInCurrentDistanceType(const CVector &viewCenter) const
+	bool			needsUpdate(const CVector &viewCenter) const
 	{
+		if(_Dirty)
+			return true;
 		float	sqrDist= (viewCenter-_Center).sqrnorm();
-		return sqrDist>=_SqrDistMin && sqrDist<=_SqrDistMax;
+		return sqrDist<_SqrDistMin || sqrDist>_SqrDistMax;
 	}
+
+	/** A tile of this block changed (a tile material of the 2x2 tessblock was
+	 *	appended or removed, e.g. while a zone/region transition re-tessellates
+	 *	the border). The next update() compares the tiles' keys and regenerates
+	 *	only the instance groups whose tile data actually changed; the rest of the
+	 *	visible field is left untouched.
+	 */
+	void			markDirty() { _Dirty= true; }
 
 
 // ********************
@@ -111,10 +123,25 @@ private:
 	/// and one per each tilematerial
 	CVegetableInstanceGroup	*_VegetableIG[NL3D_TESSBLOCK_TILESIZE][NL3D_VEGETABLE_BLOCK_NUMDIST];
 
+	/** Set when a tile material of this tessblock was appended/removed while the
+	 *	block was alive. The next update() compares _TileKey with the patch's
+	 *	tiles and regenerates only what changed, at the block's current buckets.
+	 */
+	bool					_Dirty;
+	/// CPatch::getTileVegetableKey() of each tile the instance groups were last
+	/// generated from. init() seeds it from the patch, so a block created out of
+	/// range (no instance groups yet) does not report a false change.
+	uint64					_TileKey[NL3D_TESSBLOCK_TILESIZE];
 
 
+	void			createVegetableIGForTile(uint tileId, uint distType, CVegetableManager *vegeManager,
+		CLandscapeVegetableBlockCreateContext &vbCreateCtx);
 	void			createVegetableIGForDistType(uint i, CVegetableManager *vegeManager,
 		CLandscapeVegetableBlockCreateContext &vbCreateCtx);
+	/// Regenerate the instance groups whose tile data changed since the last
+	/// update, for every bucket that is alive at the current distance (>= firstBucket).
+	/// Returns the number of instance groups that were regenerated.
+	uint			refreshVegetableIgs(uint firstBucket, CVegetableManager *vegeManager);
 
 
 };

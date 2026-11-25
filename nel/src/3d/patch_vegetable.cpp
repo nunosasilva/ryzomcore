@@ -63,11 +63,11 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	// get the tileId under this tile (<=> the tile material)
 	uint	tileId= Tiles[tt * OrderS + ts].Tile[0];
 
-	// No material on this tile (zone not fully loaded, or a hole in the tiles):
-	// getTileVegetableDesc() would answer with its static empty desc, which is
-	// indistinguishable from a tileset that has no species. Named separately because
-	// the first is temporary - the tile gets its material on the next bucket change -
-	// and the second is authored.
+	// No tile data on this tile: a hole in the landscape, or a tile whose data is
+	// not set (the editor can change it; the block refresh re-runs this function
+	// when the tile key changes). getTileVegetableDesc() would answer with its
+	// static empty desc, which is indistinguishable from a tileset that has no
+	// species, so name the case.
 	if(tileId == NL_TILE_ELM_LAYER_EMPTY)
 	{
 		if(skipReason)
@@ -83,12 +83,10 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 
 	// A bucket that cannot carry anything for this tileset: skip the whole setup
 	// path (tile lights, lightmap UV, instance generation). Stock: no authored
-	// species for this bucket. Extended mode: whatever the layout decides to put
-	// in this bucket - hasSources() is the exact predicate (merged-far fills only
-	// the farthest bucket, carrier can fill its farthest one from the lower bands
-	// alone, merged-band uses the bucket's own list). Note hasSources() must be
-	// asked even when the bucket's own list is not empty: with merged-far a non-empty
-	// band 0..3 still generates nothing, and the setup cost would be pure waste.
+	// species for this bucket. Extended mode: merged-far fills only the farthest
+	// bucket, so hasSources() is the exact predicate. Note it must be asked even
+	// when the bucket's own list is not empty: with merged-far a non-empty band
+	// 0..3 still generates nothing, and the setup cost would be pure waste.
 	const CVegetableExtra	&extra= getLandscape()->_VegetableManager->getExtra();
 	const bool				extraEnabled= extra.isEnabled();
 	if(extraEnabled)
@@ -287,17 +285,19 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 
 	// Nothing to generate for this bucket.
 	if(vegetSources.empty())
+	{
+		if(skipReason)
+			*skipReason= VegSkipNoSource;
 		return;
+	}
 
 	// Generated-IG state log, opt-in through RYZOM_VEG_STATE=1. The env lookup
 	// is cached: this runs once per generated IG (thousands per walk). 'd%u' is the
 	// bucket being generated, 'own' the size of that bucket's authored list, 'sources'
-	// what the layout actually put in the instance group, and 'bands' how many of
-	// those sources came from each of the five authored lists - which is what makes
-	// the layout difference visible in the log: merged-band one band, merged-far all
-	// five, carrier the own band plus the lower ones copied into the far bucket.
-	// Attribution is by CSource::Band, not by reach: with merged-far every source
-	// shares the far edge as its reach, so reach no longer identifies the band.
+	// what the layout put in the instance group, and 'bands' how many of those
+	// sources came from each of the five authored lists - which makes the layout
+	// visible in the log (all five bands in d4 under merged-far; only the bucket's
+	// own band under stock). Attribution is by CSource::Band.
 	static const bool	vegStateLog= getenv("RYZOM_VEG_STATE") != NULL;
 	if(extraEnabled && vegStateLog)
 	{
@@ -308,13 +308,11 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 				perBand[vegetSources[s].Band]++;
 		}
 		nlinfo("VEGSTATE: tile %u d%u own %u extra %u bands %u/%u/%u/%u/%u "
-			"mode %s den %.2f scale %.2f sources %u",
+			"mode merged-far den %.2f scale %.2f sources %u",
 			tileId, distType, numVegetable,
 			(uint)(vegetSources.size() > numVegetable ? vegetSources.size() - numVegetable : 0),
 			perBand[0], perBand[1], perBand[2], perBand[3], perBand[4],
-			extra.isMerged() ? (extra.isMergedIntoFar() ? "merged-far" : "merged-band") : "carrier",
-			extra.isMerged() ? CVegetableExtra::getMergedDensity() : extra.getOwnDensity(tileVegetDesc, distType),
-			extra.isMerged() ? CVegetableExtra::getMergedScale() : extra.getOwnScale(distType),
+			CVegetableExtra::getMergedDensity(), CVegetableExtra::getMergedScale(),
 			(uint)vegetSources.size());
 	}
 
@@ -330,11 +328,11 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	getLandscape()->_VegetableManager->reserveIgCompile(vegetIg, vegetIgReserve);
 
 	// The distance where instances fade to alpha 0 is per source, not per bucket:
-	// the merged layout gives every species the reach of its own authored band,
-	// so a species is never generated where its alpha is already 0, and it never
-	// swaps at a bucket edge (see vegetable_extra.h). The stock and carrier paths
-	// set every source of the bucket to the bucket's own far edge, which is the
-	// single value this function used to compute.
+	// in the extended layout every species reaches the single far edge (100m), so
+	// there is one fade, at the far edge, exactly where the block stops being
+	// alive (see vegetable_extra.h). The stock path sets every source of the
+	// bucket to the bucket's own far edge, which is the single value this
+	// function used to compute.
 
 	// generate the instances for all the sources.
 	for(i= 0; i<(uint)vegetSources.size(); i++)

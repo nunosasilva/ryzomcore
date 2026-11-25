@@ -172,8 +172,9 @@ void updateFromClientCfg()
 		{
 			if(ClientCfg.MicroVeget)
 			{
-				// Switch -> far edge in metres (see CClientConfig::microVegetExtraFarEdgeM).
-				Landscape->setVegetableExtra(ClientCfg.microVegetExtraFarEdgeM());
+				// Apply the MicroVegetExtra switch before the first vegetable
+				// block is created (see CClientConfig::microVegetExtraEnabled).
+				Landscape->setVegetableExtra(ClientCfg.microVegetExtraEnabled());
 				// if configured, enable the vegetable and load the texture.
 				Landscape->enableVegetable(true);
 				// Default setup. TODO later by gameDev.
@@ -201,12 +202,11 @@ void updateFromClientCfg()
 	//---------------------------------------------------
 	if (ClientCfg.MicroVegetExtra != LastClientCfg.MicroVegetExtra)
 	{
-		// The switch changed: resolve it to a far edge and apply it live.
-		// CLandscape::setVegetableExtra() rebuilds the vegetable instance groups,
-		// like the density slider above, and does nothing when the resolved layout
-		// did not change.
+		// The switch changed: apply it live. CLandscape::setVegetableExtra()
+		// rebuilds the vegetable instance groups, like the density slider above,
+		// and does nothing when the layout did not change.
 		if (Landscape && ClientCfg.MicroVeget)
-			Landscape->setVegetableExtra(ClientCfg.microVegetExtraFarEdgeM());
+			Landscape->setVegetableExtra(ClientCfg.microVegetExtraEnabled());
 	}
 
 	// GRAPHICS - SPECIAL EFFECTS

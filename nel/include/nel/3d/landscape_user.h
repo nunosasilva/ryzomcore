@@ -163,7 +163,7 @@ public:
 	/// Micro-Vegetation.
 	// @{
 	virtual	void		enableVegetable(bool enable) NL_OVERRIDE;
-	virtual	void		setVegetableExtra(float farEdgeM) NL_OVERRIDE;
+	virtual	void		setVegetableExtra(bool enabled) NL_OVERRIDE;
 	virtual	void		loadVegetableTexture(const std::string &textureFileName) NL_OVERRIDE;
 	virtual	void		setupVegetableLighting(const CRGBA &ambient, const CRGBA &diffuse, const CVector &directionalLight) NL_OVERRIDE;
 	virtual	void		setVegetableWind(const CVector &windDir, float windFreq, float windPower, float windBendMin) NL_OVERRIDE;

@@ -431,10 +431,10 @@ void		CLandscapeUser::enableVegetable(bool enable)
 }
 
 // ****************************************************************************
-void		CLandscapeUser::setVegetableExtra(float farEdgeM)
+void		CLandscapeUser::setVegetableExtra(bool enabled)
 {
 	NL3D_HAUTO_UI_LANDSCAPE;
-	_Landscape->Landscape.setVegetableExtra(farEdgeM);
+	_Landscape->Landscape.setVegetableExtra(enabled);
 }
 
 // ****************************************************************************

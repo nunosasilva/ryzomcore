@@ -22,6 +22,7 @@
 #include "nel/3d/vegetable_instance_group.h"
 #include "nel/3d/patch.h"
 #include "nel/3d/bezier_patch.h"
+#include "nel/misc/time_nl.h"
 
 
 using namespace std;
@@ -66,15 +67,17 @@ CLandscapeVegetableBlock::CLandscapeVegetableBlock()
 {
 	_VegetableClipBlock = nullptr;
 	_CurDistType= NL3D_VEGETABLE_BLOCK_NUMDIST;
+	_Dirty= false;
 	// No instance group created yet. init() caches the far bound of the active
-	// distance layout (stock 50m or extra 100m) so isInCurrentDistanceType()
-	// cannot skip the first update().
+	// distance layout (stock 50m or extra 100m) so needsUpdate() cannot skip the
+	// first update().
 	_SqrDistMin= CLVBSqrDistLUT::Array[NL3D_VEGETABLE_BLOCK_NUMDIST];
 	_SqrDistMax= FLT_MAX;
 
 	for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
 	{
 		_VegetableSortBlock[j] = nullptr;
+		_TileKey[j] = ~(uint64)0;
 		for(uint i=0;i<NL3D_VEGETABLE_BLOCK_NUMDIST;i++)
 		{
 			_VegetableIG[j][i] = nullptr;
@@ -115,11 +118,18 @@ void			CLandscapeVegetableBlock::init(const CVector &center, CVegetableManager *
 	}
 
 	// No IG created yet: cache the far bound of the active distance layout so
-	// isInCurrentDistanceType() cannot skip the first update().
+	// needsUpdate() cannot skip the first update(). The tile keys are seeded from
+	// the patch, so a block created out of range does not report a false change
+	// on its first dirty refresh (no instance group was generated yet).
 	const CVegetableExtra	&extra= vegetManager->getExtra();
 	const float	*distLUT= extra.isEnabled() ? extra.getSqrDistLUT() : CLVBSqrDistLUT::Array;
 	_SqrDistMin= distLUT[NL3D_VEGETABLE_BLOCK_NUMDIST];
 	_SqrDistMax= FLT_MAX;
+	_Dirty= false;
+	for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
+	{
+		_TileKey[j]= patch->getTileVegetableKey(_Ts + (j & 1), _Tt + (j >> 1));
+	}
 
 	// append to list.
 	vblist.append(this);
@@ -168,6 +178,9 @@ void			CLandscapeVegetableBlock::release(CVegetableManager *vegeManager, CTessLi
 
 	// reset state.
 	_CurDistType= NL3D_VEGETABLE_BLOCK_NUMDIST;
+	_Dirty= false;
+	for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
+		_TileKey[j]= ~(uint64)0;
 	{
 		const CVegetableExtra	&extra= vegeManager->getExtra();
 		const float				*distLUT= extra.isEnabled() ? extra.getSqrDistLUT() : CLVBSqrDistLUT::Array;
@@ -203,74 +216,93 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 			newDistType= floor()(delta.norm() / NL3D_VEGETABLE_BLOCK_ELTDIST);
 	*/
 
-
-	// Change of distance type??
-	if(newDistType!=_CurDistType)
+	// Transition / refresh log, opt-in through RYZOM_VEG_STATE=1. Kept for the
+	// stock layout too: the block lifecycle is what explains a bare patch.
+	static	const	bool	vegStateLog= getenv("RYZOM_VEG_STATE")!=NULL;
+	const	bool			bucketChanged= newDistType != _CurDistType;
+	if(vegStateLog)
 	{
-		// Transition log for the extra path only; the regular path stays quiet.
-		static	const	bool	vegStateLogEnabled= getenv("RYZOM_VEG_STATE")!=NULL;
-		const	bool	vegStateLog= vegStateLogEnabled && extra.isEnabled();
-		if(vegStateLog)
+		if(bucketChanged)
 			nlinfo("VEGSTATE: block (%.1f %.1f) dist %.1f cur %u -> %u", _Center.x, _Center.y, sqrtf(sqrDist), _CurDistType, newDistType);
+	}
 
-		// Erase or create IGs.
-		if(newDistType>_CurDistType)
+	// Erase the buckets that leave the alive range first, so a dirty refresh
+	// never regenerates an instance group that is about to be destroyed.
+	if(newDistType>_CurDistType)
+	{
+		// For all tiles
+		for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
 		{
-			// For all tiles
-			for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
+			// Erase no more needed Igs.
+			for(uint i=_CurDistType; i<newDistType; i++)
 			{
-				// Erase no more needed Igs.
-				for(uint i=_CurDistType; i<newDistType; i++)
+				if(_VegetableIG[j][i])
 				{
-					if(_VegetableIG[j][i])
-					{
-						if(vegStateLog)
-							nlinfo("VEGSTATE:   delete d%u tile %u", i, j);
-						vegeManager->deleteIg(_VegetableIG[j][i]);
-						_VegetableIG[j][i] = nullptr;
-					}
+					if(vegStateLog)
+						nlinfo("VEGSTATE:   delete d%u tile %u", i, j);
+					vegeManager->deleteIg(_VegetableIG[j][i]);
+					_VegetableIG[j][i] = nullptr;
 				}
-
-				// update the sort block for this tile
-				_VegetableSortBlock[j]->updateSortBlock(*vegeManager);
 			}
 		}
-		else
+	}
+
+	// The block's tile materials changed since the instance groups were generated
+	// (a tile of the 2x2 tessblock arrived late, was replaced, or a zone/region
+	// transition re-tessellated the border). Regenerate only the tiles whose data
+	// changed, in place, at the buckets that are alive at this distance: the
+	// visible field outside this block is not touched, and if the tile data is
+	// identical nothing is regenerated at all.
+	const bool	refreshed= _Dirty;
+	uint		refreshedIg= 0;
+	if(refreshed)
+	{
+		uint	aliveFloor= newDistType > _CurDistType ? newDistType : _CurDistType;
+		refreshedIg= refreshVegetableIgs(aliveFloor, vegeManager);
+	}
+	_Dirty= false;
+
+	if(newDistType<_CurDistType)
+	{
+		// Create a context for creation.
+		CLandscapeVegetableBlockCreateContext	ctx;
+		ctx.init(_Patch, _Ts, _Tt);
+
+		// create new Igs, for all tiles. A bucket this layout can never fill
+		// (merged-far only fills the farthest one) is skipped: no instance group
+		// is allocated per tile just to be deleted again, and the state log stays
+		// honest about what was actually created.
+		for(uint i=newDistType; i<_CurDistType; i++)
 		{
-			// Create a context for creation.
-			CLandscapeVegetableBlockCreateContext	ctx;
-			ctx.init(_Patch, _Ts, _Tt);
-
-			// create new Igs, for all tiles. A bucket this layout can never fill
-			// (merged-far only fills the farthest one) is skipped: no instance group
-			// is allocated per tile just to be deleted again, and the state log stays
-			// honest about what was actually created.
-			for(uint i=newDistType; i<_CurDistType; i++)
-			{
-				if(!extra.hasAnySources(i))
-					continue;
-				if(vegStateLog)
-					nlinfo("VEGSTATE:   create d%u", i);
-				createVegetableIGForDistType(i, vegeManager, ctx);
-			}
-
-			// For all tiles
-			for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
-			{
-				// update the sort block for this tile
-				_VegetableSortBlock[j]->updateSortBlock(*vegeManager);
-			}
+			if(!extra.hasAnySources(i))
+				continue;
+			if(vegStateLog)
+				nlinfo("VEGSTATE:   create d%u", i);
+			createVegetableIGForDistType(i, vegeManager, ctx);
 		}
+	}
 
+	// A bucket transition and/or a refresh changed what the sort blocks hold.
+	// The instance groups themselves are already in the sort blocks' lists; this
+	// recomputes the sort block bounds and ZSort sides.
+	if(bucketChanged || (refreshed && refreshedIg > 0))
+	{
+		for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
+		{
+			// update the sort block for this tile
+			_VegetableSortBlock[j]->updateSortBlock(*vegeManager);
+		}
+	}
+
+	if(bucketChanged)
+	{
 		// copy new dist type, and cache the bucket bounds used by
-		// isInCurrentDistanceType() to skip this call while nothing can change.
+		// needsUpdate() to skip this call while nothing can change.
 		_CurDistType= uint8(newDistType);
 		_SqrDistMin= distLUT[newDistType];
 		_SqrDistMax= (newDistType < NL3D_VEGETABLE_BLOCK_NUMDIST)
 			? distLUT[newDistType+1] : FLT_MAX;
 	}
-
-
 }
 
 
@@ -281,11 +313,59 @@ static const char	*vegSkipReasonName(TVegSkipReason reason)
 	switch(reason)
 	{
 		case VegSkipWaterOff:      return "vegetable disabled on this tile";
-		case VegSkipNoTile:        return "no tile material loaded";
+		case VegSkipNoTile:        return "no tile data";
 		case VegSkipNoSource:      return "no species for this bucket";
 		case VegSkipUnderBuilding: return "under a building layer";
 		default:                   return "generated";
 	}
+}
+
+
+// ***************************************************************************
+void			CLandscapeVegetableBlock::createVegetableIGForTile(uint tileId, uint distType,
+	CVegetableManager *vegeManager, CLandscapeVegetableBlockCreateContext &vbCreateCtx)
+{
+	nlassert(tileId < NL3D_TESSBLOCK_TILESIZE);
+	nlassert(distType < NL3D_VEGETABLE_BLOCK_NUMDIST);
+	nlassert(_VegetableIG[tileId][distType]==NULL);
+
+	uint	tms= _Ts + (tileId & 1);
+	uint	tmt= _Tt + (tileId >> 1);
+
+	// create the instance group in the good sortBlock
+	CVegetableInstanceGroup		*vegetIg= vegeManager->createIg(_VegetableSortBlock[tileId]);
+	_VegetableIG[tileId][distType]= vegetIg;
+
+	// generate. Under RYZOM_VEG_STATE ask why an empty instance group is empty.
+	// A tile with no material (VegSkipNoTile) is retried when its tile key changes:
+	// CPatch marks this block dirty when a tile material arrives/leaves, and
+	// refreshVegetableIgs() regenerates the tiles whose data changed.
+	static const bool	vegStateLog= getenv("RYZOM_VEG_STATE") != NULL;
+	TVegSkipReason	skipReason= VegSkipGenerated;
+	_Patch->generateTileVegetable(vegetIg, distType, tms, tmt, vbCreateCtx, vegStateLog ? &skipReason : NULL);
+
+	// If the ig is empty, delete him. This optimize rendering because no useless ig are
+	// tested for rendering. This speed up some 1/10 of ms...
+	if(vegetIg->isEmpty())
+	{
+		if(vegStateLog)
+		{
+			static uint	emptyIgCount= 0;
+			emptyIgCount++;
+			// the first ones in detail, then only the running total: enough to
+			// tell the causes apart without flooding the log on a long run.
+			if(emptyIgCount <= 60)
+				nlinfo("VEGSTATE:   ig d%u slot %u EMPTY (%s) at (%.1f %.1f) material %u",
+					distType, tileId, vegSkipReasonName(skipReason), _Center.x, _Center.y,
+					_Patch->getTileIdAt(tms, tmt));
+			else if((emptyIgCount & 0xFF) == 0)
+				nlinfo("VEGSTATE:   %u empty ig so far (last %s)", emptyIgCount, vegSkipReasonName(skipReason));
+		}
+		vegeManager->deleteIg(vegetIg);
+		_VegetableIG[tileId][distType] = nullptr;
+	}
+
+	// NB: vegtable SortBlock is updated in CLandscapeVegetableBlock::update() after
 }
 
 
@@ -301,52 +381,81 @@ void			CLandscapeVegetableBlock::createVegetableIGForDistType(uint i, CVegetable
 	nlassert(_VegetableIG[3][i]==NULL);
 
 	// Create vegetables instances per tile_material.
-	sint	tms,tmt;
-	// for all tiles
-	nlassert(NL3D_TESSBLOCK_TILESIZE==4);
-	for(tmt= _Tt; tmt<_Tt+2; tmt++)
+	for(uint tileId= 0; tileId < NL3D_TESSBLOCK_TILESIZE; ++tileId)
+		createVegetableIGForTile(tileId, i, vegeManager, vbCreateCtx);
+
+	// The instance groups were generated from the current tile data: cache the
+	// keys, so a later refresh can tell whether a tile changed at all.
+	for(uint tileId= 0; tileId < NL3D_TESSBLOCK_TILESIZE; ++tileId)
 	{
-		for(tms= _Ts; tms<_Ts+2; tms++)
+		uint	tms= _Ts + (tileId & 1);
+		uint	tmt= _Tt + (tileId >> 1);
+		_TileKey[tileId]= _Patch->getTileVegetableKey(tms, tmt);
+	}
+}
+
+
+// ***************************************************************************
+uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetableManager *vegeManager)
+{
+	const CVegetableExtra	&extra= vegeManager->getExtra();
+	static const bool		vegStateLog= getenv("RYZOM_VEG_STATE") != NULL;
+	const NLMISC::TTicks	start= vegStateLog ? NLMISC::CTime::getPerformanceTime() : 0;
+
+	CLandscapeVegetableBlockCreateContext	ctx;
+	ctx.init(_Patch, _Ts, _Tt);
+
+	uint	changedTiles= 0;
+	uint	regeneratedIg= 0;
+	for(uint tileId= 0; tileId < NL3D_TESSBLOCK_TILESIZE; ++tileId)
+	{
+		uint	tms= _Ts + (tileId & 1);
+		uint	tmt= _Tt + (tileId >> 1);
+		uint64	key= _Patch->getTileVegetableKey(tms, tmt);
+
+		// This is the user's "compare the maps, do not overwrite when nothing
+		// changed": the tile data is the input of the generation, so an identical
+		// key means the existing instance groups are still exactly what a
+		// regeneration would produce.
+		if(key == _TileKey[tileId])
+			continue;
+
+		changedTiles++;
+
+		// Regenerate this tile at every bucket the block currently holds. The
+		// buckets that leave the range were already deleted by update(), and the
+		// ones a layout cannot fill (merged-far: everything but the farthest)
+		// have no instance group to refresh.
+		for(uint i= firstBucket; i < NL3D_VEGETABLE_BLOCK_NUMDIST; ++i)
 		{
-			uint	tileId= tms-_Ts + (tmt-_Tt)*2;
+			if(!extra.hasAnySources(i))
+				continue;
 
-			// create the instance group in the good sortBlock
-			CVegetableInstanceGroup		*vegetIg= vegeManager->createIg(_VegetableSortBlock[tileId]);
-			_VegetableIG[tileId][i]= vegetIg;
-
-			// generate. Under RYZOM_VEG_STATE ask why an empty instance group is empty:
-			// a tile whose material is not loaded yet (VegSkipNoTile) is temporary and
-			// will only be retried on this block's next distance change, which the merged
-			// layout makes rare - that is how a patch of ground stays bare.
-			static const bool	vegStateLog= getenv("RYZOM_VEG_STATE") != NULL;
-			TVegSkipReason	skipReason= VegSkipGenerated;
-			_Patch->generateTileVegetable(vegetIg, i, tms, tmt, vbCreateCtx, vegStateLog ? &skipReason : NULL);
-
-			// If the ig is empty, delete him. This optimize rendering because no useless ig are
-			// tested for rendering. This speed up some 1/10 of ms...
-			if(vegetIg->isEmpty())
+			if(_VegetableIG[tileId][i])
 			{
 				if(vegStateLog)
-				{
-					static uint	emptyIgCount= 0;
-					emptyIgCount++;
-					// the first ones in detail, then only the running total: enough to
-					// tell the causes apart without flooding the log on a long run.
-					if(emptyIgCount <= 60)
-						nlinfo("VEGSTATE:   ig d%u tile %u EMPTY (%s) at (%.1f %.1f) tileId %u",
-							i, tileId, vegSkipReasonName(skipReason), _Center.x, _Center.y,
-							_Patch->getTileIdAt(_Ts + (tileId & 1), _Tt + (tileId >> 1)));
-					else if((emptyIgCount & 0xFF) == 0)
-						nlinfo("VEGSTATE:   %u empty ig so far (last %s)", emptyIgCount, vegSkipReasonName(skipReason));
-				}
-				vegeManager->deleteIg(vegetIg);
+					nlinfo("VEGSTATE:   refresh delete d%u slot %u", i, tileId);
+				vegeManager->deleteIg(_VegetableIG[tileId][i]);
 				_VegetableIG[tileId][i] = nullptr;
 			}
 
-			// NB: vegtable SortBlock is updated in CLandscapeVegetableBlock::update() after
+			if(vegStateLog)
+				nlinfo("VEGSTATE:   refresh create d%u slot %u (material %u)", i, tileId, _Patch->getTileIdAt(tms, tmt));
+			createVegetableIGForTile(tileId, i, vegeManager, ctx);
+			regeneratedIg++;
 		}
+
+		_TileKey[tileId]= key;
 	}
 
+	if(vegStateLog && changedTiles > 0)
+	{
+		double	ms= NLMISC::CTime::ticksToSecond(NLMISC::CTime::getPerformanceTime() - start) * 1000.0;
+		nlinfo("VEGSTATE:   refresh %u/%u tiles, %u ig in %.3f ms",
+			changedTiles, (uint)NL3D_TESSBLOCK_TILESIZE, regeneratedIg, ms);
+	}
+
+	return regeneratedIg;
 }
 
 

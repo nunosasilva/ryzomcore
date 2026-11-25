@@ -1224,19 +1224,22 @@
                   x="20"
                   y="-2" />
         <!-- Literal label: the string bank shipped with the live data has no
-             key for this new experimental option (a "ui..." key would render
-             as <NotExist:...>). It is a checkbox, not a slider: MicroVegetExtra
-             is a switch (0 = off, 1 = on) and the distance it reaches is a
-             constant of NeL (NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST), so there is
-             nothing to scale and no _min/_max/_step keys. Do not reparent: posparent=mvd
-             lands below the density slider, and x=-20 walks back from the slider's
-             text column (+20 from lmv) to the checkbox column, so the box glyph
-             is on the same left edge as the Micro-Vegetation one. Parenting to
-             the page would need these offsets duplicated. -->
+             key for this new option (a "ui..." key would render as
+             <NotExist:...>). It is a checkbox because MicroVegetExtra is a
+             switch: 0 = off (stock 0..50m), 1 = on (takes over the
+             microvegetation and reaches the fixed 100m distance of NeL,
+             NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST). The DDX boolbut writes 0/1,
+             and the change is applied live by updateFromClientCfg(), which
+             rebuilds the vegetable instance groups. Do not reparent:
+             posparent=mvd lands below the density slider, and x=-20 walks back
+             from the slider's text column (+20 from lmv) to the checkbox
+             column, so the box glyph is on the same left edge as the
+             Micro-Vegetation one. Parenting to the page would need these
+             offsets duplicated. -->
         <instance template="tgcw_checkbox"
                   id="lmvx"
                   text="Micro-vegetation Extra"
-                  tooltip="Takes over the microvegetation; applies live"
+                  tooltip="Takes over the microvegetation, 0..100 m; applies live"
                   posparent="mvd"
                   posref="BL TL"
                   x="-20"
@@ -3718,7 +3721,8 @@
                realtime="true"
                link="MicroVeget"
                preset="UI:TEMP:PRESET_LAND" />
-        <!-- Switch (0 = off, 1 = on). Applying it live does not come from this
+        <!-- Switch: 0 = off (stock 0..50m), 1 = on (takes over the
+             microvegetation, 0..100m). The live apply does not come from this
              param - realtime is only honoured by scrollbars - but from
              updateFromClientCfg() comparing MicroVegetExtra and calling
              CLandscape::setVegetableExtra(), which rebuilds the vegetable
@@ -3726,7 +3730,6 @@
         <param ui="landscape:lmvx:c"
                type="cfg"
                widget="boolbut"
-               realtime="true"
                link="MicroVegetExtra"
                preset="UI:TEMP:PRESET_LAND" />
         <param ui="landscape:mvd:c"

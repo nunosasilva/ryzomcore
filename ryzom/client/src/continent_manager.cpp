@@ -236,7 +236,7 @@ void CContinentManager::load ()
 		if (Landscape)
 		{
 			// Set the distance layout before the first block is created.
-			Landscape->setVegetableExtra(ClientCfg.microVegetExtraFarEdgeM());
+			Landscape->setVegetableExtra(ClientCfg.microVegetExtraEnabled());
 			// if configured, enable the vegetable and load the texture.
 			Landscape->enableVegetable(true);
 			// Default setup. TODO later by gameDev.

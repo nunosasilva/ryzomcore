@@ -1965,13 +1965,12 @@ void		CVegetableManager::setGlobalDensity(float density)
 }
 
 // ***************************************************************************
-bool		CVegetableManager::setExtraFarEdgeM(float farEdgeM)
+bool		CVegetableManager::setExtraEnabled(bool enabled)
 {
 	// Idempotent: the layout only has to be installed once, before the first
 	// vegetable block is created. Re-setting the same value must not re-log, and
-	// the caller (CLandscape) must not rebuild the instance groups either. CVegetableExtra
-	// does the clamping, so it is the one that knows whether anything changed.
-	if(!_Extra.setFarEdgeM(farEdgeM))
+	// the caller (CLandscape) must not rebuild the instance groups either.
+	if(!_Extra.setEnabled(enabled))
 		return false;
 
 	// Invariant: the farthest ZSort layer must stay at least one blend
@@ -1983,20 +1982,18 @@ bool		CVegetableManager::setExtraFarEdgeM(float farEdgeM)
 		: NL3D_VEGETABLE_DEFAULT_DIST_MAX;
 	if(_Extra.isEnabled())
 	{
-		nlinfo("VEGETABLE: distance layout %s: %u x %.0f m bands, far edge %.0f m, "
-			"density %s %.2f, zsort %.0f m",
-			_Extra.isMerged() ? (_Extra.isMergedIntoFar() ? "merged-far" : "merged-band") : "carrier",
-			CVegetableExtra::getNumBands(), _Extra.getBandDist(),
+		nlinfo("VEGETABLE: distance layout extra: %u x %.0f m bands, far edge %.0f m, "
+			"every authored band in the farthest bucket, density %.2f, scale %.2f, zsort %.0f m",
+			(uint)NL3D_VEGETABLE_BLOCK_NUMDIST, _Extra.getBandDist(),
 			_Extra.getFarEdgeM(),
-			_Extra.isMerged() ? "merged" : "union",
-			_Extra.isMerged() ? CVegetableExtra::getMergedDensity() : CVegetableExtra::getUnionDensity(),
+			CVegetableExtra::getMergedDensity(), CVegetableExtra::getMergedScale(),
 			_ZSortLayerDistMax);
 	}
 	else
 	{
 		nlinfo("VEGETABLE: distance layout stock: %u x %.0f m bands, far edge %.0f m, zsort %.0f m",
-			CVegetableExtra::getNumBands(), NL3D_VEGETABLE_BLOCK_ELTDIST,
-			CVegetableExtra::getNumBands() * NL3D_VEGETABLE_BLOCK_ELTDIST, _ZSortLayerDistMax);
+			(uint)NL3D_VEGETABLE_BLOCK_NUMDIST, NL3D_VEGETABLE_BLOCK_ELTDIST,
+			(float)NL3D_VEGETABLE_BLOCK_NUMDIST * NL3D_VEGETABLE_BLOCK_ELTDIST, _ZSortLayerDistMax);
 	}
 	return true;
 }
