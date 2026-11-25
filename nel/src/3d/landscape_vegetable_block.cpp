@@ -74,6 +74,7 @@ CLandscapeVegetableBlock::CLandscapeVegetableBlock()
 	_NearRetryPending= false;
 	_NearRetryTime= 0;
 	_NearRetryCount= 0;
+	_NearRetryGaveUp= false;
 	// No instance group created yet. init() caches the far bound of the active
 	// distance layout (stock 50m or extra 100m) so needsUpdate() cannot skip the
 	// first update().
@@ -136,6 +137,7 @@ void			CLandscapeVegetableBlock::init(const CVector &center, CVegetableManager *
 	_NearRetryPending= false;
 	_NearRetryTime= 0;
 	_NearRetryCount= 0;
+	_NearRetryGaveUp= false;
 	for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
 	{
 		_TileKey[j]= patch->getTileVegetableKey(_Ts + (j & 1), _Tt + (j >> 1));
@@ -193,6 +195,7 @@ void			CLandscapeVegetableBlock::release(CVegetableManager *vegeManager, CTessLi
 	_NearRetryPending= false;
 	_NearRetryTime= 0;
 	_NearRetryCount= 0;
+	_NearRetryGaveUp= false;
 	for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
 		_TileKey[j]= ~(uint64)0;
 	{
@@ -296,7 +299,7 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 	{
 		_NearRetryPending= false;
 		if(vegStateLog)
-			nlinfo("VEGSTATE:   near retry (first bucket %u)", aliveFloor);
+			nlinfo("VEGSTATE:   near retry %u (first bucket %u)", (uint)_NearRetryCount, aliveFloor);
 		retryIg= refreshVegetableIgs(aliveFloor, vegeManager, 3);
 	}
 
@@ -408,24 +411,44 @@ void			CLandscapeVegetableBlock::createVegetableIGForTile(uint tileId, uint dist
 		// comes out empty, give up (the far d4 empties are expected and are
 		// deliberately excluded). Without this the group stays null and nothing
 		// marks the block dirty, so only a full MicroVeget toggle would fix it.
-		if(distType < 3 && skipReason == VegSkipGenerated && _NearRetryCount < 3)
+		if(distType < 3 && skipReason == VegSkipGenerated)
 		{
-			++_NearRetryCount;
-			_NearRetryPending= true;
-			_NearRetryTime= NLMISC::CTime::getLocalTime() + _NearRetryCount;
-			if(vegStateLog)
-				nlinfo("VEGSTATE:   near retry %u scheduled for d%u slot %u (material %u) in %us",
-					(uint)_NearRetryCount, distType, tileId, _Patch->getTileIdAt(tms, tmt),
-					(uint)_NearRetryCount);
+			if(_NearRetryCount < 3)
+			{
+				// One retry per block, not one per empty slot: the pending retry
+				// refills every null near IG of this block. Several empties in the
+				// same update therefore produce one schedule, one start and one
+				// fill pass instead of a per-tile storm.
+				if(!_NearRetryPending)
+				{
+					++_NearRetryCount;
+					_NearRetryPending= true;
+					_NearRetryTime= NLMISC::CTime::getLocalTime() + _NearRetryCount;
+					if(vegStateLog)
+						nlinfo("VEGSTATE:   near retry %u scheduled for d%u slot %u (material %u) in %us",
+							(uint)_NearRetryCount, distType, tileId, _Patch->getTileIdAt(tms, tmt),
+							(uint)_NearRetryCount);
+				}
+			}
+			else if(vegStateLog && !_NearRetryGaveUp)
+			{
+				// The group still came out empty on the third retry: stop, do not
+				// log it on every later generation of the same block.
+				_NearRetryGaveUp= true;
+				nlinfo("VEGSTATE:   near retry gave up on d%u slot %u (material %u) at (%.1f %.1f)",
+					distType, tileId, _Patch->getTileIdAt(tms, tmt), _Center.x, _Center.y);
+			}
 		}
 		vegeManager->deleteIg(vegetIg);
 		_VegetableIG[tileId][distType] = nullptr;
 	}
-	else if(distType < 3)
+	else if(distType < 3 && !_NearRetryPending)
 	{
-		// A healthy near group: a later empty group is a new event with its own
-		// retry budget.
+		// A healthy near group with no retry in flight: a later empty group is a
+		// new event with its own retry budget. While a retry is pending the budget
+		// must not be reset, or an old empty group could retry forever.
 		_NearRetryCount= 0;
+		_NearRetryGaveUp= false;
 	}
 
 	// NB: vegtable SortBlock is updated in CLandscapeVegetableBlock::update() after

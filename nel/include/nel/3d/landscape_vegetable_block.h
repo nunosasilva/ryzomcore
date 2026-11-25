@@ -148,6 +148,8 @@ private:
 	uint32					_NearRetryTime;
 	/// Near retries already issued since the last successfully generated near IG.
 	uint8					_NearRetryCount;
+	/// Logged once when the third retry still comes out empty (no more retries).
+	bool					_NearRetryGaveUp;
 	/// CPatch::getTileVegetableKey() of each tile the instance groups were last
 	/// generated from. init() seeds it from the patch, so a block created out of
 	/// range (no instance groups yet) does not report a false change.
