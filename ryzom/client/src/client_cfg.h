@@ -266,7 +266,7 @@ struct CClientConfig
 	/// Enable/Disable MicroVeget.
 	bool			MicroVeget;
 	/// Double the microvegetation bands, 5 x 10m (50m) -> 5 x 20m (100m).
-	/// Read at startup; changing it requires a relog/zone reload.
+	/// Read at startup; changing it requires a relog.
 	bool			MicroVegetExtra;
 	/// Density of microvegetation in %
 	float			MicroVegetDensity;

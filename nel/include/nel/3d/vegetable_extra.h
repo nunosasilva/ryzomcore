@@ -45,7 +45,11 @@ public:
 	void			setEnabled(bool enabled) { _Enabled= enabled; }
 
 	/// Squared extra-band edges: 0, 20^2, 40^2, 60^2, 80^2, 100^2.
-	const float		*getSqrDistLUT() const { return _SqrDistLUT; }
+	const float*	getSqrDistLUT() const { return _SqrDistLUT; }
+
+	/// Extra mode thins instance generation to this fraction of the authored
+	/// density. Tune this constant.
+	static float	getDensityScale() { return 0.75f; }
 
 private:
 	bool	_Enabled;

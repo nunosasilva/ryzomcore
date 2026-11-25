@@ -207,13 +207,16 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	}
 
 	// First, for each vegetable, generate the number of instance to create, and their relative position.
+	// Stock passes 1.0; MicroVegetExtra thins the instance count over the doubled area to 75% here.
+	const bool	extraEnabled= getLandscape()->_VegetableManager->getExtra().isEnabled();
+	const float	densityScale= extraEnabled ? CVegetableExtra::getDensityScale() : 1.f;
 	for(i= 0; i<numVegetable; i++)
 	{
 		// get the vegetable
 		const CVegetable	&veget=	vegetableList[i];
 
 		// generate instance for this vegetable.
-		veget.generateGroupBiLinear(tilePos, tilePosBiLinear, tileNormal, NL3D_PATCH_TILE_AREA, i + distAddSeed, instanceUVArray[i]);
+		veget.generateGroupBiLinear(tilePos, tilePosBiLinear, tileNormal, NL3D_PATCH_TILE_AREA, i + distAddSeed, densityScale, instanceUVArray[i]);
 	}
 
 	// Then, now that we kno how many instance to generate for each vegetable, reserve space.
@@ -235,7 +238,7 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	// MicroVegetExtra doubles the band width, so the instances must stay
 	// visible until the outer edge of the doubled band.
 	const float	blendDistMax= (distType+1) * NL3D_VEGETABLE_BLOCK_ELTDIST
-		* (getLandscape()->_VegetableManager->getExtra().isEnabled() ? 2.f : 1.f);
+		* (extraEnabled ? 2.f : 1.f);
 	for(i= 0; i<numVegetable; i++)
 	{
 		// get the vegetable

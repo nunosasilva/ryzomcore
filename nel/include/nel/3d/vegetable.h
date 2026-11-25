@@ -130,8 +130,9 @@ public:
 	/** same as generateGroup, but with smoother density effects on border with desnity==0
 	 *	\name posInWorldAround 4 position on 4 edges around the center in folowing order:
 	 *	(0,0.5), (1,0.5), (0.5,0), (0.5,1) (in instance UV coordinates space (as returned in "instances").
+	 *	\param densityScale multiplies the generated instance count (1 in the stock path).
 	 */
-	void	generateGroupBiLinear(const CVector &posInWorld, const CVector posInWorldBorder[4], const CVector &surfaceNormal, float area, uint vegetSeed, std::vector<CVector2f> &instances) const;
+	void	generateGroupBiLinear(const CVector &posInWorld, const CVector posInWorldBorder[4], const CVector &surfaceNormal, float area, uint vegetSeed, float densityScale, std::vector<CVector2f> &instances) const;
 
 
 	/** Fast allocation reservation: you must call this before generating all your instances in an Ig:
@@ -179,7 +180,7 @@ private:
 
 
 	/// Do the generateGroup, but take nbInst unmodulated by normal
-	void	generateGroupEx(float nbInst, const CVector &posInWorld, const CVector &surfaceNormal, uint vegetSeed, std::vector<CVector2f> &instances) const;
+	void	generateGroupEx(float nbInst, const CVector &posInWorld, const CVector &surfaceNormal, uint vegetSeed, float densityScale, std::vector<CVector2f> &instances) const;
 
 
 	// easineasout

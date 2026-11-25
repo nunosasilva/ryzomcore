@@ -3448,9 +3448,35 @@ bool		CLandscape::isVegetableActive() const
 }
 
 // ***************************************************************************
+static void logVegetableLayout(bool extra)
+{
+	nlinfo("VEGETABLE: distance layout %s: %u x %.0f m bands, far edge %.0f m, zsort %.0f m",
+		extra ? "extra" : "stock", (uint)NL3D_VEGETABLE_BLOCK_NUMDIST,
+		extra ? 2.f * NL3D_VEGETABLE_BLOCK_ELTDIST : NL3D_VEGETABLE_BLOCK_ELTDIST,
+		extra ? 2.f * NL3D_VEGETABLE_BLOCK_ELTDIST * NL3D_VEGETABLE_BLOCK_NUMDIST
+			: NL3D_VEGETABLE_BLOCK_ELTDIST * NL3D_VEGETABLE_BLOCK_NUMDIST,
+		extra ? 2.f * NL3D_VEGETABLE_DEFAULT_DIST_MAX : NL3D_VEGETABLE_DEFAULT_DIST_MAX);
+}
+
+// ***************************************************************************
 void		CLandscape::setVegetableExtra(bool enable)
 {
+	// A vegetable block caches the bucket bounds of the layout that was active
+	// when it was created. Only login (or a MicroVeget off/on cycle, which
+	// deletes every block first) may change this; warn instead of rebuilding.
+	if(_VegetableManager->getExtra().isEnabled() == enable)
+	{
+		logVegetableLayout(enable);
+		return;
+	}
+	if(_VegetableBlockList.size() != 0)
+	{
+		nlwarning("VEGETABLE: MicroVegetExtra set to %s while %d vegetable block(s) are alive; "
+			"existing blocks keep the old distance layout until the next login",
+			enable ? "on" : "off", _VegetableBlockList.size());
+	}
 	_VegetableManager->setExtraEnabled(enable);
+	logVegetableLayout(enable);
 }
 
 // ***************************************************************************

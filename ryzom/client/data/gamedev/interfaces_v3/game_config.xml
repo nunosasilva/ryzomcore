@@ -1225,13 +1225,13 @@
                   y="-2" />
         <!-- Literal label: the string bank shipped with the live data has no
              key for this experimental option (a "ui..." key would render as
-             <NotExist:...>). It applies on the next login / zone load.
+             <NotExist:...>). It requires a relog.
              posparent=mvd lands below the density slider; x=-20 puts the box
              glyph on the same left edge as the Micro-Vegetation checkbox. -->
         <instance template="tgcw_checkbox"
                   id="lmvx"
                   text="Micro-vegetation Extra"
-                  tooltip="Doubles the five bands (50m -> 100m); applies on the next login / zone load"
+                  tooltip="Doubles the five bands (50m -> 100m); requires a relog"
                   posparent="mvd"
                   posref="BL TL"
                   x="-20"
@@ -3714,7 +3714,7 @@
                link="MicroVeget"
                preset="UI:TEMP:PRESET_LAND" />
         <!-- Only writes the cfg key; MicroVegetExtra is applied on the next
-             login / zone load, there is no live rebuild. -->
+             login, there is no live rebuild. -->
         <param ui="landscape:lmvx:c"
                type="cfg"
                widget="boolbut"

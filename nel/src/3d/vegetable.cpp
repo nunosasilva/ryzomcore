@@ -123,7 +123,7 @@ void	CVegetable::registerToManager(CVegetableManager *manager)
 
 
 // ***************************************************************************
-void	CVegetable::generateGroupEx(float nbInst, const CVector &posInWorld, const CVector &surfaceNormal, uint vegetSeed, std::vector<CVector2f> &instances) const
+void	CVegetable::generateGroupEx(float nbInst, const CVector &posInWorld, const CVector &surfaceNormal, uint vegetSeed, float densityScale, std::vector<CVector2f> &instances) const
 {
 	nlassert(_Manager);
 
@@ -140,6 +140,9 @@ void	CVegetable::generateGroupEx(float nbInst, const CVector &posInWorld, const 
 
 	// modulate result by Global Manager density
 	nbInst*= _Manager->getGlobalDensity();
+
+	// Stock passes 1.0; MicroVegetExtra thins the count here.
+	nbInst*= densityScale;
 
 	// Now, 0<=nbInst<+oo. If we have 0.1, it means that we have 10% chance to spawn an instance.
 	// So add a "random" value (with help of a noise with High frequency)
@@ -180,12 +183,12 @@ void	CVegetable::generateGroup(const CVector &posInWorld, const CVector &surface
 	float	nbInst= area * dens;
 
 	// modulate by normal and generate them.
-	generateGroupEx(nbInst, posInWorld, surfaceNormal, vegetSeed, instances);
+	generateGroupEx(nbInst, posInWorld, surfaceNormal, vegetSeed, 1.f, instances);
 }
 
 
 // ***************************************************************************
-void	CVegetable::generateGroupBiLinear(const CVector &posInWorld, const CVector posInWorldBorder[4], const CVector &surfaceNormal, float area, uint vegetSeed, std::vector<CVector2f> &instances) const
+void	CVegetable::generateGroupBiLinear(const CVector &posInWorld, const CVector posInWorldBorder[4], const CVector &surfaceNormal, float area, uint vegetSeed, float densityScale, std::vector<CVector2f> &instances) const
 {
 	sint	i;
 	const	float evenDistribFact= 12.25f;		// an arbitrary value to have a higher frequency for random.
@@ -214,7 +217,7 @@ void	CVegetable::generateGroupBiLinear(const CVector &posInWorld, const CVector 
 
 	// generate instances on the patch
 	// ==================
-	generateGroupEx(nbInstAverage, posInWorld, surfaceNormal, vegetSeed, instances);
+	generateGroupEx(nbInstAverage, posInWorld, surfaceNormal, vegetSeed, densityScale, instances);
 
 
 

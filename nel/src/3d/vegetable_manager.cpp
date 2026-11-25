@@ -1968,11 +1968,9 @@ void		CVegetableManager::setGlobalDensity(float density)
 void		CVegetableManager::setExtraEnabled(bool enabled)
 {
 	_Extra.setEnabled(enabled);
-	nlinfo("VEGETABLE: distance layout %s: %u x %.0f m bands, far edge %.0f m",
-		enabled ? "extra" : "stock", NL3D_VEGETABLE_BLOCK_NUMDIST,
-		enabled ? 2.f * NL3D_VEGETABLE_BLOCK_ELTDIST : NL3D_VEGETABLE_BLOCK_ELTDIST,
-		enabled ? 2.f * NL3D_VEGETABLE_BLOCK_ELTDIST * NL3D_VEGETABLE_BLOCK_NUMDIST
-			: NL3D_VEGETABLE_BLOCK_ELTDIST * NL3D_VEGETABLE_BLOCK_NUMDIST);
+	// Keep one blend-layer margin past the 100m far edge. This distance also
+	// gates vegetation fog; stock keeps its 60m default.
+	_ZSortLayerDistMax= enabled ? 2.f * NL3D_VEGETABLE_DEFAULT_DIST_MAX : NL3D_VEGETABLE_DEFAULT_DIST_MAX;
 }
 
 
