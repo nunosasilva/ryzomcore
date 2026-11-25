@@ -21,6 +21,8 @@
 #include "nel/3d/vegetable_clip_block.h"
 #include "nel/3d/vegetable_instance_group.h"
 #include "nel/3d/patch.h"
+#include "nel/3d/landscape.h"
+#include "nel/3d/tile_vegetable_desc.h"
 #include "nel/3d/bezier_patch.h"
 #include "nel/misc/time_nl.h"
 
@@ -412,6 +414,20 @@ void			CLandscapeVegetableBlock::createVegetableIGForDistType(uint i, CVegetable
 
 
 // ***************************************************************************
+/// Number of authored species in the near bands (0..2). Used to decide whether a
+/// tile-id change brings MORE near vegetation than the old field: sparse -> dense
+/// must regenerate (the current tile has grass the retained field does not),
+/// dense -> sparse (or equal) keeps the old field.
+static uint		nearBandSourceCount(const CTileVegetableDesc &desc)
+{
+	uint	n= 0;
+	for(uint k= 0; k < 3; ++k)
+		n+= (uint)desc.getVegetableList(k).size();
+	return n;
+}
+
+
+// ***************************************************************************
 uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetableManager *vegeManager)
 {
 	const CVegetableExtra	&extra= vegeManager->getExtra();
@@ -450,26 +466,43 @@ uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetabl
 		const bool	newHasTile= newTile0 != NL_TILE_ELM_LAYER_EMPTY;
 		const bool	idsChanged= (_TileKey[tileId] & idMask) != (key & idMask);
 
+		// Compare the near authored lists of the old and the new tile. A
+		// sparse -> dense tile change means the current tile has near grass the
+		// retained field does not: regenerate it instead of keeping the old field.
+		// Dense -> sparse (or equal) keeps the old field.
+		const uint	oldNearSources= oldHasTile
+			? nearBandSourceCount(_Patch->getTileVegetableDesc(oldTile0)) : 0;
+		const uint	newNearSources= newHasTile
+			? nearBandSourceCount(_Patch->getTileVegetableDesc(newTile0)) : 0;
+		const bool	moreNearSources= newNearSources > oldNearSources;
+
 		// Tileset/region change under a live block: keep the existing instance
 		// groups (the old field) and only fill the alive buckets whose IG is
-		// missing. The old field stays visible while this block remains within
-		// the far edge; when it leaves, its IGs are deleted and a later re-entry
+		// missing, unless the new tile has more near sources (sparse -> dense).
+		// The old field stays visible while this block remains within the far
+		// edge; when it leaves, its IGs are deleted and a later re-entry
 		// generates the new region.
-		const bool	retain= extraEnabled && keyChanged && oldHasTile && newHasTile && idsChanged;
+		const bool	retain= extraEnabled && keyChanged && oldHasTile && newHasTile
+			&& idsChanged && !moreNearSources;
 		if(retain)
 		{
 			_Stale= true;
 			++retainedTiles;
 			if(vegStateLog)
-				nlinfo("VEGSTATE:   retain slot %u old material %u new material %u (old field kept)",
-					tileId, oldTile0, newTile0);
+				nlinfo("VEGSTATE:   retain slot %u old material %u new material %u "
+					"near %u -> %u (old field kept)",
+					tileId, oldTile0, newTile0, oldNearSources, newNearSources);
 		}
 		else if(keyChanged)
 		{
 			// Material availability changed (empty tile -> populated, or the
-			// reverse), or the water state changed: the M1 refresh. Existing IGs
-			// are regenerated from the current tiles.
+			// reverse), the water state changed, or the new tile brings more
+			// near sources (sparse -> dense): the M1 refresh. Existing IGs are
+			// regenerated from the current tiles.
 			++changedTiles;
+			if(vegStateLog && moreNearSources && idsChanged)
+				nlinfo("VEGSTATE:   refresh slot %u material %u -> %u near %u -> %u (new field)",
+					tileId, oldTile0, newTile0, oldNearSources, newNearSources);
 		}
 
 		bool	tileFilled= false;

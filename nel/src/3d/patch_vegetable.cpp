@@ -42,6 +42,13 @@ namespace NL3D
 
 
 // ***************************************************************************
+const CTileVegetableDesc	&CPatch::getTileVegetableDesc(uint tileId) const
+{
+	return getLandscape()->getTileVegetableDesc(tileId);
+}
+
+
+// ***************************************************************************
 void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distType, uint ts, uint tt,
 	CLandscapeVegetableBlockCreateContext &vbCreateCtx, TVegSkipReason *skipReason)
 {

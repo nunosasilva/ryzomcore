@@ -68,6 +68,7 @@ class	CVegetableClipBlock;
 class	CVegetableManager;
 class	CVegetableInstanceGroup;
 class	CLandscapeVegetableBlock;
+class	CTileVegetableDesc;
 class	CLandscapeVegetableBlockCreateContext;
 class	CPatchDLMContext;
 class	CPatchDLMPointLight;
@@ -1182,6 +1183,11 @@ private:
 	/// The tile material id under one tile (NL_TILE_ELM_LAYER_EMPTY if none). Used
 	/// by the vegetable state log to name the tile an empty instance group sits on.
 	uint		getTileIdAt(uint ts, uint tt) const	{return Tiles[tt * OrderS + ts].Tile[0];}
+
+	/// Authored vegetable description of a tile material id. The vegetable block
+	/// refresh uses it to compare the near-band source counts of the old and the
+	/// current tile (sparse -> dense must regenerate, dense -> sparse retains).
+	const CTileVegetableDesc	&getTileVegetableDesc(uint tileId) const;
 
 	/** Identity of the tile data that microvegetation generation reads: the three
 	 *	tile ids and the vegetable/water state of the tile. A vegetable block
