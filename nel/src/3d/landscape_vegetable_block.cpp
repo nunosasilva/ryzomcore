@@ -427,19 +427,13 @@ uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetabl
 
 	uint	changedTiles= 0;
 	uint	retainedTiles= 0;
+	uint	filledTiles= 0;
 	uint	regeneratedIg= 0;
 	for(uint tileId= 0; tileId < NL3D_TESSBLOCK_TILESIZE; ++tileId)
 	{
 		uint	tms= _Ts + (tileId & 1);
 		uint	tmt= _Tt + (tileId >> 1);
 		uint64	key= _Patch->getTileVegetableKey(tms, tmt);
-
-		// This is the user's "compare the maps, do not overwrite when nothing
-		// changed": the tile data is the input of the generation, so an identical
-		// key means the existing instance groups are still exactly what a
-		// regeneration would produce.
-		if(key == _TileKey[tileId])
-			continue;
 
 		// Nothing is alive for this block: there is no visible field to preserve.
 		// Re-seed the key so a later entry generates from the current tiles.
@@ -449,38 +443,45 @@ uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetabl
 			continue;
 		}
 
+		const bool	keyChanged= key != _TileKey[tileId];
 		const uint	oldTile0= (uint)((_TileKey[tileId] >> 32) & 0xFFFF);
 		const uint	newTile0= _Patch->getTileIdAt(tms, tmt);
 		const bool	oldHasTile= oldTile0 != NL_TILE_ELM_LAYER_EMPTY;
 		const bool	newHasTile= newTile0 != NL_TILE_ELM_LAYER_EMPTY;
 		const bool	idsChanged= (_TileKey[tileId] & idMask) != (key & idMask);
-		if(extraEnabled && oldHasTile && newHasTile && idsChanged)
+
+		// Tileset/region change under a live block: keep the existing instance
+		// groups (the old field) and only fill the alive buckets whose IG is
+		// missing. The old field stays visible while this block remains within
+		// the far edge; when it leaves, its IGs are deleted and a later re-entry
+		// generates the new region.
+		const bool	retain= extraEnabled && keyChanged && oldHasTile && newHasTile && idsChanged;
+		if(retain)
 		{
-			// Tileset/region change under a live block. Do not overwrite the
-			// visible field: keep the instance groups generated from the old
-			// tiles, and leave _TileKey describing them. The old field stays
-			// visible while this block remains within the far edge; when it
-			// leaves the range its instance groups are deleted, and if it
-			// re-enters later createVegetableIGForDistType() generates the new
-			// region from the current tiles.
 			_Stale= true;
 			++retainedTiles;
 			if(vegStateLog)
 				nlinfo("VEGSTATE:   retain slot %u old material %u new material %u (old field kept)",
 					tileId, oldTile0, newTile0);
-			continue;
+		}
+		else if(keyChanged)
+		{
+			// Material availability changed (empty tile -> populated, or the
+			// reverse), or the water state changed: the M1 refresh. Existing IGs
+			// are regenerated from the current tiles.
+			++changedTiles;
 		}
 
-		// Material availability changed (empty tile -> populated, or the reverse)
-		// or the water state changed: this is the M1 refresh, not a region
-		// change. Regenerate this tile at every bucket the block currently holds.
-		// The buckets that leave the range were already deleted by update(), and
-		// the ones a layout cannot fill (merged-far: everything but the farthest)
-		// have no instance group to refresh.
-		changedTiles++;
+		bool	tileFilled= false;
 		for(uint i= firstBucket; i < NL3D_VEGETABLE_BLOCK_NUMDIST; ++i)
 		{
 			if(!extra.hasAnySources(i))
+				continue;
+
+			const bool	missingIg= _VegetableIG[tileId][i] == nullptr;
+			if(!keyChanged && !missingIg)
+				continue;
+			if(retain && !missingIg)
 				continue;
 
 			if(_VegetableIG[tileId][i])
@@ -494,18 +495,27 @@ uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetabl
 			if(vegStateLog)
 				nlinfo("VEGSTATE:   refresh create d%u slot %u (material %u)", i, tileId, newTile0);
 			createVegetableIGForTile(tileId, i, vegeManager, ctx);
-			regeneratedIg++;
+			++regeneratedIg;
+			if(!keyChanged)
+				tileFilled= true;
 		}
 
-		_TileKey[tileId]= key;
+		if(tileFilled)
+			++filledTiles;
+
+		// A retained tile keeps the key of the IGs that are still drawn; a
+		// changed non-retained tile adopts the current key. An unchanged tile
+		// only had missing IGs filled.
+		if(!retain)
+			_TileKey[tileId]= key;
 	}
 
-	if(vegStateLog && (changedTiles > 0 || retainedTiles > 0))
+	if(vegStateLog && (changedTiles > 0 || retainedTiles > 0 || filledTiles > 0))
 	{
 		double	ms= NLMISC::CTime::ticksToSecond(NLMISC::CTime::getPerformanceTime() - start) * 1000.0;
-		nlinfo("VEGSTATE:   refresh %u/%u tiles, %u ig, %u retained, stale %u in %.3f ms",
+		nlinfo("VEGSTATE:   refresh %u/%u tiles, %u ig, %u retained, %u filled, stale %u in %.3f ms",
 			changedTiles, (uint)NL3D_TESSBLOCK_TILESIZE, regeneratedIg, retainedTiles,
-			(uint)_Stale, ms);
+			filledTiles, (uint)_Stale, ms);
 	}
 
 	return regeneratedIg;

@@ -451,6 +451,13 @@ bool			CLandscape::addZone(const CZone	&newZone)
 	// and update any FaceVector.
 	updateTessBlocksFaceVector();
 
+	// A zone/region transition can replace tile data or tilesets under the live
+	// blocks without a tile-material event. Let every block compare its tile
+	// keys on the next refine and fill any alive bucket whose IG is missing;
+	// unchanged tiles are left untouched (no full rebuild).
+	for(CLandscapeVegetableBlock *vb= _VegetableBlockList.begin(); vb != nullptr; vb= (CLandscapeVegetableBlock*)vb->Next)
+		vb->markDirty();
+
 	return true;
 }
 // ***************************************************************************
@@ -505,6 +512,12 @@ bool			CLandscape::removeZone(uint16 zoneId)
 
 	// because of forceMerge() at unbind, removeZone() can cause change in faces in other (visible) zones.
 	updateTessBlocksFaceVector();
+
+	// Same as addZone: the removed zone may have been the source of the tile
+	// data/tilesets under the live blocks. Compare the tile keys and fill only
+	// the missing alive IGs on the next refine.
+	for(CLandscapeVegetableBlock *vb= _VegetableBlockList.begin(); vb != nullptr; vb= (CLandscapeVegetableBlock*)vb->Next)
+		vb->markDirty();
 
 	return true;
 }
