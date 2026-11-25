@@ -473,7 +473,7 @@ public:
 	void		enableVegetable(bool enable);
 
 	/** Opt-in extended microvegetation: false = stock 0..50m layout, true = the
-	 *	merged-far 0..100m layout (see CVegetableExtra). Must be called before the
+	 *	union2 0..100m layout (see CVegetableExtra). Must be called before the
 	 *	first vegetable block is created, or while running: this implementation
 	 *	rebuilds the instance groups of the live blocks.
 	 */

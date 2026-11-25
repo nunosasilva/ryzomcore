@@ -203,7 +203,7 @@ public:
 	const CVegetableExtra	&getExtra() const { return _Extra; }
 
 	/** Set the extended microvegetation switch (false = stock layout, true = the
-	 *	100m merged-far layout). Must be done before the first vegetable block is
+	 *	100m union2 layout). Must be done before the first vegetable block is
 	 *	created (login / zone load), or through CLandscape::setVegetableExtra(),
 	 *	which rebuilds the instance groups of the live blocks. When enabled, it
 	 *	also stretches the ZSort blend-layer range so the far field is layered and
@@ -421,7 +421,7 @@ private:
 	/// For Alpha Blend rdrPass, ordering into layers.
 	uint					_NumZSortBlendLayers;
 	float					_ZSortLayerDistMax;
-	/// Opt-in extended microvegetation (merged-far layout, 100m).
+	/// Opt-in extended microvegetation (union2 layout, 100m).
 	CVegetableExtra			_Extra;
 	CScene					*_ZSortScene;
 	std::vector<CVegetableBlendLayerModel*>		_ZSortModelLayers;

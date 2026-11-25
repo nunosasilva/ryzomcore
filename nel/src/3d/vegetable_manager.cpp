@@ -1982,12 +1982,28 @@ bool		CVegetableManager::setExtraEnabled(bool enabled)
 		: NL3D_VEGETABLE_DEFAULT_DIST_MAX;
 	if(_Extra.isEnabled())
 	{
-		nlinfo("VEGETABLE: distance layout extra: %u x %.0f m bands, far edge %.0f m, "
-			"every authored band in the farthest bucket, density %.2f, scale %.2f, zsort %.0f m",
-			(uint)NL3D_VEGETABLE_BLOCK_NUMDIST, _Extra.getBandDist(),
-			_Extra.getFarEdgeM(),
-			CVegetableExtra::getMergedDensity(), CVegetableExtra::getMergedScale(),
-			_ZSortLayerDistMax);
+		if(_Extra.isMergedFar())
+		{
+			nlinfo("VEGETABLE: distance layout extra: %u x %.0f m bands, far edge %.0f m, "
+				"merged-far measurement layout (every authored band in the farthest bucket), "
+				"density %.2f, scale %.2f, zsort %.0f m",
+				(uint)NL3D_VEGETABLE_BLOCK_NUMDIST, _Extra.getBandDist(),
+				_Extra.getFarEdgeM(),
+				CVegetableExtra::getMergedDensity(), CVegetableExtra::getMergedScale(),
+				_ZSortLayerDistMax);
+		}
+		else
+		{
+			nlinfo("VEGETABLE: distance layout extra: %u x %.0f m bands, far edge %.0f m, "
+				"union2 (own band per bucket, reach 20/40/60/80/100 m; farthest bucket copies "
+				"the lower bands at %.2f), density %.2f/%.2f, scale %.2f/%.2f, zsort %.0f m",
+				(uint)NL3D_VEGETABLE_BLOCK_NUMDIST, _Extra.getBandDist(),
+				_Extra.getFarEdgeM(),
+				CVegetableExtra::getUnionDensity(),
+				CVegetableExtra::getBandDensity(), CVegetableExtra::getFarDensity(),
+				CVegetableExtra::getBandScale(), CVegetableExtra::getFarScale(),
+				_ZSortLayerDistMax);
+		}
 	}
 	else
 	{
