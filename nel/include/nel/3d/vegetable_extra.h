@@ -48,7 +48,7 @@ public:
 	const float*	getSqrDistLUT() const { return _SqrDistLUT; }
 
 	/// Extra mode thins instance generation to this fraction of the authored
-	/// density. Tune this constant (0.75 default; RYZOM_VEG_EXTRA_DENSITY is a
+	/// density. Tune this constant (0.3 default; RYZOM_VEG_EXTRA_DENSITY is a
 	/// measurement-only override enabled with RYZOM_VEG_VB_STATS=1).
 	static float	getDensityScale();
 
