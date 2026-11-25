@@ -1314,7 +1314,7 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 				return NULL;
 			return (uint8 *)driver->vertexRingMapped() + _DrawOffset + begin;
 		}
-		const uint32 offset = driver->allocVertexRing(_Size);
+		const uint32 offset = driver->allocVertexRing(_Size, VertexBufferPtr ? VertexBufferPtr->getName().c_str() : "");
 		if (offset == 0xFFFFFFFFu)
 		{
 			// The ring is at its cap or could not grow (VRAM pressure). This is
@@ -1431,7 +1431,7 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 		if (inUse && needCopy && copyBytes != 0)
 		{
 			const uint64 statsStart = driver->statsEnabled() ? nowNs() : 0;
-			const uint32 ringOffset = driver->allocVertexRing(copyBytes);
+			const uint32 ringOffset = driver->allocVertexRing(copyBytes, VertexBufferPtr ? VertexBufferPtr->getName().c_str() : "");
 			ring = driver->vertexRingMapped();
 			const uint64 statsAlloc = statsStart ? nowNs() : 0;
 			if (ringOffset != 0xFFFFFFFFu && ring)
@@ -1601,7 +1601,7 @@ bool CDriverVulkan::flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &inf
 	if (bytes == 0)
 		return true;
 
-	const uint32 ringOffset = allocVertexRing(bytes);
+	const uint32 ringOffset = allocVertexRing(bytes, vb.getName().c_str());
 	void *ring = vertexRingMapped();
 	if (ringOffset == 0xFFFFFFFFu || !ring)
 	{
@@ -1644,7 +1644,7 @@ bool CDriverVulkan::activeIndexBuffer(CIndexBuffer &ib)
 // Per-frame vertex upload ring
 // ---------------------------------------------------------------------------
 
-uint32 CDriverVulkan::allocVertexRing(uint32 size)
+uint32 CDriverVulkan::allocVertexRing(uint32 size, const char *label)
 {
 	const uint64 required = (uint64)_VertexRingOffset + size;
 	const bool grow = (_VertexRing == VK_NULL_HANDLE ||
@@ -1653,16 +1653,21 @@ uint32 CDriverVulkan::allocVertexRing(uint32 size)
 	{
 		// Each frame has its own half: a previous frame may still be reading
 		// the vertices it uploaded at the same offsets. Never let the ring
-		// grow without bound: a 2 GiB ring used to overflow the old doubling
-		// loop and hang the client (see nextRingSize()).
+		// grow without bound: nextRingSize() uses 64-bit math and returns 0
+		// above the cap, keeping the old ring.
 		const uint32 newSize = nextRingSize(_VertexRingSize, 4u * 1024u * 1024u, size, NL_VK_VERTEX_RING_MAX);
 		if (newSize == 0)
 		{
 			// A full loading frame can hit this in a burst; keep the log usable.
+			++_StatsVertexRingDrops;
+			_StatsVertexRingDropBytes += size;
 			static uint32 warnCount = 0;
 			if (warnCount < 3 || (warnCount % 1000) == 0)
-				nlwarning("Vulkan: vertex ring would exceed %u MiB for a %u-byte upload (ring %u MiB)",
-					NL_VK_VERTEX_RING_MAX / (1024u * 1024u), size, _VertexRingSize / (1024u * 1024u));
+				nlwarning("Vulkan: vertex ring would exceed %u MiB for a %u-byte upload '%s' (ring %u MiB); drops %llu (%llu MiB)",
+					NL_VK_VERTEX_RING_MAX / (1024u * 1024u), size, label ? label : "unnamed",
+					_VertexRingSize / (1024u * 1024u),
+					(unsigned long long)_StatsVertexRingDrops,
+					(unsigned long long)(_StatsVertexRingDropBytes / (1024ull * 1024ull)));
 			++warnCount;
 			return 0xFFFFFFFFu;
 		}
@@ -1675,7 +1680,13 @@ uint32 CDriverVulkan::allocVertexRing(uint32 size)
 		bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		VkBuffer buffer = VK_NULL_HANDLE;
 		if (vkCreateBuffer(_Device, &bci, NULL, &buffer) != VK_SUCCESS)
+		{
+			++_StatsVertexRingDrops;
+			_StatsVertexRingDropBytes += size;
+			nlwarning("Vulkan: vertex ring growth to %u MiB failed for a %u-byte upload '%s'; keeping the %u MiB ring",
+				newSize / (1024u * 1024u), size, label ? label : "unnamed", _VertexRingSize / (1024u * 1024u));
 			return 0xFFFFFFFFu;
+		}
 		VkMemoryRequirements req;
 		vkGetBufferMemoryRequirements(_Device, buffer, &req);
 		VkMemoryAllocateInfo mai;
@@ -1688,6 +1699,10 @@ uint32 CDriverVulkan::allocVertexRing(uint32 size)
 		if (vkAllocateMemory(_Device, &mai, NULL, &memory) != VK_SUCCESS)
 		{
 			vkDestroyBuffer(_Device, buffer, NULL);
+			++_StatsVertexRingDrops;
+			_StatsVertexRingDropBytes += size;
+			nlwarning("Vulkan: vertex ring memory allocation (%u MiB) failed for a %u-byte upload '%s'; keeping the %u MiB ring",
+				newSize / (1024u * 1024u), size, label ? label : "unnamed", _VertexRingSize / (1024u * 1024u));
 			return 0xFFFFFFFFu;
 		}
 		vkBindBufferMemory(_Device, buffer, memory, 0);
@@ -1696,6 +1711,10 @@ uint32 CDriverVulkan::allocVertexRing(uint32 size)
 		{
 			vkDestroyBuffer(_Device, buffer, NULL);
 			vkFreeMemory(_Device, memory, NULL);
+			++_StatsVertexRingDrops;
+			_StatsVertexRingDropBytes += size;
+			nlwarning("Vulkan: vertex ring map (%u MiB) failed for a %u-byte upload '%s'; keeping the %u MiB ring",
+				newSize / (1024u * 1024u), size, label ? label : "unnamed", _VertexRingSize / (1024u * 1024u));
 			return 0xFFFFFFFFu;
 		}
 		// Draws already recorded in this frame reference the old buffer; it is
@@ -2477,7 +2496,7 @@ void CDriverVulkan::makeShadowSlice(CVBDrvInfosVulkan &info, uint64 now)
 	{
 		const uint32 bytes = info.copyLength();
 		const uint64 statsStart = _StatsEnabled ? nowNs() : 0;
-		const uint32 ringOffset = allocVertexRing(bytes);
+		const uint32 ringOffset = allocVertexRing(bytes, info.VertexBufferPtr ? info.VertexBufferPtr->getName().c_str() : "");
 		const uint64 statsAlloc = statsStart ? nowNs() : 0;
 		void *ring = vertexRingMapped();
 		const uint8 *src = !info._WriteShadow.empty() ? &info._WriteShadow[0]

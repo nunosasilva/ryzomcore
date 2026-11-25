@@ -415,6 +415,11 @@ CDriverVulkan::CDriverVulkan()
 	_StatsUniformHighWater = 0;
 	_StatsUniformHighWaterMax = 0;
 	_StatsUniformRingMax = 0;
+	_StatsVertexRingDrops = 0;
+	_StatsVertexRingDropBytes = 0;
+	_StatsVertexRingHighWater = 0;
+	_StatsVertexRingHighWaterMax = 0;
+	_StatsVertexRingSizeMax = 0;
 	_StatsLastTargetBinds = 0;
 	_GpuTimeQuery = VK_NULL_HANDLE;
 	_GpuTimeEnabled = false;
@@ -2579,6 +2584,14 @@ bool CDriverVulkan::swapBuffers()
 			_StatsUniformHighWaterMax = uniformUsed;
 		if (_UniformRingSize > _StatsUniformRingMax)
 			_StatsUniformRingMax = _UniformRingSize;
+
+		const uint32 vertexUsed = _VertexRingOffset - _VertexRingFrameBase;
+		if (vertexUsed > _StatsVertexRingHighWater)
+			_StatsVertexRingHighWater = vertexUsed;
+		if (vertexUsed > _StatsVertexRingHighWaterMax)
+			_StatsVertexRingHighWaterMax = vertexUsed;
+		if (_VertexRingSize > _StatsVertexRingSizeMax)
+			_StatsVertexRingSizeMax = _VertexRingSize;
 	}
 
 	if ((_SwapBufferCounter % 600) == 0)
@@ -2695,6 +2708,13 @@ bool CDriverVulkan::swapBuffers()
 			nlinfo("Vulkan stats: uniform high-water %u KiB/frame (max %u KiB), ring %u KiB (max %u KiB)",
 				_StatsUniformHighWater / 1024, _StatsUniformHighWaterMax / 1024,
 				_UniformRingSize / 1024, _StatsUniformRingMax / 1024);
+			nlinfo("Vulkan stats: vertex ring high-water %llu KiB/frame (max %llu KiB), size %u KiB (max %llu KiB), alloc drops %llu (%llu MiB)",
+				(unsigned long long)(_StatsVertexRingHighWater / 1024),
+				(unsigned long long)(_StatsVertexRingHighWaterMax / 1024),
+				_VertexRingSize / 1024,
+				(unsigned long long)(_StatsVertexRingSizeMax / 1024),
+				(unsigned long long)_StatsVertexRingDrops,
+				(unsigned long long)(_StatsVertexRingDropBytes / (1024ull * 1024ull)));
 			_StatsTexInfoHits = 0;
 			_StatsTexInfoMisses = 0;
 			_StatsSamplerLookups = 0;
@@ -2712,6 +2732,7 @@ bool CDriverVulkan::swapBuffers()
 			_StatsWindowStartNs = now;
 			_StatsWindowFrames = 0;
 			_StatsUniformHighWater = 0;
+			_StatsVertexRingHighWater = 0;
 			_StatsDraws = 0;
 			_StatsOcclusionIssued = 0;
 			_StatsOcclusionHarvested = 0;

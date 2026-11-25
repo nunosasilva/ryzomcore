@@ -76,10 +76,12 @@ const uint32 NL_VK_STAGING_RING_MAX = 64u * 1024u * 1024u;
 /// overflowed uint32 and spun forever in allocVertexRing().
 // The loading screen can spend seconds in one "frame" and fill the ring with
 // the buffers it prepares (measured: >128 MiB in a single frame, and the ring
-// used to reach 512 MiB during a zone load). 1 GiB leaves room for that while
-// staying below the 2 GiB point where the old doubling overflowed. In game the
-// ring stays at a few MiB.
-const uint32 NL_VK_VERTEX_RING_MAX = 1024u * 1024u * 1024u;
+// used to reach 512 MiB during a zone load). The user's 2560x1440 Fairhaven
+// session then saturated the 1 GiB ring with a 3,931,800-byte vegetation hard
+// VB (65,530 x 60 B) and dropped its upload. 2 GiB leaves a 1 GiB per-frame
+// half; nextRingSize() uses 64-bit math and returns 0 above the cap, keeping
+// the old ring. The 512k-cap all-hard path needs up to ~30.7 MiB once.
+const uint32 NL_VK_VERTEX_RING_MAX = 2u * 1024u * 1024u * 1024u;
 const uint32 NL_VK_INDEX_RING_MAX = 64u * 1024u * 1024u;
 // The stock 50m vegetation fits the 64 MiB ring, but the opt-in
 // MicroVegetExtra 100m mode roughly quadruples the vegetation draws (measured
@@ -1245,6 +1247,13 @@ private:
 	uint64					_StatsPartialFlushes;
 	uint64					_StatsPartialBytes;
 	uint64					_StatsPartialDrops;
+	/// Vertex-ring upload failures (all buffers, including the hard VB) and the
+	/// per-frame high-water of the ring offset.
+	uint64					_StatsVertexRingDrops;
+	uint64					_StatsVertexRingDropBytes;
+	uint64					_StatsVertexRingHighWater;
+	uint64					_StatsVertexRingHighWaterMax;
+	uint64					_StatsVertexRingSizeMax;
 	uint64					_StatsStaleStreamDraws;
 	uint64					_StatsVBSnapshotBytes;
 	uint64					_StatsUploadBytes;
@@ -1794,7 +1803,7 @@ public:
 								VkMemoryPropertyFlags preferred = 0) const;
 	/// Reserve `size` bytes in the current frame's vertex ring (4-byte aligned)
 	/// and return the offset, or 0xFFFFFFFF when the ring could not grow.
-	uint32					allocVertexRing(uint32 size);
+	uint32					allocVertexRing(uint32 size, const char *label = nullptr);
 	/// Fallback for an upload that cannot use the vertex ring: a dedicated
 	/// host-visible vertex buffer, returned mapped; null when even that
 	/// allocation fails. `mapped` is the whole buffer, so lock() can hand the
