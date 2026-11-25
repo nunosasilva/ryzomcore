@@ -411,6 +411,20 @@ private:
 	float					_ZSortLayerDistMax;
 	/// Opt-in doubled microvegetation distance (100m bands).
 	CVegetableExtra			_Extra;
+	/// RYZOM_VEG_VB_STATS=1 diagnostic state. Usage is sampled once per render().
+	bool					_VegVBStatsEnabled;
+	std::vector<uint32>		_VegVBUsage;
+	std::vector<uint32>		_VegVBSoftCap;
+	uint64					_VegVBFrame;
+	uint64					_VegVBPeakFrame;
+	uint32					_VegVBPeakTime;
+	uint32					_VegVBPeakUsage;
+	uint32					_VegVBPeakHard;
+	uint32					_VegVBPeakSoft;
+	uint64					_VegVBOver50k;
+	uint64					_VegVBOver65530;
+	uint64					_VegVBOverHard;
+	uint64					_VegVBSoftFrames;
 	CScene					*_ZSortScene;
 	std::vector<CVegetableBlendLayerModel*>		_ZSortModelLayers;
 	// The same but under water
@@ -420,6 +434,10 @@ private:
 	/// called by CVegetableBlendLayerModel.
 	void					setupRenderStateForBlendLayerModel(IDriver *driver);
 	void					exitRenderStateForBlendLayerModel(IDriver *driver);
+
+	/// Optional RYZOM_VEG_VB_STATS=1: hard/soft unlit vegetation VB usage.
+	void					sampleVegVBStats();
+	void					logVegVBStats(const char *why) const;
 
 	// @}
 

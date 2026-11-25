@@ -19,6 +19,8 @@
 #include "nel/3d/vegetable_extra.h"
 #include "nel/misc/common.h"
 
+#include <cstdlib>
+
 
 using namespace NLMISC;
 
@@ -37,6 +39,29 @@ CVegetableExtra::CVegetableExtra() : _Enabled(false)
 	// band width, so the edges become i * 2 * ELTDIST.
 	for(uint i= 0; i <= NL3D_VEGETABLE_BLOCK_NUMDIST; ++i)
 		_SqrDistLUT[i]= sqr(2.f * NL3D_VEGETABLE_BLOCK_ELTDIST * i);
+}
+
+// ***************************************************************************
+float	CVegetableExtra::getDensityScale()
+{
+	// 0.75 is the shipped extra-mode density. The env override exists only for
+	// RYZOM_VEG_VB_STATS=1 measurement runs that map the soft-VB threshold.
+	static float	scale= -1.f;
+	if(scale < 0.f)
+	{
+		scale= 0.75f;
+		if(getenv("RYZOM_VEG_VB_STATS") != NULL)
+		{
+			const char	*env= getenv("RYZOM_VEG_EXTRA_DENSITY");
+			if(env != NULL)
+			{
+				const float	v= (float)atof(env);
+				if(v > 0.f && v <= 1.f)
+					scale= v;
+			}
+		}
+	}
+	return scale;
 }
 
 

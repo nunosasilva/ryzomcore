@@ -32,8 +32,10 @@
 #include "nel/3d/vegetable_light_ex.h"
 #include "nel/3d/uniform_buffer.h"
 #include "nel/misc/hierarchical_timer.h"
+#include "nel/misc/time_nl.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 
 using namespace std;
@@ -63,6 +65,24 @@ CVegetableManager::CVegetableManager(uint maxVertexVbHardUnlit, uint maxVertexVb
 	_ZSortScene(nullptr)
 {
 	uint	i;
+
+	// Optional hard/soft vegetation VB usage diagnostic.
+	_VegVBStatsEnabled= getenv("RYZOM_VEG_VB_STATS") != NULL;
+	_VegVBFrame= 0;
+	_VegVBPeakFrame= 0;
+	_VegVBPeakTime= 0;
+	_VegVBPeakUsage= 0;
+	_VegVBPeakHard= 0;
+	_VegVBPeakSoft= 0;
+	_VegVBOver50k= 0;
+	_VegVBOver65530= 0;
+	_VegVBOverHard= 0;
+	_VegVBSoftFrames= 0;
+	if(_VegVBStatsEnabled)
+	{
+		_VegVBUsage.reserve(4096);
+		_VegVBSoftCap.reserve(4096);
+	}
 
 	// Init all the allocators
 	nlassert((uint)(CVegetableVBAllocator::VBTypeCount) == 2);
@@ -130,6 +150,8 @@ CVegetableManager::CVegetableManager(uint maxVertexVbHardUnlit, uint maxVertexVb
 // ***************************************************************************
 CVegetableManager::~CVegetableManager()
 {
+	logVegVBStats("exit");
+
 	// delete All VP
 	for(sint i=0; i <NL3D_VEGETABLE_NRDRPASS; i++)
 	{
@@ -1973,6 +1995,98 @@ void		CVegetableManager::setExtraEnabled(bool enabled)
 	_ZSortLayerDistMax= enabled ? 2.f * NL3D_VEGETABLE_DEFAULT_DIST_MAX : NL3D_VEGETABLE_DEFAULT_DIST_MAX;
 }
 
+// ***************************************************************************
+static uint32 vegVBPercentile(const std::vector<uint32> &sorted, float p)
+{
+	if(sorted.empty())
+		return 0;
+	const size_t	idx= (size_t)(p * (sorted.size() - 1));
+	return sorted[idx];
+}
+
+// ***************************************************************************
+void		CVegetableManager::sampleVegVBStats()
+{
+	if(!_VegVBStatsEnabled)
+		return;
+
+	// The 50k/65530 budget is the unlit allocator; lit vegetation has its own
+	// 5000-vertex hard buffer and is not what the microvegetation overflows.
+	const CVegetableVBAllocator	&hard= _VBHardAllocator[CVegetableVBAllocator::VBTypeUnlit];
+	const CVegetableVBAllocator	&soft= _VBSoftAllocator[CVegetableVBAllocator::VBTypeUnlit];
+	const uint32	hardV= hard.getNumUserVerticesAllocated();
+	const uint32	softV= soft.getNumUserVerticesAllocated();
+	const uint32	totalV= hardV + softV;
+	// The soft snapshot copies the whole soft capacity, not only the used slots.
+	// setNumVertices() keeps capacity == getNumVertices() for this allocator.
+	const uint32	softCapV= soft.getSoftwareVertexBuffer().getNumVertices();
+	const uint32	budget= hard.getMaxVertexInBufferHard();
+
+	++_VegVBFrame;
+	_VegVBUsage.push_back(totalV);
+	_VegVBSoftCap.push_back(softCapV);
+
+	if(totalV > _VegVBPeakUsage)
+	{
+		_VegVBPeakUsage= totalV;
+		_VegVBPeakFrame= _VegVBFrame;
+		_VegVBPeakTime= CTime::getSecondsSince1970();
+	}
+	if(hardV > _VegVBPeakHard)
+		_VegVBPeakHard= hardV;
+	if(softV > _VegVBPeakSoft)
+		_VegVBPeakSoft= softV;
+	if(totalV > 50000)
+		++_VegVBOver50k;
+	if(totalV > 65530)
+		++_VegVBOver65530;
+	if(totalV > budget)
+		++_VegVBOverHard;
+	if(softV != 0)
+		++_VegVBSoftFrames;
+
+	// 600 frames is ~10 s at 60 fps; the cumulative distribution is logged.
+	if((_VegVBFrame % 600) == 0)
+		logVegVBStats("run");
+}
+
+// ***************************************************************************
+void		CVegetableManager::logVegVBStats(const char *why) const
+{
+	if(_VegVBUsage.empty())
+		return;
+
+	std::vector<uint32>	usage= _VegVBUsage;
+	std::vector<uint32>	softCap= _VegVBSoftCap;
+	std::sort(usage.begin(), usage.end());
+	std::sort(softCap.begin(), softCap.end());
+
+	const uint32	p50= vegVBPercentile(usage, 0.50f);
+	const uint32	p95= vegVBPercentile(usage, 0.95f);
+	const uint32	p99= vegVBPercentile(usage, 0.99f);
+	const uint32	maxUsage= usage.back();
+	const uint32	softP99= vegVBPercentile(softCap, 0.99f);
+	const uint32	budget= _VBHardAllocator[CVegetableVBAllocator::VBTypeUnlit].getMaxVertexInBufferHard();
+	const uint32	stride= _VBSoftAllocator[CVegetableVBAllocator::VBTypeUnlit].getSoftwareVertexBuffer().getVertexSize();
+	const uint32	excessP99= p99 > budget ? p99 - budget : 0;
+	const uint32	excessMax= maxUsage > budget ? maxUsage - budget : 0;
+	const double	toMiB= (double)stride / (1024.0 * 1024.0);
+	const double	frames= (double)_VegVBFrame;
+
+	nlinfo("VEGVB[%s]: frames %llu hard %u p50 %u p95 %u p99 %u max %u hardMax %u softMax %u "
+		"excess99 %u (%.2f MiB) excessMax %u (%.2f MiB) over50k %.1f%% over65530 %.1f%% overHard %.1f%% "
+		"softFrames %.1f%% softCapP99 %u (stride %u, %.2f MiB) peak %u f%llu @%u",
+		why, (unsigned long long)_VegVBFrame, budget, p50, p95, p99, maxUsage,
+		_VegVBPeakHard, _VegVBPeakSoft,
+		excessP99, excessP99 * toMiB, excessMax, excessMax * toMiB,
+		frames ? 100.0 * (double)_VegVBOver50k / frames : 0.0,
+		frames ? 100.0 * (double)_VegVBOver65530 / frames : 0.0,
+		frames ? 100.0 * (double)_VegVBOverHard / frames : 0.0,
+		frames ? 100.0 * (double)_VegVBSoftFrames / frames : 0.0,
+		softP99, stride, softP99 * toMiB,
+		_VegVBPeakUsage, (unsigned long long)_VegVBPeakFrame, _VegVBPeakTime);
+}
+
 
 // ***************************************************************************
 // ***************************************************************************
@@ -2189,6 +2303,8 @@ void			CVegetableManager::render(const CVector &viewCenter, const CVector &front
 	ITexture *textureDLM, IDriver *driver)
 {
 	H_AUTO( NL3D_Vegetable_Render );
+
+	sampleVegVBStats();
 
 	CVegetableClipBlock		*rootToRender = nullptr;
 
