@@ -32,6 +32,7 @@
 #include "nel/3d/vegetable.h"
 #include "nel/3d/landscape_vegetable_block.h"
 #include "nel/misc/fast_floor.h"
+#include "nel/misc/time_nl.h"
 #include "nel/3d/tile_vegetable_desc.h"
 #include "nel/3d/texture_dlm.h"
 #include "nel/3d/patchdlm_context.h"
@@ -232,6 +233,7 @@ CLandscape::CLandscape() :
 	// Init vegetable  setup.
 	_VegetableManagerEnabled= false;
 	_DriverOkForVegetable= false;
+	_VegetableDescsReinitTime= 0;
 	// default global vegetable color, used for dynamic lighting only (arbitrary).
 	_DLMGlobalVegetableColor.set(180, 180, 180);
 
@@ -458,6 +460,11 @@ bool			CLandscape::addZone(const CZone	&newZone)
 	for(CLandscapeVegetableBlock *vb= _VegetableBlockList.begin(); vb != nullptr; vb= (CLandscapeVegetableBlock*)vb->Next)
 		vb->markDirty();
 
+	// A zone/region change can also leave the tile vegetable descriptors with
+	// stale shape pointers: re-register them now, like the MicroVeget toggle
+	// does, so the dirty blocks regenerate the near groups with valid shapes.
+	reinitVegetableDescs();
+
 	return true;
 }
 // ***************************************************************************
@@ -518,6 +525,10 @@ bool			CLandscape::removeZone(uint16 zoneId)
 	// the missing alive IGs on the next refine.
 	for(CLandscapeVegetableBlock *vb= _VegetableBlockList.begin(); vb != nullptr; vb= (CLandscapeVegetableBlock*)vb->Next)
 		vb->markDirty();
+
+	// Same as addZone: refresh the tile vegetable descriptors before the dirty
+	// blocks regenerate their near groups.
+	reinitVegetableDescs();
 
 	return true;
 }
@@ -3454,6 +3465,32 @@ void		CLandscape::enableVegetable(bool enable)
 	}
 
 }
+
+// ***************************************************************************
+void		CLandscape::reinitVegetableDescs()
+{
+	if(_VegetableManager == nullptr)
+		return;
+	TileBank.initTileVegetableDescs(_VegetableManager);
+	_VegetableDescsReinitTime= NLMISC::CTime::getLocalTime();
+	static const bool	vegStateLog= getenv("RYZOM_VEG_STATE") != NULL;
+	if(vegStateLog)
+		nlinfo("VEGSTATE: reinit tile vegetable descs");
+}
+
+
+// ***************************************************************************
+bool		CLandscape::reinitVegetableDescsIfStale()
+{
+	const NLMISC::TTime	now= NLMISC::CTime::getLocalTime();
+	// getLocalTime() has a one second granularity: this coalesces every block
+	// retry of the same frame (and of the same second) into one registration.
+	if(_VegetableDescsReinitTime != 0 && now - _VegetableDescsReinitTime < 1)
+		return false;
+	reinitVegetableDescs();
+	return true;
+}
+
 
 // ***************************************************************************
 bool		CLandscape::isVegetableActive() const

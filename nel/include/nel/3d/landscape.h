@@ -472,6 +472,19 @@ public:
 	 */
 	void		enableVegetable(bool enable);
 
+	/** Re-register every tile vegetable descriptor with the manager. This is the
+	 *	part of the MicroVeget toggle that reloads the shape pointers; a
+	 *	zone/region change or a stale near generation needs it without tearing
+	 *	down the live blocks. Safe to call repeatedly: registration is idempotent.
+	 */
+	void		reinitVegetableDescs();
+
+	/** Same as reinitVegetableDescs(), but at most once per second. Used by the
+	 *	near retry so a block storm does not re-register the whole tile bank for
+	 *	every empty group in the same frame. Returns true when it re-registered.
+	 */
+	bool		reinitVegetableDescsIfStale();
+
 	/** Opt-in extended microvegetation: false = stock 0..50m layout, true = the
 	 *	far-only extension layout (see CVegetableExtra). Must be called before the
 	 *	first vegetable block is created, or while running: this implementation
@@ -942,6 +955,8 @@ private:
 	bool						_VegetableManagerEnabled;
 	/// Tells if the current driver support vegetable.
 	bool						_DriverOkForVegetable;
+	/// CTime::getLocalTime() (seconds) of the last descriptor re-registration.
+	uint32						_VegetableDescsReinitTime;
 
 	/// List of VegetableBlock, to be tested for creation each frame.
 	CTessList<CLandscapeVegetableBlock>		_VegetableBlockList;

@@ -298,6 +298,15 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 	if(_NearRetryPending && NLMISC::CTime::getLocalTime() >= _NearRetryTime)
 	{
 		_NearRetryPending= false;
+		// The first pass keeps the existing registration (cheap). If the group
+		// still comes out empty, the descriptor shape pointers can be stale: the
+		// MicroVeget toggle recovers the same groups by re-registering them, so
+		// do that before the second/third pass. Once per second is enough.
+		if(_NearRetryCount >= 2 && _Patch->getLandscape()->reinitVegetableDescsIfStale())
+		{
+			if(vegStateLog)
+				nlinfo("VEGSTATE:   near retry %u re-registered tile vegetable descs", (uint)_NearRetryCount);
+		}
 		if(vegStateLog)
 			nlinfo("VEGSTATE:   near retry %u (first bucket %u)", (uint)_NearRetryCount, aliveFloor);
 		retryIg= refreshVegetableIgs(aliveFloor, vegeManager, 3);
