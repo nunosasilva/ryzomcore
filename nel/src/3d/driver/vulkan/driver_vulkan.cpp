@@ -412,6 +412,9 @@ CDriverVulkan::CDriverVulkan()
 	forgetDrawState();
 	_StatsWindowStartNs = 0;
 	_StatsWindowFrames = 0;
+	_StatsUniformHighWater = 0;
+	_StatsUniformHighWaterMax = 0;
+	_StatsUniformRingMax = 0;
 	_StatsLastTargetBinds = 0;
 	_GpuTimeQuery = VK_NULL_HANDLE;
 	_GpuTimeEnabled = false;
@@ -2566,6 +2569,18 @@ bool CDriverVulkan::swapBuffers()
 	if (_UsedTextureMemorySumEnabled)
 		_TextureUsed.clear();
 
+	// NLVK_STATS: how much of the per-frame uniform half a frame really used.
+	if (_StatsEnabled)
+	{
+		const uint32 uniformUsed = _UniformRingOffset - _UniformRingFrameBase;
+		if (uniformUsed > _StatsUniformHighWater)
+			_StatsUniformHighWater = uniformUsed;
+		if (uniformUsed > _StatsUniformHighWaterMax)
+			_StatsUniformHighWaterMax = uniformUsed;
+		if (_UniformRingSize > _StatsUniformRingMax)
+			_StatsUniformRingMax = _UniformRingSize;
+	}
+
 	if ((_SwapBufferCounter % 600) == 0)
 		nldebug("Vulkan: frame %llu, %u vertex draws, %u indexed draws, %u pipelines, %llu target binds, %llu MB textures",
 			(unsigned long long)_SwapBufferCounter, _ArrayDrawCount, _IndexedDrawCount,
@@ -2677,6 +2692,9 @@ bool CDriverVulkan::swapBuffers()
 			nlinfo("Vulkan stats: synchronous load: pipeline create %.1f ms (%llu), texture create %.1f ms (%llu)",
 				(double)_StatsPipelineCreateNs / 1e6, (unsigned long long)_StatsPipelineCreates,
 				(double)_StatsTextureCreateNs / 1e6, (unsigned long long)_StatsTextureCreates);
+			nlinfo("Vulkan stats: uniform high-water %u KiB/frame (max %u KiB), ring %u KiB (max %u KiB)",
+				_StatsUniformHighWater / 1024, _StatsUniformHighWaterMax / 1024,
+				_UniformRingSize / 1024, _StatsUniformRingMax / 1024);
 			_StatsTexInfoHits = 0;
 			_StatsTexInfoMisses = 0;
 			_StatsSamplerLookups = 0;
@@ -2693,6 +2711,7 @@ bool CDriverVulkan::swapBuffers()
 			_StatsTextureCreates = 0;
 			_StatsWindowStartNs = now;
 			_StatsWindowFrames = 0;
+			_StatsUniformHighWater = 0;
 			_StatsDraws = 0;
 			_StatsOcclusionIssued = 0;
 			_StatsOcclusionHarvested = 0;

@@ -87,7 +87,9 @@ const uint32 NL_VK_INDEX_RING_MAX = 64u * 1024u * 1024u;
 // 32 MiB is just short there: the ring reached the cap and the last draws of
 // the frame were dropped. 128 MiB gives a 64 MiB half, and the ring only grows
 // when a frame actually needs it, so the stock path keeps its smaller ring.
-const uint32 NL_VK_UNIFORM_RING_MAX = 128u * 1024u * 1024u;
+// The user's 2560x1440 18:38-20:11 session hit the 128 MiB cap 13,537 times
+// (each is a dropped mega draw); 256 MiB gives a 128 MiB per-frame half.
+const uint32 NL_VK_UNIFORM_RING_MAX = 256u * 1024u * 1024u;
 
 /// Size a ring buffer has to grow to for a `required`-byte upload: at least
 /// twice the request (the ring is split in per-frame halves), at least twice
@@ -1288,6 +1290,11 @@ private:
 	void					countVertexFormat(uint32 flags, uint32 stride);
 	uint64					_StatsWindowStartNs;
 	uint64					_StatsWindowFrames;
+	/// NLVK_STATS: uniform-ring usage high-water (bytes) in the current
+	/// window and over the run, plus the largest ring size reached.
+	uint32					_StatsUniformHighWater;
+	uint32					_StatsUniformHighWaterMax;
+	uint32					_StatsUniformRingMax;
 	uint64					_StatsLastTargetBinds;
 	/// Compile a glsl3vi snippet into the mega VP variants it can select.
 	bool					compileInsertVertexProgram(CVertexProgram *program, IProgram::CSource *insertSrc);
