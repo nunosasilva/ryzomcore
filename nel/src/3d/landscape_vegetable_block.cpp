@@ -71,6 +71,9 @@ CLandscapeVegetableBlock::CLandscapeVegetableBlock()
 	_CurDistType= NL3D_VEGETABLE_BLOCK_NUMDIST;
 	_Dirty= false;
 	_Stale= false;
+	_NearRetryPending= false;
+	_NearRetryTime= 0;
+	_NearRetryCount= 0;
 	// No instance group created yet. init() caches the far bound of the active
 	// distance layout (stock 50m or extra 100m) so needsUpdate() cannot skip the
 	// first update().
@@ -130,6 +133,9 @@ void			CLandscapeVegetableBlock::init(const CVector &center, CVegetableManager *
 	_SqrDistMax= FLT_MAX;
 	_Dirty= false;
 	_Stale= false;
+	_NearRetryPending= false;
+	_NearRetryTime= 0;
+	_NearRetryCount= 0;
 	for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
 	{
 		_TileKey[j]= patch->getTileVegetableKey(_Ts + (j & 1), _Tt + (j >> 1));
@@ -184,6 +190,9 @@ void			CLandscapeVegetableBlock::release(CVegetableManager *vegeManager, CTessLi
 	_CurDistType= NL3D_VEGETABLE_BLOCK_NUMDIST;
 	_Dirty= false;
 	_Stale= false;
+	_NearRetryPending= false;
+	_NearRetryTime= 0;
+	_NearRetryCount= 0;
 	for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
 		_TileKey[j]= ~(uint64)0;
 	{
@@ -268,14 +277,28 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 	// changed, in place, at the buckets that are alive at this distance: the
 	// visible field outside this block is not touched, and if the tile data is
 	// identical nothing is regenerated at all.
+	const uint	aliveFloor= newDistType > _CurDistType ? newDistType : _CurDistType;
 	const bool	refreshed= _Dirty;
 	uint		refreshedIg= 0;
 	if(refreshed)
-	{
-		uint	aliveFloor= newDistType > _CurDistType ? newDistType : _CurDistType;
 		refreshedIg= refreshVegetableIgs(aliveFloor, vegeManager);
-	}
 	_Dirty= false;
+
+	// A near IG came out empty at generation time (the login world-load can do
+	// this before the patch/tile data is fully usable). Retry the null alive
+	// near buckets after a short delay, without waiting for a tile event or a
+	// MicroVeget toggle. The retry is limited to d0..d2: the far d4 empties are
+	// expected at the far edge and regenerating thousands of them would be pure
+	// cost. createVegetableIGForTile() schedules the next attempt if it is still
+	// empty, up to a small cap.
+	uint		retryIg= 0;
+	if(_NearRetryPending && NLMISC::CTime::getLocalTime() >= _NearRetryTime)
+	{
+		_NearRetryPending= false;
+		if(vegStateLog)
+			nlinfo("VEGSTATE:   near retry (first bucket %u)", aliveFloor);
+		retryIg= refreshVegetableIgs(aliveFloor, vegeManager, 3);
+	}
 
 	if(newDistType<_CurDistType)
 	{
@@ -300,7 +323,7 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 	// A bucket transition and/or a refresh changed what the sort blocks hold.
 	// The instance groups themselves are already in the sort blocks' lists; this
 	// recomputes the sort block bounds and ZSort sides.
-	if(bucketChanged || (refreshed && refreshedIg > 0))
+	if(bucketChanged || (refreshed && refreshedIg > 0) || retryIg > 0)
 	{
 		for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
 		{
@@ -357,7 +380,9 @@ void			CLandscapeVegetableBlock::createVegetableIGForTile(uint tileId, uint dist
 	// refreshVegetableIgs() regenerates the tiles whose data changed.
 	static const bool	vegStateLog= getenv("RYZOM_VEG_STATE") != NULL;
 	TVegSkipReason	skipReason= VegSkipGenerated;
-	_Patch->generateTileVegetable(vegetIg, distType, tms, tmt, vbCreateCtx, vegStateLog ? &skipReason : NULL);
+	// Always ask for the skip reason: the empty near-retry decision below must
+	// not depend on the state log being enabled.
+	_Patch->generateTileVegetable(vegetIg, distType, tms, tmt, vbCreateCtx, &skipReason);
 
 	// If the ig is empty, delete him. This optimize rendering because no useless ig are
 	// tested for rendering. This speed up some 1/10 of ms...
@@ -376,8 +401,31 @@ void			CLandscapeVegetableBlock::createVegetableIGForTile(uint tileId, uint dist
 			else if((emptyIgCount & 0xFF) == 0)
 				nlinfo("VEGSTATE:   %u empty ig so far (last %s)", emptyIgCount, vegSkipReasonName(skipReason));
 		}
+
+		// Near group with authored sources that generated no instances: the
+		// world-load can do this before the patch/tile data is fully usable.
+		// Retry the near buckets after 1, 2 then 3 seconds; if the retry still
+		// comes out empty, give up (the far d4 empties are expected and are
+		// deliberately excluded). Without this the group stays null and nothing
+		// marks the block dirty, so only a full MicroVeget toggle would fix it.
+		if(distType < 3 && skipReason == VegSkipGenerated && _NearRetryCount < 3)
+		{
+			++_NearRetryCount;
+			_NearRetryPending= true;
+			_NearRetryTime= NLMISC::CTime::getLocalTime() + _NearRetryCount;
+			if(vegStateLog)
+				nlinfo("VEGSTATE:   near retry %u scheduled for d%u slot %u (material %u) in %us",
+					(uint)_NearRetryCount, distType, tileId, _Patch->getTileIdAt(tms, tmt),
+					(uint)_NearRetryCount);
+		}
 		vegeManager->deleteIg(vegetIg);
 		_VegetableIG[tileId][distType] = nullptr;
+	}
+	else if(distType < 3)
+	{
+		// A healthy near group: a later empty group is a new event with its own
+		// retry budget.
+		_NearRetryCount= 0;
 	}
 
 	// NB: vegtable SortBlock is updated in CLandscapeVegetableBlock::update() after
@@ -428,7 +476,8 @@ static uint		nearBandSourceCount(const CTileVegetableDesc &desc)
 
 
 // ***************************************************************************
-uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetableManager *vegeManager)
+uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetableManager *vegeManager,
+	uint lastBucket)
 {
 	const CVegetableExtra	&extra= vegeManager->getExtra();
 	const bool				extraEnabled= extra.isEnabled();
@@ -440,6 +489,10 @@ uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetabl
 
 	// Low 48 bits: the three 16-bit tile ids. The water state lives above them.
 	const uint64	idMask= 0x0000FFFFFFFFFFFFULL;
+
+	// A near-only retry must not adopt a changed tile key: the full refresh is
+	// the one that regenerates every alive bucket for a changed tile.
+	const bool	nearOnly= lastBucket < NL3D_VEGETABLE_BLOCK_NUMDIST;
 
 	uint	changedTiles= 0;
 	uint	retainedTiles= 0;
@@ -460,6 +513,8 @@ uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetabl
 		}
 
 		const bool	keyChanged= key != _TileKey[tileId];
+		if(nearOnly && keyChanged)
+			continue;
 		const uint	oldTile0= (uint)((_TileKey[tileId] >> 32) & 0xFFFF);
 		const uint	newTile0= _Patch->getTileIdAt(tms, tmt);
 		const bool	oldHasTile= oldTile0 != NL_TILE_ELM_LAYER_EMPTY;
@@ -506,7 +561,7 @@ uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetabl
 		}
 
 		bool	tileFilled= false;
-		for(uint i= firstBucket; i < NL3D_VEGETABLE_BLOCK_NUMDIST; ++i)
+		for(uint i= firstBucket; i < lastBucket; ++i)
 		{
 			if(!extra.hasAnySources(i))
 				continue;

@@ -82,7 +82,9 @@ public:
 	 */
 	bool			needsUpdate(const CVector &viewCenter) const
 	{
-		if(_Dirty)
+		// A delayed near retry must run even if the camera stays inside the
+		// current bucket; the retry itself is skipped until its deadline.
+		if(_Dirty || _NearRetryPending)
 			return true;
 		float	sqrDist= (viewCenter-_Center).sqrnorm();
 		return sqrDist<_SqrDistMin || sqrDist>_SqrDistMax;
@@ -135,6 +137,17 @@ private:
 	 *	the block leaves the far edge and later re-enters. Stock never sets it.
 	 */
 	bool					_Stale;
+	/** A near (d0..d2) instance group was generated with sources but came out
+	 *	empty, so it was deleted and left null. The login/world-load can generate
+	 *	such a group before the patch/tile data is fully usable; nothing marks the
+	 *	block dirty afterwards, so the missing-alive-IG fill would never retry it.
+	 *	Retry the near buckets a few times, spaced by seconds, without a toggle.
+	 */
+	bool					_NearRetryPending;
+	/// CTime::getLocalTime() (seconds) of the next near retry.
+	uint32					_NearRetryTime;
+	/// Near retries already issued since the last successfully generated near IG.
+	uint8					_NearRetryCount;
 	/// CPatch::getTileVegetableKey() of each tile the instance groups were last
 	/// generated from. init() seeds it from the patch, so a block created out of
 	/// range (no instance groups yet) does not report a false change.
@@ -146,9 +159,12 @@ private:
 	void			createVegetableIGForDistType(uint i, CVegetableManager *vegeManager,
 		CLandscapeVegetableBlockCreateContext &vbCreateCtx);
 	/// Regenerate the instance groups whose tile data changed since the last
-	/// update, for every bucket that is alive at the current distance (>= firstBucket).
+	/// update, or fill the alive buckets whose IG is missing, for every bucket in
+	/// [firstBucket, lastBucket). The near retry passes lastBucket=3 so it never
+	/// re-generates the far d4 empties (which are expected at the far edge).
 	/// Returns the number of instance groups that were regenerated.
-	uint			refreshVegetableIgs(uint firstBucket, CVegetableManager *vegeManager);
+	uint			refreshVegetableIgs(uint firstBucket, CVegetableManager *vegeManager,
+		uint lastBucket = NL3D_VEGETABLE_BLOCK_NUMDIST);
 
 
 };
