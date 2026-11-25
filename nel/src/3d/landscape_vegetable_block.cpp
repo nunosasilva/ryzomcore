@@ -68,6 +68,7 @@ CLandscapeVegetableBlock::CLandscapeVegetableBlock()
 	_VegetableClipBlock = nullptr;
 	_CurDistType= NL3D_VEGETABLE_BLOCK_NUMDIST;
 	_Dirty= false;
+	_Stale= false;
 	// No instance group created yet. init() caches the far bound of the active
 	// distance layout (stock 50m or extra 100m) so needsUpdate() cannot skip the
 	// first update().
@@ -126,6 +127,7 @@ void			CLandscapeVegetableBlock::init(const CVector &center, CVegetableManager *
 	_SqrDistMin= distLUT[NL3D_VEGETABLE_BLOCK_NUMDIST];
 	_SqrDistMax= FLT_MAX;
 	_Dirty= false;
+	_Stale= false;
 	for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
 	{
 		_TileKey[j]= patch->getTileVegetableKey(_Ts + (j & 1), _Tt + (j >> 1));
@@ -179,6 +181,7 @@ void			CLandscapeVegetableBlock::release(CVegetableManager *vegeManager, CTessLi
 	// reset state.
 	_CurDistType= NL3D_VEGETABLE_BLOCK_NUMDIST;
 	_Dirty= false;
+	_Stale= false;
 	for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
 		_TileKey[j]= ~(uint64)0;
 	{
@@ -244,6 +247,16 @@ void			CLandscapeVegetableBlock::update(const CVector &viewCenter, CVegetableMan
 					_VegetableIG[j][i] = nullptr;
 				}
 			}
+		}
+
+		// The block is fully out of range: its old field is gone. Re-seed the
+		// keys from the current tiles so a later re-entry generates the new
+		// region instead of keeping a stale state forever.
+		if(_Stale && newDistType == NL3D_VEGETABLE_BLOCK_NUMDIST)
+		{
+			for(uint j=0;j<NL3D_TESSBLOCK_TILESIZE;j++)
+				_TileKey[j]= _Patch->getTileVegetableKey(_Ts + (j & 1), _Tt + (j >> 1));
+			_Stale= false;
 		}
 	}
 
@@ -385,13 +398,16 @@ void			CLandscapeVegetableBlock::createVegetableIGForDistType(uint i, CVegetable
 		createVegetableIGForTile(tileId, i, vegeManager, vbCreateCtx);
 
 	// The instance groups were generated from the current tile data: cache the
-	// keys, so a later refresh can tell whether a tile changed at all.
+	// keys, so a later refresh can tell whether a tile changed at all. This is
+	// also what resolves a pending region change: a block that re-enters after
+	// leaving the far edge generates the new tiles here.
 	for(uint tileId= 0; tileId < NL3D_TESSBLOCK_TILESIZE; ++tileId)
 	{
 		uint	tms= _Ts + (tileId & 1);
 		uint	tmt= _Tt + (tileId >> 1);
 		_TileKey[tileId]= _Patch->getTileVegetableKey(tms, tmt);
 	}
+	_Stale= false;
 }
 
 
@@ -399,13 +415,18 @@ void			CLandscapeVegetableBlock::createVegetableIGForDistType(uint i, CVegetable
 uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetableManager *vegeManager)
 {
 	const CVegetableExtra	&extra= vegeManager->getExtra();
+	const bool				extraEnabled= extra.isEnabled();
 	static const bool		vegStateLog= getenv("RYZOM_VEG_STATE") != NULL;
 	const NLMISC::TTicks	start= vegStateLog ? NLMISC::CTime::getPerformanceTime() : 0;
 
 	CLandscapeVegetableBlockCreateContext	ctx;
 	ctx.init(_Patch, _Ts, _Tt);
 
+	// Low 48 bits: the three 16-bit tile ids. The water state lives above them.
+	const uint64	idMask= 0x0000FFFFFFFFFFFFULL;
+
 	uint	changedTiles= 0;
+	uint	retainedTiles= 0;
 	uint	regeneratedIg= 0;
 	for(uint tileId= 0; tileId < NL3D_TESSBLOCK_TILESIZE; ++tileId)
 	{
@@ -420,12 +441,43 @@ uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetabl
 		if(key == _TileKey[tileId])
 			continue;
 
-		changedTiles++;
+		// Nothing is alive for this block: there is no visible field to preserve.
+		// Re-seed the key so a later entry generates from the current tiles.
+		if(firstBucket >= NL3D_VEGETABLE_BLOCK_NUMDIST)
+		{
+			_TileKey[tileId]= key;
+			continue;
+		}
 
-		// Regenerate this tile at every bucket the block currently holds. The
-		// buckets that leave the range were already deleted by update(), and the
-		// ones a layout cannot fill (merged-far: everything but the farthest)
+		const uint	oldTile0= (uint)((_TileKey[tileId] >> 32) & 0xFFFF);
+		const uint	newTile0= _Patch->getTileIdAt(tms, tmt);
+		const bool	oldHasTile= oldTile0 != NL_TILE_ELM_LAYER_EMPTY;
+		const bool	newHasTile= newTile0 != NL_TILE_ELM_LAYER_EMPTY;
+		const bool	idsChanged= (_TileKey[tileId] & idMask) != (key & idMask);
+		if(extraEnabled && oldHasTile && newHasTile && idsChanged)
+		{
+			// Tileset/region change under a live block. Do not overwrite the
+			// visible field: keep the instance groups generated from the old
+			// tiles, and leave _TileKey describing them. The old field stays
+			// visible while this block remains within the far edge; when it
+			// leaves the range its instance groups are deleted, and if it
+			// re-enters later createVegetableIGForDistType() generates the new
+			// region from the current tiles.
+			_Stale= true;
+			++retainedTiles;
+			if(vegStateLog)
+				nlinfo("VEGSTATE:   retain slot %u old material %u new material %u (old field kept)",
+					tileId, oldTile0, newTile0);
+			continue;
+		}
+
+		// Material availability changed (empty tile -> populated, or the reverse)
+		// or the water state changed: this is the M1 refresh, not a region
+		// change. Regenerate this tile at every bucket the block currently holds.
+		// The buckets that leave the range were already deleted by update(), and
+		// the ones a layout cannot fill (merged-far: everything but the farthest)
 		// have no instance group to refresh.
+		changedTiles++;
 		for(uint i= firstBucket; i < NL3D_VEGETABLE_BLOCK_NUMDIST; ++i)
 		{
 			if(!extra.hasAnySources(i))
@@ -440,7 +492,7 @@ uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetabl
 			}
 
 			if(vegStateLog)
-				nlinfo("VEGSTATE:   refresh create d%u slot %u (material %u)", i, tileId, _Patch->getTileIdAt(tms, tmt));
+				nlinfo("VEGSTATE:   refresh create d%u slot %u (material %u)", i, tileId, newTile0);
 			createVegetableIGForTile(tileId, i, vegeManager, ctx);
 			regeneratedIg++;
 		}
@@ -448,11 +500,12 @@ uint			CLandscapeVegetableBlock::refreshVegetableIgs(uint firstBucket, CVegetabl
 		_TileKey[tileId]= key;
 	}
 
-	if(vegStateLog && changedTiles > 0)
+	if(vegStateLog && (changedTiles > 0 || retainedTiles > 0))
 	{
 		double	ms= NLMISC::CTime::ticksToSecond(NLMISC::CTime::getPerformanceTime() - start) * 1000.0;
-		nlinfo("VEGSTATE:   refresh %u/%u tiles, %u ig in %.3f ms",
-			changedTiles, (uint)NL3D_TESSBLOCK_TILESIZE, regeneratedIg, ms);
+		nlinfo("VEGSTATE:   refresh %u/%u tiles, %u ig, %u retained, stale %u in %.3f ms",
+			changedTiles, (uint)NL3D_TESSBLOCK_TILESIZE, regeneratedIg, retainedTiles,
+			(uint)_Stale, ms);
 	}
 
 	return regeneratedIg;

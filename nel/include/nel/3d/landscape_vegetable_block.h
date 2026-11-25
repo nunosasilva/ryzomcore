@@ -128,6 +128,13 @@ private:
 	 *	tiles and regenerates only what changed, at the block's current buckets.
 	 */
 	bool					_Dirty;
+	/** Set when the tile ids under this block changed while its instance groups
+	 *	were alive (a tileset/region change, not a material that merely arrived).
+	 *	The extra layout keeps those instance groups: the old field stays visible
+	 *	while the block is within range, and the new region is generated only when
+	 *	the block leaves the far edge and later re-enters. Stock never sets it.
+	 */
+	bool					_Stale;
 	/// CPatch::getTileVegetableKey() of each tile the instance groups were last
 	/// generated from. init() seeds it from the patch, so a block created out of
 	/// range (no instance groups yet) does not report a false change.
