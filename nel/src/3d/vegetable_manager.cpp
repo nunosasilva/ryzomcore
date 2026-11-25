@@ -1992,17 +1992,26 @@ bool		CVegetableManager::setExtraEnabled(bool enabled)
 				CVegetableExtra::getMergedDensity(), CVegetableExtra::getMergedScale(),
 				_ZSortLayerDistMax);
 		}
-		else
+		else if(_Extra.isUnion2())
 		{
 			nlinfo("VEGETABLE: distance layout extra: %u x %.0f m bands, far edge %.0f m, "
-				"union2 (own band per bucket, reach 20/40/60/80/100 m; farthest bucket copies "
-				"the lower bands at %.2f), density %.2f/%.2f, scale %.2f/%.2f, zsort %.0f m",
+				"union2 measurement layout (own band per bucket, reach 20/40/60/80/100 m; "
+				"farthest bucket copies the lower bands at %.2f), density %.2f/%.2f, "
+				"scale %.2f/%.2f, zsort %.0f m",
 				(uint)NL3D_VEGETABLE_BLOCK_NUMDIST, _Extra.getBandDist(),
 				_Extra.getFarEdgeM(),
 				CVegetableExtra::getUnionDensity(),
 				CVegetableExtra::getBandDensity(), CVegetableExtra::getFarDensity(),
 				CVegetableExtra::getBandScale(), CVegetableExtra::getFarScale(),
 				_ZSortLayerDistMax);
+		}
+		else
+		{
+			nlinfo("VEGETABLE: distance layout extra: far edge %.0f m, far-only "
+				"(bands 0-2 stock reach 10/20/30 m at density/scale 1.0; bands 3/4 in the "
+				"farthest bucket reach the far edge at density/scale 1.0; no copy, no fade), "
+				"zsort %.0f m",
+				_Extra.getFarEdgeM(), _ZSortLayerDistMax);
 		}
 	}
 	else

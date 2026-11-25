@@ -36,24 +36,33 @@ namespace NL3D
 
 // ***************************************************************************
 /*
- * Union2 tuning (the layout MicroVegetExtra=1 selects). The five authored sets
- * are stretched from 10m to (farEdge/5)m bands and each set stays in its own
- * bucket, so its reach is its own band's far edge: 20/40/60/80/100m. The near
- * bands keep the short reach they were authored for (the tall grass at the feet
- * must not be generated from every tile out to 100m). The farthest bucket also
- * carries a thinned copy of every lower band (getUnionDensity) with the lower
- * band's own seed and scale, so a species keeps existing across its band edge
- * without swapping plants or adding an alpha step.
+ * Far-only extension (the layout MicroVegetExtra=1 selects).
  *
- * The densities/scales are union2's, not authored 1.0: each band's own list is
- * thinned to keep the larger stretched annulus near the stock instance budget;
- * far-only tilesets (desert floor/canyon: every species is in the last band)
- * keep the authored density, or they would lose most of the biome.
+ * Bands 0..2 are the near bands (the tall grass): they keep their STOCK reach
+ * (10/20/30m) and their authored density/scale (1.0). They are not stretched
+ * and not copied to the far field, so the near field is bit-for-bit stock.
+ *
+ * Bands 3 and 4 are the far bands: they are generated into the farthest
+ * bucket and reach the far edge (100m), at authored density/scale (1.0).
+ * There is no fade, crossfade or gated carrier.
+ *
+ * The distance LUT is non-uniform: 0/10/20/30 for the near bands, then the
+ * farthest bucket covers 30..100m and holds both far bands. Bucket 3
+ * (30..60m) is never filled; update() skips it through hasAnySources().
  */
+
 /*
- * Merged-far measurement tuning. Not selected by MicroVegetExtra; only by
- * RYZOM_VEG_EXTRA_LAYOUT=merged-far. Every authored band goes into the farthest
- * bucket at this single density/scale.
+ * Union2 measurement layout tuning, selected only with
+ * RYZOM_VEG_EXTRA_LAYOUT=union2.
+ */
+static const float	kVegBandDensity= 0.28f;
+static const float	kVegBandScale= 1.40f;
+static const float	kVegFarDensity= 0.22f;
+static const float	kVegFarScale= 1.45f;
+
+/*
+ * Merged-far measurement layout tuning, selected only with
+ * RYZOM_VEG_EXTRA_LAYOUT=merged-far.
  */
 static const float	kVegMergedDensity= 1.0f;
 static const float	kVegMergedScale= 1.0f;
@@ -80,7 +89,7 @@ static float	readEnvFloat(const char *name, float def, float maxValue)
 
 
 // ***************************************************************************
-/// Far edge of the extended layout. A constant of NeL; RYZOM_VEG_FAR_EDGE_M
+/// Far edge of the measurement layouts. A constant of NeL; RYZOM_VEG_FAR_EDGE_M
 /// replaces it for measurement runs (values outside [stock far edge, 100] are
 /// clamped, and it never narrows below the five stock 10m bands).
 static float	resolveFarEdge()
@@ -108,15 +117,28 @@ static float	resolveFarEdge()
 
 // ***************************************************************************
 CVegetableExtra::CVegetableExtra() :
-	_Layout(Union2Layout),
+	_Layout(FarOnlyLayout),
 	_Enabled(false),
-	_FarEdgeM(resolveFarEdge())
+	_FarEdgeM(NL3D_VEGETABLE_BLOCK_EXTRA_FAR_DIST)
 {
-	// The merged-far layout is kept only as an A/B measurement knob; the switch
-	// in client.cfg always means union2. Read once per process, like the far edge.
+	// The default is far-only. union2/merged-far are measurement layouts only;
+	// the switch in client.cfg always selects far-only. Read once per process.
 	const char	*layoutEnv= getenv("RYZOM_VEG_EXTRA_LAYOUT");
-	if(layoutEnv != NULL && stricmp(layoutEnv, "merged-far") == 0)
-		_Layout= MergedFarLayout;
+	if(layoutEnv != NULL)
+	{
+		if(stricmp(layoutEnv, "union2") == 0)
+			_Layout= Union2Layout;
+		else if(stricmp(layoutEnv, "merged-far") == 0)
+			_Layout= MergedFarLayout;
+		else if(stricmp(layoutEnv, "far-only") != 0)
+			nlwarning("vegetable: unknown RYZOM_VEG_EXTRA_LAYOUT='%s', using far-only",
+				layoutEnv);
+	}
+
+	// The far-only LUT is non-uniform (10/20/30/60/100); RYZOM_VEG_FAR_EDGE_M is
+	// only meaningful for the uniform measurement layouts.
+	if(_Layout != FarOnlyLayout)
+		_FarEdgeM= resolveFarEdge();
 
 	buildLUT();
 }
@@ -134,11 +156,32 @@ bool	CVegetableExtra::setEnabled(bool enabled)
 
 
 // ***************************************************************************
+const char	*CVegetableExtra::getLayoutName() const
+{
+	switch(_Layout)
+	{
+		case Union2Layout:   return "union2";
+		case MergedFarLayout:return "merged-far";
+		case FarOnlyLayout:
+		default:             return "far-only";
+	}
+}
+
+
+// ***************************************************************************
 void	CVegetableExtra::buildLUT()
 {
+	// Far-only: near bands keep the stock 10m edges, the farthest bucket holds
+	// bands 3+4 from 30m to the far edge. The other layouts are uniform.
+	if(_Layout == FarOnlyLayout)
+	{
+		const float	edges[NL3D_VEGETABLE_BLOCK_NUMDIST + 1]= { 0.f, 10.f, 20.f, 30.f, 60.f, 100.f };
+		for(uint i= 0; i <= NL3D_VEGETABLE_BLOCK_NUMDIST; ++i)
+			_SqrDistLUT[i]= sqr(edges[i]);
+		return;
+	}
+
 	// Edge i is the distance after i buckets: 0, b, 2b, ..., farEdge.
-	// The edges are monotonically increasing, which is what the two walks of
-	// CLandscapeVegetableBlock::update() rely on.
 	for(uint i= 0; i <= NL3D_VEGETABLE_BLOCK_NUMDIST; ++i)
 	{
 		_SqrDistLUT[i]= sqr(getBandDist() * i);
@@ -149,6 +192,12 @@ void	CVegetableExtra::buildLUT()
 // ***************************************************************************
 float	CVegetableExtra::getBandFarDist(uint distType) const
 {
+	if(_Layout == FarOnlyLayout)
+	{
+		const float	edges[NL3D_VEGETABLE_BLOCK_NUMDIST]= { 10.f, 20.f, 30.f, 60.f, 100.f };
+		return distType < NL3D_VEGETABLE_BLOCK_NUMDIST ? edges[distType] : 100.f;
+	}
+
 	if(distType >= NL3D_VEGETABLE_BLOCK_NUMDIST)
 		return _FarEdgeM;
 
@@ -177,9 +226,18 @@ float	CVegetableExtra::getMergedScale()
 // ***************************************************************************
 bool	CVegetableExtra::hasAnySources(uint distType) const
 {
-	// Stock and union2 can put something in every bucket. Only the merged-far
-	// measurement layout fills the farthest bucket alone.
-	if(!_Enabled || _Layout == Union2Layout)
+	if(!_Enabled)
+		return true;
+
+	if(_Layout == FarOnlyLayout)
+	{
+		// Buckets 0..2 are the near bands, bucket 4 holds bands 3+4; bucket 3
+		// (the 30..60m slot) is never filled.
+		return distType != 3;
+	}
+
+	// Union2 can put something in every bucket; merged-far only in the farthest.
+	if(_Layout == Union2Layout)
 		return true;
 	return distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST;
 }
@@ -190,6 +248,18 @@ bool	CVegetableExtra::hasSources(const CTileVegetableDesc &tileVegetDesc, uint d
 {
 	if(distType >= NL3D_VEGETABLE_BLOCK_NUMDIST)
 		return false;
+
+	if(_Layout == FarOnlyLayout)
+	{
+		if(distType == 3)
+			return false;
+		if(distType == 4)
+		{
+			return !tileVegetDesc.getVegetableList(3).empty()
+				|| !tileVegetDesc.getVegetableList(4).empty();
+		}
+		return !tileVegetDesc.getVegetableList(distType).empty();
+	}
 
 	if(_Layout == MergedFarLayout)
 	{
@@ -216,6 +286,11 @@ bool	CVegetableExtra::hasSources(const CTileVegetableDesc &tileVegetDesc, uint d
 // ***************************************************************************
 float	CVegetableExtra::getOwnDensity(const CTileVegetableDesc &tileVegetDesc, uint distType) const
 {
+	if(_Layout == FarOnlyLayout)
+		return 1.f;
+	if(_Layout == MergedFarLayout)
+		return getMergedDensity();
+
 	if(distType >= NL3D_VEGETABLE_BLOCK_NUMDIST)
 		return getFarOnlyDensity();
 
@@ -240,6 +315,10 @@ float	CVegetableExtra::getOwnDensity(const CTileVegetableDesc &tileVegetDesc, ui
 // ***************************************************************************
 float	CVegetableExtra::getOwnScale(uint distType) const
 {
+	if(_Layout == FarOnlyLayout)
+		return 1.f;
+	if(_Layout == MergedFarLayout)
+		return getMergedScale();
 	return distType + 1 == NL3D_VEGETABLE_BLOCK_NUMDIST ? getFarScale() : getBandScale();
 }
 
@@ -251,6 +330,52 @@ void	CVegetableExtra::buildSources(const CTileVegetableDesc &tileVegetDesc, uint
 	sources.clear();
 	if(!_Enabled || distType >= NL3D_VEGETABLE_BLOCK_NUMDIST)
 		return;
+
+	// Far-only: the three near bands in their own buckets with the stock reach
+	// and authored density/scale; both far bands in the farthest bucket at the
+	// far edge. No copy, no fade.
+	if(_Layout == FarOnlyLayout)
+	{
+		if(distType == 3)
+			return;
+
+		if(distType == 4)
+		{
+			for(uint k= 3; k < NL3D_VEGETABLE_BLOCK_NUMDIST; ++k)
+			{
+				const std::vector<CVegetable>	&bandList= tileVegetDesc.getVegetableList(k);
+				const uint						bandSeed= tileVegetDesc.getVegetableSeed(k);
+				for(uint i= 0; i < bandList.size(); ++i)
+				{
+					CSource	src;
+					src.Veget= &bandList[i];
+					src.Seed= i + bandSeed;
+					src.Density= 1.f;
+					src.Scale= 1.f;
+					src.Reach= _FarEdgeM;
+					src.Band= k;
+					sources.push_back(src);
+				}
+			}
+			return;
+		}
+
+		const std::vector<CVegetable>	&ownList= tileVegetDesc.getVegetableList(distType);
+		const uint						ownSeed= tileVegetDesc.getVegetableSeed(distType);
+		const float						reach= getBandFarDist(distType);
+		for(uint i= 0; i < ownList.size(); ++i)
+		{
+			CSource	src;
+			src.Veget= &ownList[i];
+			src.Seed= i + ownSeed;
+			src.Density= 1.f;
+			src.Scale= 1.f;
+			src.Reach= reach;
+			src.Band= distType;
+			sources.push_back(src);
+		}
+		return;
+	}
 
 	if(_Layout == MergedFarLayout)
 	{
@@ -275,9 +400,9 @@ void	CVegetableExtra::buildSources(const CTileVegetableDesc &tileVegetDesc, uint
 		return;
 	}
 
-	// Union2: this bucket's own authored band, reaching its own band's far edge
-	// (20/40/60/80/100m). The near bands keep the short reach they were authored
-	// for: extending them to 100m made the tall grass vanish at tile boundaries.
+	// Union2 measurement layout: this bucket's own authored band, reaching its
+	// own band's far edge (20/40/60/80/100m), plus the lower-band copies in the
+	// farthest bucket at the union density.
 	const std::vector<CVegetable>	&ownList= tileVegetDesc.getVegetableList(distType);
 	const uint						ownSeed= tileVegetDesc.getVegetableSeed(distType);
 	const float						ownDensity= getOwnDensity(tileVegetDesc, distType);
@@ -295,9 +420,6 @@ void	CVegetableExtra::buildSources(const CTileVegetableDesc &tileVegetDesc, uint
 		sources.push_back(src);
 	}
 
-	// Farthest bucket only: the lower bands' species at the union density, with
-	// their own seed and scale (exact duplicates of a subset of their instances,
-	// so a band edge thins the plants instead of swapping them).
 	if(distType + 1 != NL3D_VEGETABLE_BLOCK_NUMDIST)
 		return;
 
