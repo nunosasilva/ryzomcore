@@ -87,6 +87,9 @@ public:
 	/// Hard capacity this allocator was initialised with (0 for a soft allocator).
 	uint			getMaxVertexInBufferHard() const { return _MaxVertexInBufferHard; }
 
+	/// Change the hard cap before any vertex is allocated (driver platform gate).
+	void			setMaxVertexInBufferHard(uint maxVertices);
+
 	/// Allocate free vertices in VB. (RAM and AGP if possible). work with locked or unlocked buffer.
 	uint			allocateVertex();
 	/// Delete free vertices in VB. (AGP or RAM). Deferred when in unsynchronized mode.

@@ -41,6 +41,11 @@ namespace NL3D
 	as possible reallocations.
 */
 #define	NL3D_VEGETABLE_VERTEX_ALLOCATE_SECURITY		1024
+/// Hard-VB high-water growth step. The hard buffer is allocated only up to
+/// the used range (rounded to this step), not the full 512k cap: on Vulkan
+/// PartialWrite buffers upload their full capacity each frame, so a full-cap
+/// allocation would cost ~30.7 MiB/frame even at stock density.
+#define	NL3D_VEGETABLE_HARD_ALLOC_STEP				16384
 /*
 	The start size of the array.
 */
@@ -194,6 +199,28 @@ uint			CVegetableVBAllocator::getNumUserVerticesAllocated() const
 bool			CVegetableVBAllocator::exceedMaxVertexInBufferHard(uint numAddVerts) const
 {
 	return (getNumUserVerticesAllocated() + numAddVerts) > _MaxVertexInBufferHard;
+}
+
+// ***************************************************************************
+void			CVegetableVBAllocator::setMaxVertexInBufferHard(uint maxVertices)
+{
+	if(maxVertices == _MaxVertexInBufferHard)
+		return;
+
+	// The platform gate calls this before the first IG is created. Changing
+	// the cap with live vertices would invalidate their hard slot range.
+	if(getNumUserVerticesAllocated() != 0)
+	{
+		nlwarning("VEGETABLE: cannot change hard VB cap from %u to %u with %u live vertices",
+			_MaxVertexInBufferHard, maxVertices, getNumUserVerticesAllocated());
+		return;
+	}
+
+	if(bufferLocked())
+		unlockBuffer();
+	if(_VBHard.getNumVertices() != 0)
+		_VBHard.deleteAllVertices();
+	_MaxVertexInBufferHard= maxVertices;
 }
 
 
@@ -367,13 +394,21 @@ void				CVegetableVBAllocator::allocateVertexBufferAndFillVBHard(uint32 numVerti
 	// try to allocate a vbufferhard if possible.
 	if( _VBHardOk )
 	{
-		/* Prefer allocate the VBHard with the Max Vertex count only ONCE,
-			to avoid problems with AGP allocation
-			The problem is with 50000 AGP vertices, it costs 3 Mo. If we do iterative allocation
-			(500 Ko, 600 Ko, 700 Ko,.....)
-			we may have problem with free holes (Vegetable could no more enter in the 16 or 8 Mo AGP limit!)
+		/* Grow the hard buffer to a high-water mark, not straight to the
+		   512k cap: Vulkan PartialWrite buffers upload their full capacity
+		   every frame (flushPartialWrites), so a full-cap VB would cost
+		   ~30.7 MiB/frame even at stock density. The step trades a few
+		   reallocations at load for a bounded per-frame upload.
 		*/
-		if(_VBHard.getNumVertices() != _MaxVertexInBufferHard)
+		uint32	hardTarget= 0;
+		if(numVertices > 0)
+		{
+			const uint32	hardWanted= numVertices < _MaxVertexInBufferHard ? numVertices : _MaxVertexInBufferHard;
+			hardTarget= ((hardWanted + NL3D_VEGETABLE_HARD_ALLOC_STEP - 1) / NL3D_VEGETABLE_HARD_ALLOC_STEP) * NL3D_VEGETABLE_HARD_ALLOC_STEP;
+			if(hardTarget < hardWanted || hardTarget > _MaxVertexInBufferHard)
+				hardTarget= _MaxVertexInBufferHard;
+		}
+		if(_VBHard.getNumVertices() != hardTarget)
 		{
 			// delete possible old _VBHard.
 			if(_VBHard.getNumVertices()!=0)
@@ -385,21 +420,21 @@ void				CVegetableVBAllocator::allocateVertexBufferAndFillVBHard(uint32 numVerti
 
 			// try to create new one, in AGP Ram
 			// If too many vertices wanted, abort VBHard.
-			if(numVertices <= _MaxVertexInBufferHard)
+			if(hardTarget > 0 && hardTarget <= _MaxVertexInBufferHard)
 			{
 				_VBHard = _VBSoft;
 				if (_UnsynchronizedMode)
 					_VBHard.setBufferUsage(CVertexBuffer::UnsynchronizedWrite, false);
 				else
 					_VBHard.setBufferUsage(CVertexBuffer::PartialWrite, false);
-				_VBHard.setNumVertices (_MaxVertexInBufferHard);
+				_VBHard.setNumVertices (hardTarget);
 
-				// Force this VB to be hard
-				nlverify (_Driver->activeVertexBuffer (_VBHard));
-				nlassert (_VBHard.isResident());
-
-				// if fails, abort VBHard.
-				if (_VBHard.getLocation() == CVertexBuffer::RAMResident)
+				// Force this VB to be hard. Old GL2/AGP can refuse the
+				// allocation; fall back to the soft allocator instead of
+				// asserting.
+				if (!_Driver->activeVertexBuffer (_VBHard))
+					_VBHard.deleteAllVertices();
+				else if (_VBHard.getLocation() == CVertexBuffer::RAMResident)
 					_VBHard.deleteAllVertices();
 
 				// Set Name For lock Profiling.
@@ -422,9 +457,11 @@ void				CVegetableVBAllocator::allocateVertexBufferAndFillVBHard(uint32 numVerti
 		// lock before the AGP buffer
 		lockBuffer();
 
-		// copy all the vertices to AGP.
-		memcpy(_AGPBufferPtr, _RAMBufferPtr, _VBSoft.getVertexSize() * numVertices);
-		_VBHard.invalidateRange(0, numVertices);
+		// copy all the used vertices to AGP (the hard high-water may be larger).
+		const uint32	hardVertices= _VBHard.getNumVertices();
+		const uint32	copyVertices= numVertices < hardVertices ? numVertices : hardVertices;
+		memcpy(_AGPBufferPtr, _RAMBufferPtr, _VBSoft.getVertexSize() * copyVertices);
+		_VBHard.invalidateRange(0, copyVertices);
 
 		// If was not locked before, unlock this VB
 		if(!wasLocked)

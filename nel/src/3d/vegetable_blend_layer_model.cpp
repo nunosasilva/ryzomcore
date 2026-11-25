@@ -118,14 +118,7 @@ void	CVegetableBlendLayerModel::render(IDriver *driver)
 		// render him. we are sure that size > 0, because tested before.
 		driver->activeIndexBuffer(ptrSortBlock->_SortedTriangleArray);
 		#ifdef NL_DEBUG
-			if (ptrSortBlock->ZSortHardMode)
-			{
-				nlassert(ptrSortBlock->_SortedTriangleArray.getFormat() == CIndexBuffer::Indices16);
-			}
-			else
-			{
-				nlassert(ptrSortBlock->_SortedTriangleArray.getFormat() == CIndexBuffer::Indices32);
-			}
+			nlassert(ptrSortBlock->_SortedTriangleArray.getFormat() == CIndexBuffer::Indices32);
 		#endif
 		driver->renderSimpleTriangles(
 			ptrSortBlock->_SortedTriangleIndices[ptrSortBlock->_QuadrantId],

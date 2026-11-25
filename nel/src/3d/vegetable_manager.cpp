@@ -78,6 +78,7 @@ CVegetableManager::CVegetableManager(uint maxVertexVbHardUnlit, uint maxVertexVb
 	_VegVBOver65530= 0;
 	_VegVBOverHard= 0;
 	_VegVBSoftFrames= 0;
+	_VegVBZSortTriMax= 0;
 	if(_VegVBStatsEnabled)
 	{
 		_VegVBUsage.reserve(4096);
@@ -1275,7 +1276,9 @@ void			CVegetableManager::reserveIgCompile(CVegetableInstanceGroup *ig, const CV
 		uint	numTris= vegetIgReserve._RdrPass[rdrPass].NTriangles;
 		uint	numLightedInstances= vegetIgReserve._RdrPass[rdrPass].NLightedInstances;
 		// reserve triangles indices and vertices for this rdrPass.
-		vegetRdrPass.TriangleIndices.setFormat(vegetRdrPass.HardMode ? CIndexBuffer::Indices16 : CIndexBuffer::Indices32);
+		// All vegetation index buffers are 32-bit now: the hard VB can exceed
+		// 65535 vertices and the soft path already used 32-bit indices.
+		vegetRdrPass.TriangleIndices.setFormat(CIndexBuffer::Indices32);
 		vegetRdrPass.TriangleIndices.setNumIndexes(numTris*3);
 		vegetRdrPass.TriangleLocalIndices.resize(numTris*3);
 		vegetRdrPass.Vertices.resize(numVertices);
@@ -1822,26 +1825,9 @@ void			CVegetableManager::addInstance(CVegetableInstanceGroup *ig,
 	vegetRdrPass.Vertices.copy(offVertex, offVertex+numNewVertices, &shape->InstanceVertices[0]);
 
 	// insert array of triangles in ig.
-	// for all indices, fill IG
+	// for all indices, fill IG (always 32-bit)
 	CIndexBufferReadWrite ibaWrite;
 	vegetRdrPass.TriangleIndices.lock (ibaWrite);
-	if (vegetRdrPass.TriangleIndices.getFormat() == CIndexBuffer::Indices16)
-	{
-		uint16 *ptr = (uint16 *) ibaWrite.getPtr();
-		for(i=0; i<(sint)numNewIndices; i++)
-		{
-			// get the index of the vertex in the shape
-			uint	vid= shape->TriangleIndices[i];
-			// re-direction, using InstanceVertices;
-			#ifdef NL_DEBUG
-				nlassert(shape->InstanceVertices[vid] <= 0xffff);
-			#endif
-			ptr[offTriIdx + i]= (uint16) shape->InstanceVertices[vid];
-			// local re-direction: adding vertexOffset.
-			vegetRdrPass.TriangleLocalIndices[offTriIdx + i]= offVertex + vid;
-		}
-	}
-	else
 	{
 		uint32 *ptr = (uint32 *) ibaWrite.getPtr();
 		for(i=0; i<(sint)numNewIndices; i++)
@@ -1948,21 +1934,10 @@ void			CVegetableManager::swapIgRdrPassHardMode(CVegetableInstanceGroup *ig, uin
 	// Do it only for current Triangles setuped!!! same reason as vertices
 	// For all setuped triangles indices
 	CIndexBufferReadWrite ibaWrite;
-	// For hard mode, uses faster 16 bit indices because the VB is not bigger than 65K
-	vegetRdrPass.TriangleIndices.setFormat(vegetRdrPass.HardMode ? CIndexBuffer::Indices32 : CIndexBuffer::Indices16); // NB : this is not an error here : vegetRdrPass.HardMode has not been inverted yet
+	// All vegetation index buffers are 32-bit; the destination allocator no
+	// longer changes the index width.
+	vegetRdrPass.TriangleIndices.setFormat(CIndexBuffer::Indices32);
 	vegetRdrPass.TriangleIndices.lock (ibaWrite);
-	if (ibaWrite.getFormat() == CIndexBuffer::Indices16)
-	{
-		uint16 *ptr = (uint16 *) ibaWrite.getPtr();
-		for(i=0;i<vegetRdrPass.NTriangles*3;i++)
-		{
-			// get the index in Vertices.
-			uint	localVid= vegetRdrPass.TriangleLocalIndices[i];
-			// get the index in new VBufffer (dstAllocator), and copy to TriangleIndices
-			ptr[i]= (uint16) vegetRdrPass.Vertices[localVid];
-		}
-	}
-	else
 	{
 		uint32 *ptr = (uint32 *) ibaWrite.getPtr();
 		for(i=0;i<vegetRdrPass.NTriangles*3;i++)
@@ -1996,6 +1971,19 @@ void		CVegetableManager::setExtraEnabled(bool enabled)
 }
 
 // ***************************************************************************
+void		CVegetableManager::setMaxVertexInBufferHard(uint unlitCap)
+{
+	_VBHardAllocator[CVegetableVBAllocator::VBTypeUnlit].setMaxVertexInBufferHard(unlitCap);
+}
+
+// ***************************************************************************
+void		CVegetableManager::noteZSortTriangles(uint n)
+{
+	if(_VegVBStatsEnabled && n > _VegVBZSortTriMax)
+		_VegVBZSortTriMax= n;
+}
+
+// ***************************************************************************
 static uint32 vegVBPercentile(const std::vector<uint32> &sorted, float p)
 {
 	if(sorted.empty())
@@ -2010,8 +1998,9 @@ void		CVegetableManager::sampleVegVBStats()
 	if(!_VegVBStatsEnabled)
 		return;
 
-	// The 50k/65530 budget is the unlit allocator; lit vegetation has its own
+	// The hard budget is the unlit allocator; lit vegetation has its own
 	// 5000-vertex hard buffer and is not what the microvegetation overflows.
+	// over65530 stays as a historical "would have spilled under the old cap".
 	const CVegetableVBAllocator	&hard= _VBHardAllocator[CVegetableVBAllocator::VBTypeUnlit];
 	const CVegetableVBAllocator	&soft= _VBSoftAllocator[CVegetableVBAllocator::VBTypeUnlit];
 	const uint32	hardV= hard.getNumUserVerticesAllocated();
@@ -2075,7 +2064,7 @@ void		CVegetableManager::logVegVBStats(const char *why) const
 
 	nlinfo("VEGVB[%s]: frames %llu hard %u p50 %u p95 %u p99 %u max %u hardMax %u softMax %u "
 		"excess99 %u (%.2f MiB) excessMax %u (%.2f MiB) over50k %.1f%% over65530 %.1f%% overHard %.1f%% "
-		"softFrames %.1f%% softCapP99 %u (stride %u, %.2f MiB) peak %u f%llu @%u",
+		"softFrames %.1f%% softCapP99 %u (stride %u, %.2f MiB) zTriMax %u peak %u f%llu @%u",
 		why, (unsigned long long)_VegVBFrame, budget, p50, p95, p99, maxUsage,
 		_VegVBPeakHard, _VegVBPeakSoft,
 		excessP99, excessP99 * toMiB, excessMax, excessMax * toMiB,
@@ -2083,7 +2072,7 @@ void		CVegetableManager::logVegVBStats(const char *why) const
 		frames ? 100.0 * (double)_VegVBOver65530 / frames : 0.0,
 		frames ? 100.0 * (double)_VegVBOverHard / frames : 0.0,
 		frames ? 100.0 * (double)_VegVBSoftFrames / frames : 0.0,
-		softP99, stride, softP99 * toMiB,
+		softP99, stride, softP99 * toMiB, _VegVBZSortTriMax,
 		_VegVBPeakUsage, (unsigned long long)_VegVBPeakFrame, _VegVBPeakTime);
 }
 
@@ -2534,14 +2523,7 @@ void			CVegetableManager::render(const CVector &viewCenter, const CVector &front
 								{
 									driver->activeIndexBuffer(vegetRdrPass.TriangleIndices);
 									#ifdef NL_DEBUG
-										if (vegetRdrPass.HardMode)
-										{
-											nlassert(vegetRdrPass.TriangleIndices.getFormat() == CIndexBuffer::Indices16);
-										}
-										else
-										{
-											nlassert(vegetRdrPass.TriangleIndices.getFormat() == CIndexBuffer::Indices32);
-										}
+										nlassert(vegetRdrPass.TriangleIndices.getFormat() == CIndexBuffer::Indices32);
 									#endif
 									driver->renderSimpleTriangles(0,
 										vegetRdrPass.NTriangles);

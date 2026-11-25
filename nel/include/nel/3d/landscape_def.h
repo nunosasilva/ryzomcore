@@ -53,11 +53,14 @@ class	IDriver;
 
 
 // ***************************************************************************
-/// For Landscape Vegetable: AGP load (in number of vertices allocated )
-/// 65530 is the largest safe hard-buffer size: the hard-mode indices are
-/// 16-bit global ids into the shared VB (0..65535).
-#define	NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_UNLIT		65530
+/// For Landscape Vegetable: hard VB vertex budget.
+/// All vegetation index buffers are 32-bit now, so the hard buffer is no
+/// longer limited to 65535 vertices. 512000 is the requested headroom; the
+/// runtime cap is min(this, driver max). The legacy 65530 minimum is kept
+/// only for the driver gate, so old GL2/NV devices do not lose vegetation.
+#define	NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_UNLIT		512000
 #define	NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_LIGHTED		5000
+#define	NL3D_LANDSCAPE_VEGETABLE_MIN_AGP_VERTEX			65530
 #define	NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_MAX	\
 	(max(NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_UNLIT, NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_LIGHTED))
 

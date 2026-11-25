@@ -200,6 +200,12 @@ public:
 	const CVegetableExtra	&getExtra() const { return _Extra; }
 	void			setExtraEnabled(bool enabled);
 
+	/** Set the unlit hard VB cap from the driver limit (before the first IG). */
+	void			setMaxVertexInBufferHard(uint unlitCap);
+
+	/** Diagnostic: track the largest ZSort block triangle count. */
+	void			noteZSortTriangles(uint n);
+
 	// @}
 
 
@@ -425,6 +431,7 @@ private:
 	uint64					_VegVBOver65530;
 	uint64					_VegVBOverHard;
 	uint64					_VegVBSoftFrames;
+	uint32					_VegVBZSortTriMax;
 	CScene					*_ZSortScene;
 	std::vector<CVegetableBlendLayerModel*>		_ZSortModelLayers;
 	// The same but under water

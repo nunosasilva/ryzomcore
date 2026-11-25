@@ -596,7 +596,15 @@ void			CLandscape::setDriver(IDriver *drv)
 		// supportVertexProgram(nelvp). Keep them on the narrow predicate until the lit
 		// passes have a UBO variant (the wind tree already has one,
 		// meshvp_wind_tree.cpp:446).
-		_DriverOkForVegetable = nelvpOk && (_Driver->getMaxVerticesByVertexBufferHard()>=(uint)NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_MAX);
+		// The hard cap is 512000 now, but the gate keeps the legacy 65530
+		// minimum so old GL2/NV (65535) and D3D devices do not lose vegetation.
+		const uint32 driverMaxVertices= _Driver->getMaxVerticesByVertexBufferHard();
+		_DriverOkForVegetable = nelvpOk && (driverMaxVertices>=(uint32)NL3D_LANDSCAPE_VEGETABLE_MIN_AGP_VERTEX);
+		const uint32 unlitHardCap= driverMaxVertices < (uint32)NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_UNLIT
+			? driverMaxVertices : (uint32)NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_UNLIT;
+		_VegetableManager->setMaxVertexInBufferHard(unlitHardCap);
+		nlinfo("VEGETABLE: unlit hard cap %u vertices (driver max %u, gate min %u)",
+			unlitHardCap, driverMaxVertices, (uint32)NL3D_LANDSCAPE_VEGETABLE_MIN_AGP_VERTEX);
 
 		// Enable unsynchronized write mode if VP and triple-buffered frame pipeline are available.
 		bool unsyncMode = _VertexShaderOk && _Driver->isTripleBufferPipelined();
