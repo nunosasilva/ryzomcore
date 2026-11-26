@@ -302,6 +302,10 @@ CTextureFile &CTextureFile::operator = (const CTextureFile &other)
 	// copy base infos
 	(ITexture &) *this = (ITexture &) other;
 	dupInfo(other);
+	// Assigning a file texture to an existing one changes its pixel source:
+	// it is a reload, not a fresh serialized instance.
+	_FreshlyLoaded = false;
+	_PixelsReloaded = true;
 	return *this;
 }
 

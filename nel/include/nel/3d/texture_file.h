@@ -78,7 +78,7 @@ public:
 		_MipMapSkipAtLoad=0;
 		m_UntrustedMaxSize = 0;
 		_FreshlyLoaded = false;
-		_PixelsReloaded = true;
+		_PixelsReloaded = false;
 	}
 
 

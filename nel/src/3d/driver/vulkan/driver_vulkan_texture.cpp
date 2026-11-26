@@ -2099,18 +2099,13 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 				tex.generate();
 				if (!canUploadInPlace(tex, vk))
 				{
-					if (dbg)
-						nlinfo("VulkanTexDbg: '%s' fresh share hit incompatible, building a complete replacement", dbgName.c_str());
-					CTextureVulkan created;
-					if (!uploadTextureVulkan(tex, created, true))
-						return false;
-					setTextureImage(*info, created);
-					updateTextureSampler(tex, info->Texture);
-					tex.clearTouched();
-					tex.clearFreshlyLoaded();
-					tex.clearPixelsReloaded();
-					bAllUploaded = true;
-					return true;
+					// A fresh serialized texture must never replace a live shared
+					// image, even with a complete one. This is an inconsistent
+					// share name; let the watchdog or an explicit real reload
+					// resolve it.
+					nlwarning("Vulkan: fresh share '%s' is incompatible with the live image; refusing to replace it",
+						dbgName.empty() ? tex.getShareName().c_str() : dbgName.c_str());
+					return false;
 				}
 				if (!uploadTexturePixels(tex, vk))
 					return false;
@@ -2206,7 +2201,11 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 	// New image. A real reload or a forced recreate must be complete before
 	// it replaces the old one; a fresh creator with bUpload=false creates the
 	// zeroed image that ShapeBank streams into.
-	const bool fullCreate = bUpload || reload || (bMustRecreateSharedTexture && !createdInfo);
+	// A new texture (createdInfo) has no image to preserve: even if its file
+	// was set with setFileName(), the first image can stream. Only an existing
+	// image is rebuilt completely for a real reload or explicit recreate.
+	const bool fullCreate = bUpload ||
+		(vk.Image != VK_NULL_HANDLE && !createdInfo && (reload || bMustRecreateSharedTexture));
 	if (!fullCreate && !createdInfo && tex.supportSharing() && vk.Image != VK_NULL_HANDLE)
 	{
 		// This path must not be reached: a share hit is handled above.
