@@ -417,8 +417,14 @@ bool	CTextureFar::endPatchULTouch() const
 // Generate the texture. See ITexture::doGenerate().
 void CTextureFar::doGenerate (bool async)
 {
-	// Resize. But don't need to fill with 0!!
-	CBitmap::resize (NL_FAR_TEXTURE_EDGE_SIZE, NL_FAR_TEXTURE_EDGE_SIZE, RGBA, false);
+	// Resize only when the atlas does not have its size yet. A partial update
+	// (the normal case: _ListInvalidRect holds the patch rects touched since
+	// the last generate) rebuilds only those rectangles, so reallocating here
+	// would leave every other patch in whatever memory the allocator returns.
+	// The Vulkan driver used to re-upload the whole bitmap on each update and
+	// that showed as rainbow/garbage patches at distance until relog.
+	if (getWidth() != NL_FAR_TEXTURE_EDGE_SIZE || getHeight() != NL_FAR_TEXTURE_EDGE_SIZE)
+		CBitmap::resize (NL_FAR_TEXTURE_EDGE_SIZE, NL_FAR_TEXTURE_EDGE_SIZE, RGBA, false);
 
 	// Rectangle invalidate ?
 	if (_ListInvalidRect.begin()!=_ListInvalidRect.end())
