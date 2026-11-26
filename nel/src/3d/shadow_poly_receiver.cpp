@@ -50,7 +50,10 @@ CShadowPolyReceiver::CShadowPolyReceiver(uint quadGridSize, float quadGridCellSi
 	// lock volatile, to avoid cpu stall when rendering multiple shadows in the same polyReceiver
 	_VB.setBufferUsage(CVertexBuffer::SmallStream, false);
 	_RenderTriangles.setBufferUsage(CIndexBuffer::SmallStream, false);
-	_RenderTriangles.setFormat(NL_DEFAULT_INDEX_BUFFER_FORMAT);
+	// 32-bit indices: a densely populated receiver can select more than 65535
+	// clipped vertices, and the old 16-bit default then wrapped the triangle
+	// indices as well as the sint16 VBIdx (black structures in dense areas).
+	_RenderTriangles.setFormat(CIndexBuffer::Indices32);
 	NL_SET_IB_NAME(_RenderTriangles, "CShadowPolyReceiver");
 }
 
@@ -236,7 +239,7 @@ inline void	CShadowPolyReceiver::renderSelection(IDriver *drv, CMaterial &shadow
 		_VB.lock(vba);
 		CIndexBufferReadWrite iba;
 		_RenderTriangles.lock (iba);
-		TIndexType *triPtr = (TIndexType *) iba.getPtr();
+		uint32 *triPtr = (uint32 *) iba.getPtr();
 
 		// For All triangles, clip them.
 		uint	currentVbIdx= 0;
@@ -294,7 +297,7 @@ inline void	CShadowPolyReceiver::renderSelection(IDriver *drv, CMaterial &shadow
 					}
 
 					// add the index to the tri list.
-					triPtr[currentTriIdx++]= (TIndexType) vbId;
+					triPtr[currentTriIdx++]= (uint32) vbId;
 				}
 			}
 		}

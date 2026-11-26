@@ -124,10 +124,17 @@ private:
 	public:
 		uint8			RefCount;
 		uint8			Flags;
-		sint16			VBIdx;
+		/// Index in the render vertex buffer. This used to be a sint16, which
+		/// wrapped once the selected (clipped) triangles needed more than
+		/// 32767 vertices: the index became negative and no longer matched the
+		/// -1 "not inserted yet" sentinel, so a second vertex was written over
+		/// the first and the shadow triangles connected wrong vertices (black
+		/// structures in dense areas). The render VB is a stream, so a plain
+		/// 32-bit index costs nothing.
+		sint32			VBIdx;
 
-		CVectorId() {RefCount=0;}
-		CVectorId(const CVector &v) {(*(CVector*)this)= v; RefCount=0;}
+		CVectorId() {RefCount=0; VBIdx= -1;}
+		CVectorId(const CVector &v) {(*(CVector*)this)= v; RefCount=0; VBIdx= -1;}
 	};
 	std::vector<CVectorId>				_Vertices;
 	std::vector<uint>					_FreeVertices;
