@@ -177,9 +177,6 @@ private:
 		uint32 UpTextProgress;	// Upload Texture progress current texture or lightmap
 		uint8  UpTextMipMap;	// Upload Texture progress current mipmap
 		uint32 UpTextLine;		// Upload Texture progress current line in mipmap
-		/// A shared image exists but is still being streamed by its creator;
-		/// keep this shape in AsyncLoad_Texture until all mips are complete.
-		bool   WaitForSharedTexture;
 		// ---------------------------------
 		CWaitingShape ()
 		{
@@ -189,7 +186,6 @@ private:
 			UpTextProgress = 0;
 			UpTextMipMap = 0;
 			UpTextLine = 0;
-			WaitForSharedTexture = false;
 		}
 	};
 	typedef		std::map< std::string, CWaitingShape > TWaitingShapesMap;
@@ -200,9 +196,6 @@ private:
 
 	/// return true if the texture is entirely uploaded
 	bool processWSUploadTexture (CWaitingShape &rWS, uint32 &nTotalUploaded, ITexture *pText);
-	/// Finish every remaining texture upload of a canceled shape, ignoring the
-	/// per-frame budget, so a shared image is never left partially streamed.
-	void forceEndUpLoadTexture (CWaitingShape &rWS);
 
 private:
 
