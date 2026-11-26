@@ -411,6 +411,12 @@ public:
 	virtual bool			setupTextureEx(	ITexture &tex, bool bUpload, bool &bAllUploaded,
 											bool bMustRecreateSharedTexture = false) = 0;
 
+	/** Mark a shared texture image as completely uploaded (all mips/faces).
+	 *  The shape bank calls this when its per-mip stream finishes; the default
+	 *  is a no-op for drivers that do not cache a shared image this way.
+	 */
+	virtual void			markTextureFullyUploaded(ITexture &/*tex*/) {}
+
 	/** The texture must be created or uploadTexture do nothing.
 	 *  These function can be used to upload piece by piece a texture. Use it in conjunction with setupTextureEx(..., false);
 	 *  For compressed textures, the rect must aligned on pixel block. (a block of pixel size is 4x4 pixels).

@@ -374,7 +374,7 @@ struct CTextureVulkan
 {
 	CTextureVulkan()
 		: Image(VK_NULL_HANDLE), Memory(VK_NULL_HANDLE), MemorySize(0), View(VK_NULL_HANDLE), Sampler(VK_NULL_HANDLE)
-		, Framebuffer(VK_NULL_HANDLE), Width(0), Height(0), MipLevels(1), Layers(1), Cube(false), HasAlpha(false), Uploaded(false)
+		, Framebuffer(VK_NULL_HANDLE), Width(0), Height(0), MipLevels(1), Layers(1), Cube(false), HasAlpha(false), Uploaded(false), FullyUploaded(false)
 		, Compressed(false), CompressFromRGBA(false), SourceFormat(CBitmap::DonTKnow), Format(VK_FORMAT_UNDEFINED), Usage(0)
 		, Layout(VK_IMAGE_LAYOUT_UNDEFINED), DepthTarget(-1)
 	{
@@ -417,6 +417,10 @@ struct CTextureVulkan
 	bool			Cube;
 	bool			HasAlpha;
 	bool			Uploaded;
+	/// True only when every mip/face of the image has been uploaded (a full
+	/// uploadTexturePixels(), a complete cube upload, or the shape bank
+	/// finishing its per-mip stream). Region uploads set Uploaded but not this.
+	bool			FullyUploaded;
 	/// True when the pixels are kept compressed (DXTC uploaded as a BC
 	/// format), which makes the driver keep the texture bitmap compressed and
 	/// upload raw blocks instead of converting every texel to RGBA.
@@ -591,6 +595,7 @@ public:
 	virtual bool isTextureExist(const ITexture &tex) override;
 	virtual bool setupTexture(ITexture &tex) override;
 	virtual bool setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUploaded, bool bMustRecreateSharedTexture) override;
+	virtual void markTextureFullyUploaded(ITexture &tex) override;
 	virtual bool uploadTexture(ITexture &tex, NLMISC::CRect &rect, uint8 nNumMipMap) override;
 	virtual bool uploadTextureCube(ITexture &tex, NLMISC::CRect &rect, uint8 nNumMipMap, uint8 nNumFace) override;
 	virtual void forceDXTCCompression(bool dxtcComp) override;
