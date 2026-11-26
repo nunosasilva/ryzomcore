@@ -1985,37 +1985,124 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 	// the old share-hit early-out treated that as done, so the mairie family
 	// drew a zero/partial high-mip image until relog.
 	bool forceSharedUpload = false;
-	if (!createdInfo && tex.supportSharing() && !bMustRecreateSharedTexture && !tex.touched())
+	bool touchedShared = false;
+	if (!createdInfo && tex.supportSharing() && !bMustRecreateSharedTexture)
 	{
-		// NLVK_SHARED_STREAM_DUP=1 restores duplicate streaming for A/B;
-		// NLVK_NO_SHARED_STREAM=1 keeps the explicit "skip" diagnostic switch.
-		static const bool duplicateStream = getenv("NLVK_SHARED_STREAM_DUP") != NULL;
-		static const bool noSharedStream = getenv("NLVK_NO_SHARED_STREAM") != NULL;
-		if (vk.FullyUploaded || noSharedStream)
+		if (tex.touched())
 		{
-			tex.clearTouched();
-			bAllUploaded = true;
-			return true;
-		}
-		std::string dbgName;
-		texDbgName(tex, dbgName);
-		if (duplicateStream || bUpload)
-		{
-			// A/B duplicate streaming, or a synchronous caller that must upload:
-			// fall through and stream the full chain from this instance.
-			forceSharedUpload = true;
-			if (texDbgEnabled(dbgName))
-				nlinfo("VulkanTexDbg: '%s' shared image partial, duplicate stream", dbgName.c_str());
+			// The texture was regenerated (setFileName, selectTexture, a reload
+			// or a filter/mip change) but its share name already names a live
+			// image used by every other ITexture with the same file. Recreating
+			// that image here (the old fall-through) destroys it for all of
+			// them: the new image starts zeroed and stays black for every
+			// building/plant sharing it until this instance streams the whole
+			// chain, or forever if that stream waits or is cancelled. Update
+			// the live image in place instead; its old pixels stay valid until
+			// each new region overwrites them.
+			touchedShared = true;
 		}
 		else
 		{
-			// CShapeBank calls with bUpload=false. Do not mark this shape ready
-			// and do not duplicate the creator's stream: wait until the shared
-			// image has all mips (CShapeBank keeps it in AsyncLoad_Texture).
-			if (texDbgEnabled(dbgName))
-				nlinfo("VulkanTexDbg: '%s' shared image partial, waiting for creator", dbgName.c_str());
-			return false;
+			// NLVK_SHARED_STREAM_DUP=1 restores duplicate streaming for A/B;
+			// NLVK_NO_SHARED_STREAM=1 keeps the explicit "skip" diagnostic switch.
+			static const bool duplicateStream = getenv("NLVK_SHARED_STREAM_DUP") != NULL;
+			static const bool noSharedStream = getenv("NLVK_NO_SHARED_STREAM") != NULL;
+			if (vk.FullyUploaded || noSharedStream)
+			{
+				tex.clearTouched();
+				bAllUploaded = true;
+				return true;
+			}
+			std::string dbgName;
+			texDbgName(tex, dbgName);
+			if (duplicateStream || bUpload)
+			{
+				// A/B duplicate streaming, or a synchronous caller that must upload:
+				// fall through and stream the full chain from this instance.
+				forceSharedUpload = true;
+				if (texDbgEnabled(dbgName))
+					nlinfo("VulkanTexDbg: '%s' shared image partial, duplicate stream", dbgName.c_str());
+			}
+			else
+			{
+				// CShapeBank calls with bUpload=false. Do not mark this shape ready
+				// and do not duplicate the creator's stream: wait until the shared
+				// image has all mips (CShapeBank keeps it in AsyncLoad_Texture).
+				if (texDbgEnabled(dbgName))
+					nlinfo("VulkanTexDbg: '%s' shared image partial, waiting for creator", dbgName.c_str());
+				return false;
+			}
 		}
+	}
+
+	if (touchedShared && vk.Image != VK_NULL_HANDLE &&
+		vk.Width == tex.getWidth() && vk.Height == tex.getHeight())
+	{
+		tex.generate();
+
+		// Can the live image represent the regenerated bitmap? The share name
+		// already covers upload format and mip mode, but a reloaded file can
+		// still have another chain length or texel representation; recreating
+		// is then unavoidable (and size changes too).
+		bool inPlace = true;
+		if (tex.mipMapOn())
+		{
+			if (vk.Compressed && !vk.CompressFromRGBA)
+			{
+				inPlace = compressedTextureFormat(tex.getPixelFormat()) == vk.Format &&
+					(uint32)tex.getMipMapCount() == vk.MipLevels;
+			}
+			else
+			{
+				inPlace = (uint32)tex.getMipMapCount() == vk.MipLevels &&
+					(!vk.CompressFromRGBA || tex.getPixelFormat() == CBitmap::RGBA);
+			}
+		}
+		else
+		{
+			inPlace = vk.MipLevels == 1;
+			if (inPlace && vk.Compressed && !vk.CompressFromRGBA)
+				inPlace = compressedTextureFormat(tex.getPixelFormat()) == vk.Format;
+			if (inPlace && !vk.Compressed)
+				inPlace = prepareTexturePixels(tex);
+		}
+
+		if (inPlace)
+		{
+			if (bUpload)
+			{
+				// A fully invalidated, mipmapped or compressed texture needs a
+				// complete upload; otherwise send only the touched rectangles
+				// (the font/atlas path).
+				if (tex.isAllInvalidated() || tex.mipMapOn() ||
+					vk.Compressed || vk.CompressFromRGBA)
+				{
+					if (!uploadTexturePixels(tex, vk))
+						return false;
+				}
+				else
+				{
+					const list<CRect> &rects = tex._ListInvalidRect;
+					for (list<CRect>::const_iterator r = rects.begin(); r != rects.end(); ++r)
+					{
+						if (!uploadTextureRegion(tex, vk, *r, 0))
+							return false;
+					}
+				}
+				bAllUploaded = true;
+			}
+			else
+			{
+				// CShapeBank is about to stream the new chain into this image:
+				// sharing shapes must wait for its completion, but the image
+				// keeps the old pixels (not a zero clear) meanwhile.
+				vk.FullyUploaded = false;
+				bAllUploaded = false;
+			}
+			tex.clearTouched();
+			return true;
+		}
+		// Fall through: the regenerated bitmap does not fit the live image.
 	}
 
 	if (vk.Image != VK_NULL_HANDLE && !bMustRecreateSharedTexture && !tex.touched() && !forceSharedUpload)
