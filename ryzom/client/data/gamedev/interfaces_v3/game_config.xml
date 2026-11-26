@@ -6,6 +6,16 @@
         h="600"
         active="true" />
   <lua file="game_config.lua" />
+  <!-- The game_config interface is loaded on its own (not config.xml), but
+       its scroll controls use the skin_scroll style. Without this definition
+       the landscape tab cannot scroll to the Micro-Vegetation rows. -->
+  <style style="skin_scroll"
+         type="scroll"
+         posref="BL BL"
+         w="8"
+         tx_topright="skin_scroll_t.tga"
+         tx_middle="skin_scroll_m.tga"
+         tx_bottomleft="skin_scroll_b.tga" />
   <!-- ******************** -->
   <!-- * UI COLOR & ALPHA * -->
   <!-- ******************** -->
