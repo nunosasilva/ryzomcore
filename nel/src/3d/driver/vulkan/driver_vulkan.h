@@ -263,7 +263,18 @@ public:
 	}
 	/// Point the draw back at the persistent buffer (F9: the slot that was
 	/// actually written, not always slot 0).
-	void		resetDrawBuffer() { _DrawBuffer = _VertexBuffer[_Slot]; _DrawOffset = 0; _DrawBufferFrame = ~0ull; }
+	/// A PartialWrite/UnsynchronizedWrite buffer has no persistent copy: its
+	/// pixels live in the host shadow and are uploaded to the vertex ring by
+	/// flushPartialWrites(). Its _VertexBuffer is allocated but never written
+	/// (device memory is undefined), so it must never be bound; returning null
+	/// makes beginVertexDraw() skip the draw when this frame's upload was
+	/// dropped (ring exhausted) instead of drawing uninitialized vertices.
+	void		resetDrawBuffer()
+	{
+		_DrawBuffer = _PartialWrite ? VK_NULL_HANDLE : _VertexBuffer[_Slot];
+		_DrawOffset = 0;
+		_DrawBufferFrame = ~0ull;
+	}
 	void		resetCoW() { _CoWFrame = ~0ull; _CoWBuffer = VK_NULL_HANDLE; _CoWOffset = 0; _CoWDrawn = false; }
 	/// Frame boundary: forget last frame's copy and a draw pointer that is not
 	/// from this frame. Called by the draw paths, which are the only place a
@@ -1898,15 +1909,17 @@ public:
 	}
 	/// Draw prologue shared by drawArrays()/drawIndexed()/renderRawQuads():
 	/// advance the vertex buffer's frame state and report whether it has a
-	/// buffer that can be bound. beginFrameState() can reset _DrawBuffer to
-	/// _VertexBuffer[_Slot], which is VK_NULL_HANDLE for _Dynamic (its data is
-	/// in the ring) and _PartialWrite (host shadow only) buffers, so the null
-	/// check has to run after it. A draw that ends up without a buffer is
-	/// counted and dropped: vkCmdBindVertexBuffers() with a null handle is a
-	/// validation error and undefined behaviour.
+	/// buffer that can be bound. beginFrameState() resets _DrawBuffer to the
+	/// persistent buffer, which is VK_NULL_HANDLE for _Dynamic (its data is in
+	/// the ring) and for _PartialWrite (host shadow only), so the null check
+	/// has to run after it. A draw that ends up without a buffer is counted and
+	/// dropped: vkCmdBindVertexBuffers() with a null handle is a validation
+	/// error and undefined behaviour.
 	bool					beginVertexDraw(CVBDrvInfosVulkan &info);
-	/// DBG-PERF: draws that used a stream buffer whose ring slice is from an
-	/// earlier frame (should stay 0; a nonzero count is a flicker candidate).
+	/// DBG-PERF: a draw was dropped because its stream buffer has no ring slice
+	/// for this frame (ring exhausted, or the engine drew it without a lock).
+	/// Should stay 0; a nonzero count is missing geometry, and before the
+	/// PartialWrite fallback was removed it was garbage geometry.
 	void					countStaleStreamDraw(const CVBDrvInfosVulkan &info)
 	{
 		++_StatsStaleStreamDraws;
@@ -1914,7 +1927,7 @@ public:
 		if (remain > 0)
 		{
 			--remain;
-			nlwarning("Vulkan: stream vertex buffer drawn with a ring slice from an earlier frame (off=%u frame=%llu now=%llu)",
+			nlwarning("Vulkan: stream vertex buffer has no ring slice for this frame (off=%u frame=%llu now=%llu); draw skipped",
 				info._DrawOffset, (unsigned long long)info._DrawBufferFrame,
 				(unsigned long long)_SwapBufferCounter);
 		}
