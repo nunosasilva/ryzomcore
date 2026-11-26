@@ -55,8 +55,8 @@ class	IDriver;
 // ***************************************************************************
 /// For Landscape Vegetable: hard VB vertex budget.
 /// All vegetation index buffers are 32-bit now, so the hard buffer is no
-/// longer limited to 65535 vertices. 512000 is the requested headroom; the
-/// runtime cap is min(this, driver max). The legacy 65530 minimum is kept
+/// longer limited to 65535 vertices. 512000 covers the 100m vegetation mode;
+/// the runtime cap is min(this, driver max). The legacy 65530 minimum is kept
 /// only for the driver gate, so old GL2/NV devices do not lose vegetation.
 #define	NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_UNLIT		512000
 #define	NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_LIGHTED		5000

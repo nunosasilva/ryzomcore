@@ -604,20 +604,6 @@ const CZone*	CLandscapeUser::getZone (sint zoneId) const
 }
 
 // ***************************************************************************
-void		CLandscapeUser::setVegetableDensity(float density)
-{
-	NL3D_HAUTO_UI_LANDSCAPE;
-	_Landscape->Landscape.setVegetableDensity(density);
-}
-
-// ***************************************************************************
-float		CLandscapeUser::getVegetableDensity() const
-{
-	NL3D_HAUTO_UI_LANDSCAPE;
-	return _Landscape->Landscape.getVegetableDensity();
-}
-
-// ***************************************************************************
 float CLandscapeUser::getRayCollision(const NLMISC::CVector &start, const NLMISC::CVector &end)
 {
 	NL3D_HAUTO_UI_LANDSCAPE;

@@ -207,7 +207,7 @@ void		CPatch::generateTileVegetable(CVegetableInstanceGroup *vegetIg, uint distT
 	}
 
 	// First, for each vegetable, generate the number of instance to create, and their relative position.
-	// Stock passes 1.0; MicroVegetExtra thins the instance count over the doubled area to 75% here.
+	// Stock passes 1.0; the extra path uses its fixed density scale (1.0).
 	const bool	extraEnabled= getLandscape()->_VegetableManager->getExtra().isEnabled();
 	const float	densityScale= extraEnabled ? CVegetableExtra::getDensityScale() : 1.f;
 	for(i= 0; i<numVegetable; i++)

@@ -138,10 +138,7 @@ void	CVegetable::generateGroupEx(float nbInst, const CVector &posInWorld, const 
 	// modulate density with angleFactor.
 	nbInst*= angleFact;
 
-	// modulate result by Global Manager density
-	nbInst*= _Manager->getGlobalDensity();
-
-	// Stock passes 1.0; MicroVegetExtra thins the count here.
+	// Stock passes 1.0; the extra path keeps the authored density (1.0).
 	nbInst*= densityScale;
 
 	// Now, 0<=nbInst<+oo. If we have 0.1, it means that we have 10% chance to spawn an instance.

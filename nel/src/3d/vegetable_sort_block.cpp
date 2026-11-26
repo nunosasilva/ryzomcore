@@ -126,7 +126,7 @@ void			CVegetableSortBlock::updateSortBlock(CVegetableManager &vegetManager)
 
 	if (triIndices32.size() < _NIndices) triIndices32.resize(_NIndices);
 
-	// Diagnostic: the largest ZSort block (should exceed 65535 in 1.0 stress).
+	// Diagnostic: track the largest ZSort block for RYZOM_VEG_VB_STATS.
 	vegetManager.noteZSortTriangles(_NTriangles);
 
 	// fill indices with all ig info.

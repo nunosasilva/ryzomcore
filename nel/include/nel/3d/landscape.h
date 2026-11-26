@@ -525,14 +525,6 @@ public:
 	  */
 	void		setupColorsFromTileFlags(const NLMISC::CRGBA colors[4]);
 
-	/** Set a density ratio [0, 1] to possibly reduce the amount of micro vegetable drawn. Default to 1
-	 */
-	void		setVegetableDensity(float density);
-
-	/** Get the density ratio [0, 1] of micro vegetable drawn. Default to 1
-	 */
-	float		getVegetableDensity() const;
-
 	// @}
 
 

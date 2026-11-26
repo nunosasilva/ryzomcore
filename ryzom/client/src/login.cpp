@@ -1982,7 +1982,6 @@ class CAHInitResLod : public IActionHandler
 		CfgPresetList.push_back(pair<string,bool>("LandscapeThreshold",		true));
 		CfgPresetList.push_back(pair<string,bool>("Vision",					true));
 		CfgPresetList.push_back(pair<string,bool>("MicroVeget",				false));
-		CfgPresetList.push_back(pair<string,bool>("MicroVegetDensity",		true));
 		CfgPresetList.push_back(pair<string,bool>("FxNbMaxPoly",			false));
 		CfgPresetList.push_back(pair<string,bool>("Cloud",					false));
 		CfgPresetList.push_back(pair<string,bool>("CloudQuality",			true));

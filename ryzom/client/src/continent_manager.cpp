@@ -244,8 +244,6 @@ void CContinentManager::load ()
 			// Default setup. should work well for night/day transition in 30 minutes.
 			// Because all vegetables will be updated every 20 seconds => 90 steps.
 			Landscape->setVegetableUpdateLightingFrequency(1/20.f);
-			// Density (percentage to ratio)
-			Landscape->setVegetableDensity(ClientCfg.MicroVegetDensity/100.f);
 		}
 	}
 }// load //

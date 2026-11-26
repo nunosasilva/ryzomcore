@@ -45,7 +45,6 @@ void CDisplaySettingsDetailsWidget::load()
 	landscapeSlider->setValue(getQualityPresetFloat("LandscapeTileNear"));
 	landscapeSlider->setValue(std::min(landscapeSlider->value(), getQualityPresetFloat("LandscapeThreshold")));
 	landscapeSlider->setValue(std::min(landscapeSlider->value(), getQualityPresetFloat("Vision")));
-	landscapeSlider->setValue(std::min(landscapeSlider->value(), getQualityPresetFloat("MicroVegetDensity")));
 
 	// FX
 	fxSlider->setValue(getQualityPresetInteger("FxNbMaxPoly"));
@@ -81,7 +80,6 @@ void CDisplaySettingsDetailsWidget::save()
 	setFloatPreset("LandscapeThreshold", landscapeSlider->value());
 	setFloatPreset("Vision", landscapeSlider->value());
 	setIntegerPreset("MicroVeget", landscapeSlider->value());
-	setFloatPreset("MicroVegetDensity", landscapeSlider->value());
 
 	// FX
 	setIntegerPreset("FxNbMaxPoly", fxSlider->value());

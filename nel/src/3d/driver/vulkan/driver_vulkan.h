@@ -76,21 +76,20 @@ const uint32 NL_VK_STAGING_RING_MAX = 64u * 1024u * 1024u;
 /// overflowed uint32 and spun forever in allocVertexRing().
 // The loading screen can spend seconds in one "frame" and fill the ring with
 // the buffers it prepares (measured: >128 MiB in a single frame, and the ring
-// used to reach 512 MiB during a zone load). The user's 2560x1440 Fairhaven
-// session then saturated the 1 GiB ring with a 3,931,800-byte vegetation hard
-// VB (65,530 x 60 B) and dropped its upload. 2 GiB leaves a 1 GiB per-frame
-// half; nextRingSize() uses 64-bit math and returns 0 above the cap, keeping
-// the old ring. The 512k-cap all-hard path needs up to ~30.7 MiB once.
+// used to reach 512 MiB during a zone load). A 1 GiB ring was still saturated
+// by the 100m vegetation mode's 3,931,800-byte hard VB (65,530 x 60 B), which
+// dropped the upload. 2 GiB leaves a 1 GiB per-frame half; nextRingSize() uses
+// 64-bit math and returns 0 above the cap, keeping the old ring. The 512k-cap
+// all-hard path needs up to ~30.7 MiB once.
 const uint32 NL_VK_VERTEX_RING_MAX = 2u * 1024u * 1024u * 1024u;
 const uint32 NL_VK_INDEX_RING_MAX = 64u * 1024u * 1024u;
-// The stock 50m vegetation fits the 64 MiB ring, but the opt-in
-// MicroVegetExtra 100m mode roughly quadruples the vegetation draws (measured
+// The stock 50m vegetation fits the 64 MiB ring, but the 100m
+// MicroVegetExtra mode roughly quadruples the vegetation draws (measured
 // ~3.1k total draws at the Silan camp vs ~1.8k stock). Its per-frame half of
 // 32 MiB is just short there: the ring reached the cap and the last draws of
 // the frame were dropped. 128 MiB gives a 64 MiB half, and the ring only grows
 // when a frame actually needs it, so the stock path keeps its smaller ring.
-// The user's 2560x1440 18:38-20:11 session hit the 128 MiB cap 13,537 times
-// (each is a dropped mega draw); 256 MiB gives a 128 MiB per-frame half.
+// 256 MiB leaves a 128 MiB per-frame half for the densest sessions.
 const uint32 NL_VK_UNIFORM_RING_MAX = 256u * 1024u * 1024u;
 
 /// Size a ring buffer has to grow to for a `required`-byte upload: at least

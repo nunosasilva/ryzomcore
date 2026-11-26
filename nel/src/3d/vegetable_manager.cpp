@@ -60,7 +60,6 @@ CVegetableManager::CVegetableManager(uint maxVertexVbHardUnlit, uint maxVertexVb
 	_ClipBlockMemory(NL3D_VEGETABLE_CLIP_BLOCK_BLOCKSIZE),
 	_SortBlockMemory(NL3D_VEGETABLE_SORT_BLOCK_BLOCKSIZE),
 	_InstanceGroupMemory(NL3D_VEGETABLE_INSTANCE_GROUP_BLOCKSIZE),
-	_GlobalDensity(1.f),
 	_NumZSortBlendLayers(nbBlendLayers), _ZSortLayerDistMax(blendLayerDistMax),
 	_ZSortScene(nullptr)
 {
@@ -74,8 +73,6 @@ CVegetableManager::CVegetableManager(uint maxVertexVbHardUnlit, uint maxVertexVb
 	_VegVBPeakUsage= 0;
 	_VegVBPeakHard= 0;
 	_VegVBPeakSoft= 0;
-	_VegVBOver50k= 0;
-	_VegVBOver65530= 0;
 	_VegVBOverHard= 0;
 	_VegVBSoftFrames= 0;
 	_VegVBZSortTriMax= 0;
@@ -1955,13 +1952,6 @@ void			CVegetableManager::swapIgRdrPassHardMode(CVegetableInstanceGroup *ig, uin
 
 
 // ***************************************************************************
-void		CVegetableManager::setGlobalDensity(float density)
-{
-	clamp(density, 0.f, 100.f);
-	_GlobalDensity= density;
-}
-
-// ***************************************************************************
 void		CVegetableManager::setExtraEnabled(bool enabled)
 {
 	_Extra.setEnabled(enabled);
@@ -2000,7 +1990,6 @@ void		CVegetableManager::sampleVegVBStats()
 
 	// The hard budget is the unlit allocator; lit vegetation has its own
 	// 5000-vertex hard buffer and is not what the microvegetation overflows.
-	// over65530 stays as a historical "would have spilled under the old cap".
 	const CVegetableVBAllocator	&hard= _VBHardAllocator[CVegetableVBAllocator::VBTypeUnlit];
 	const CVegetableVBAllocator	&soft= _VBSoftAllocator[CVegetableVBAllocator::VBTypeUnlit];
 	const uint32	hardV= hard.getNumUserVerticesAllocated();
@@ -2025,10 +2014,6 @@ void		CVegetableManager::sampleVegVBStats()
 		_VegVBPeakHard= hardV;
 	if(softV > _VegVBPeakSoft)
 		_VegVBPeakSoft= softV;
-	if(totalV > 50000)
-		++_VegVBOver50k;
-	if(totalV > 65530)
-		++_VegVBOver65530;
 	if(totalV > budget)
 		++_VegVBOverHard;
 	if(softV != 0)
@@ -2063,13 +2048,11 @@ void		CVegetableManager::logVegVBStats(const char *why) const
 	const double	frames= (double)_VegVBFrame;
 
 	nlinfo("VEGVB[%s]: frames %llu hard %u p50 %u p95 %u p99 %u max %u hardMax %u softMax %u "
-		"excess99 %u (%.2f MiB) excessMax %u (%.2f MiB) over50k %.1f%% over65530 %.1f%% overHard %.1f%% "
+		"excess99 %u (%.2f MiB) excessMax %u (%.2f MiB) overHard %.1f%% "
 		"softFrames %.1f%% softCapP99 %u (stride %u, %.2f MiB) zTriMax %u peak %u f%llu @%u",
 		why, (unsigned long long)_VegVBFrame, budget, p50, p95, p99, maxUsage,
 		_VegVBPeakHard, _VegVBPeakSoft,
 		excessP99, excessP99 * toMiB, excessMax, excessMax * toMiB,
-		frames ? 100.0 * (double)_VegVBOver50k / frames : 0.0,
-		frames ? 100.0 * (double)_VegVBOver65530 / frames : 0.0,
 		frames ? 100.0 * (double)_VegVBOverHard / frames : 0.0,
 		frames ? 100.0 * (double)_VegVBSoftFrames / frames : 0.0,
 		softP99, stride, softP99 * toMiB, _VegVBZSortTriMax,

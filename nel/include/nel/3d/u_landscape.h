@@ -262,14 +262,6 @@ public:
 	 */
 	virtual	void		setVegetableUpdateLightingFrequency(float freq) =0;
 
-	/** Set a density ratio [0, 1] to possibly reduce the amount of micro vegetable drawn. Default to 1
-	 */
-	virtual	void		setVegetableDensity(float density) =0;
-
-	/** Get the density ratio [0, 1] of micro vegetable drawn. Default to 1
-	 */
-	virtual	float		getVegetableDensity() const =0;
-
 	// @}
 
 

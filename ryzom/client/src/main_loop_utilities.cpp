@@ -181,21 +181,12 @@ void updateFromClientCfg()
 				// Default setup. should work well for night/day transition in 30 minutes.
 				// Because all vegetables will be updated every 20 seconds => 90 steps.
 				Landscape->setVegetableUpdateLightingFrequency(1/20.f);
-				// Density (percentage to ratio)
-				Landscape->setVegetableDensity(ClientCfg.MicroVegetDensity/100.f);
 			}
 			else
 			{
 				Landscape->enableVegetable(false);
 			}
 		}
-	}
-
-	//---------------------------------------------------
-	if (ClientCfg.MicroVegetDensity != LastClientCfg.MicroVegetDensity)
-	{
-		// Density (percentage to ratio)
-		if (Landscape) Landscape->setVegetableDensity(ClientCfg.MicroVegetDensity/100.f);
 	}
 
 	// GRAPHICS - SPECIAL EFFECTS

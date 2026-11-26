@@ -47,9 +47,10 @@ public:
 	/// Squared extra-band edges: 0, 20^2, 40^2, 60^2, 80^2, 100^2.
 	const float*	getSqrDistLUT() const { return _SqrDistLUT; }
 
-	/// Extra mode thins instance generation to this fraction of the authored
-	/// density. Tune this constant (0.3 default; RYZOM_VEG_EXTRA_DENSITY is a
-	/// measurement-only override enabled with RYZOM_VEG_VB_STATS=1).
+	/// Extra mode multiplies the authored instance density by this fraction.
+	/// 1.0 is the shipped value (the doubled bands keep the authored density);
+	/// RYZOM_VEG_EXTRA_DENSITY is a measurement-only override enabled with
+	/// RYZOM_VEG_VB_STATS=1.
 	static float	getDensityScale();
 
 private:

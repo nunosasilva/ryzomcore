@@ -268,8 +268,6 @@ struct CClientConfig
 	/// Double the microvegetation bands, 5 x 10m (50m) -> 5 x 20m (100m).
 	/// Read at startup; changing it requires a relog.
 	bool			MicroVegetExtra;
-	/// Density of microvegetation in %
-	float			MicroVegetDensity;
 	/// Enable/Disable High Def Entity Texture quality. By default its false
 	bool			HDEntityTexture;
 	/// True if the client has HD Texture installed 512*512)

@@ -603,8 +603,6 @@ void			CLandscape::setDriver(IDriver *drv)
 		const uint32 unlitHardCap= driverMaxVertices < (uint32)NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_UNLIT
 			? driverMaxVertices : (uint32)NL3D_LANDSCAPE_VEGETABLE_MAX_AGP_VERTEX_UNLIT;
 		_VegetableManager->setMaxVertexInBufferHard(unlitHardCap);
-		nlinfo("VEGETABLE: unlit hard cap %u vertices (driver max %u, gate min %u)",
-			unlitHardCap, driverMaxVertices, (uint32)NL3D_LANDSCAPE_VEGETABLE_MIN_AGP_VERTEX);
 
 		// Enable unsynchronized write mode if VP and triple-buffered frame pipeline are available.
 		bool unsyncMode = _VertexShaderOk && _Driver->isTripleBufferPipelined();
@@ -3456,35 +3454,20 @@ bool		CLandscape::isVegetableActive() const
 }
 
 // ***************************************************************************
-static void logVegetableLayout(bool extra)
-{
-	nlinfo("VEGETABLE: distance layout %s: %u x %.0f m bands, far edge %.0f m, zsort %.0f m",
-		extra ? "extra" : "stock", (uint)NL3D_VEGETABLE_BLOCK_NUMDIST,
-		extra ? 2.f * NL3D_VEGETABLE_BLOCK_ELTDIST : NL3D_VEGETABLE_BLOCK_ELTDIST,
-		extra ? 2.f * NL3D_VEGETABLE_BLOCK_ELTDIST * NL3D_VEGETABLE_BLOCK_NUMDIST
-			: NL3D_VEGETABLE_BLOCK_ELTDIST * NL3D_VEGETABLE_BLOCK_NUMDIST,
-		extra ? 2.f * NL3D_VEGETABLE_DEFAULT_DIST_MAX : NL3D_VEGETABLE_DEFAULT_DIST_MAX);
-}
-
-// ***************************************************************************
 void		CLandscape::setVegetableExtra(bool enable)
 {
 	// A vegetable block caches the bucket bounds of the layout that was active
 	// when it was created. Only login (or a MicroVeget off/on cycle, which
 	// deletes every block first) may change this; warn instead of rebuilding.
 	if(_VegetableManager->getExtra().isEnabled() == enable)
-	{
-		logVegetableLayout(enable);
 		return;
-	}
 	if(_VegetableBlockList.size() != 0)
 	{
 		nlwarning("VEGETABLE: MicroVegetExtra set to %s while %d vegetable block(s) are alive; "
-			"existing blocks keep the old distance layout until the next login",
+			"existing blocks keep the old distance layout until they are recreated (next login)",
 			enable ? "on" : "off", _VegetableBlockList.size());
 	}
 	_VegetableManager->setExtraEnabled(enable);
-	logVegetableLayout(enable);
 }
 
 // ***************************************************************************
@@ -3558,39 +3541,6 @@ void		CLandscape::setupColorsFromTileFlags(const NLMISC::CRGBA colors[4])
 	{
 		it->second->setupColorsFromTileFlags(colors);
 	}
-}
-
-// ***************************************************************************
-void		CLandscape::setVegetableDensity(float density)
-{
-	// if the density is really different from what actually setuped
-	if(density!=_VegetableManager->getGlobalDensity())
-	{
-		_VegetableManager->setGlobalDensity(density);
-
-		// must recreate all vegetables IGs
-		for(ItZoneMap it= Zones.begin();it!=Zones.end();it++)
-		{
-			// for all patch.
-			sint	N= (*it).second->getNumPatchs();
-			for(sint i=0;i<N;i++)
-			{
-				// delete vegetable Igs of this patch
-				CPatch	*pa= ((*it).second)->getPatch(i);
-				pa->deleteAllVegetableIgs();
-				// then recreate vegetable Igs of this patch
-				pa->recreateAllVegetableIgs();
-			}
-
-		}
-	}
-
-}
-
-// ***************************************************************************
-float		CLandscape::getVegetableDensity() const
-{
-	return _VegetableManager->getGlobalDensity();
 }
 
 // ***************************************************************************

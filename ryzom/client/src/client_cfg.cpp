@@ -392,7 +392,6 @@ CClientConfig::CClientConfig()
 	DisableTextureShdr	= false;					// Disable Hardware Texture Shader.
 	MicroVeget			= true;						// Default is with MicroVeget.
 	MicroVegetExtra		= true;					// Default on; 0 = stock 50 m.
-	MicroVegetDensity	= 100.0f;
 	HDEntityTexture		= false;
 	HDTextureInstalled	= false;
 	Fog					= true;						// Fog is on by default
@@ -1117,8 +1116,6 @@ void CClientConfig::setValues()
 	READ_BOOL_FV(MicroVeget)
 	// MicroVeget Extra (extended 100m distance; applied on next login)
 	READ_BOOL_FV(MicroVegetExtra)
-	// MicroVeget Density
-	READ_FLOAT_FV(MicroVegetDensity)
 	// GlobalWindPower: Global Wind Power
 	READ_FLOAT_DEV(GlobalWindPower)
 	// Global Wind Direction

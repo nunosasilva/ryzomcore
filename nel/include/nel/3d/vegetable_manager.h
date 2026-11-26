@@ -186,14 +186,6 @@ public:
 		float	bendFactor, float bendPhase, float bendFreqFactor, float blendDistMax,
 		TVegetableWater vegetWaterState, CVegetableUV8 dlmUV);
 
-	/** Setup a density multiplicator [0,1], for performance reason for instance
-	 */
-	void			setGlobalDensity(float density);
-
-	/** Get density multiplicator [0,1], for performance reason for instance
-	 */
-	float			getGlobalDensity() const {return _GlobalDensity;}
-
 	/** Opt-in doubled microvegetation distance. Set it before the first
 	 *	vegetable block is created.
 	 */
@@ -339,9 +331,6 @@ private:
 	NLMISC::CRGBA									_GlobalAmbient;
 	NLMISC::CRGBA									_GlobalDiffuse;
 
-	/// Global Vegetable Density
-	float											_GlobalDensity;
-
 	/// profile
 	uint											_NumVegetableFaceRendered;
 
@@ -415,7 +404,7 @@ private:
 	/// For Alpha Blend rdrPass, ordering into layers.
 	uint					_NumZSortBlendLayers;
 	float					_ZSortLayerDistMax;
-	/// Opt-in doubled microvegetation distance (100m bands).
+	/// Opt-in doubled microvegetation distance (20 m bands, 100 m far edge).
 	CVegetableExtra			_Extra;
 	/// RYZOM_VEG_VB_STATS=1 diagnostic state. Usage is sampled once per render().
 	bool					_VegVBStatsEnabled;
@@ -427,8 +416,6 @@ private:
 	uint32					_VegVBPeakUsage;
 	uint32					_VegVBPeakHard;
 	uint32					_VegVBPeakSoft;
-	uint64					_VegVBOver50k;
-	uint64					_VegVBOver65530;
 	uint64					_VegVBOverHard;
 	uint64					_VegVBSoftFrames;
 	uint32					_VegVBZSortTriMax;

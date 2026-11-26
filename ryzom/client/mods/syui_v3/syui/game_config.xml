@@ -1154,13 +1154,6 @@
                   posref="BL TL"
                   x="-20"
                   y="-12" />
-        <instance template="tgcw_scrollbarfloat"
-                  id="mvd"
-                  text="uiMicroVegetDensity"
-                  posparent="lmv"
-                  posref="BL TL"
-                  x="20"
-                  y="-2" />
       </group>
       <ctrl style="skin_scroll"
             id="sb_landscape"
@@ -3254,14 +3247,6 @@
                widget="boolbut"
                realtime="true"
                link="MicroVeget"
-               preset="UI:TEMP:PRESET_LAND" />
-        <param ui="landscape:mvd:c"
-               type="cfg"
-               widget="sbfloat_round"
-               realtime="end_scroll"
-               ui_view="landscape:mvd:c_res"
-               ui_unit="uigcUnitPercent"
-               link="MicroVegetDensity"
                preset="UI:TEMP:PRESET_LAND" />
         <param ui="char:maxpoly:c"
                type="cfg"
