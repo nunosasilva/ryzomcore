@@ -44,12 +44,13 @@ CVegetableExtra::CVegetableExtra() : _Enabled(false)
 // ***************************************************************************
 float	CVegetableExtra::getDensityScale()
 {
-	// 0.3 is the shipped extra-mode density. The env override exists only for
+	// 1.0 is the shipped extra-mode density: the doubled bands keep the
+	// authored instance density. The env override exists only for
 	// RYZOM_VEG_VB_STATS=1 measurement runs that map the soft-VB threshold.
 	static float	scale= -1.f;
 	if(scale < 0.f)
 	{
-		scale= 0.3f;
+		scale= 1.0f;
 		if(getenv("RYZOM_VEG_VB_STATS") != NULL)
 		{
 			const char	*env= getenv("RYZOM_VEG_EXTRA_DENSITY");
