@@ -276,7 +276,11 @@ void	CTextureFile::serial(NLMISC::IStream &f)
 		_AllowDegradation= true;
 
 	if(f.isReading())
+	{
+		_FreshlyLoaded = true;
+		_PixelsReloaded = false;
 		touch();
+	}
 }
 
 
@@ -310,6 +314,8 @@ void CTextureFile::dupInfo(const CTextureFile &other)
 	_MipMapSkipAtLoad = other._MipMapSkipAtLoad;
 	_EnlargeCanvasNonPOW2Tex   = other._EnlargeCanvasNonPOW2Tex;
 	m_UntrustedMaxSize = other.m_UntrustedMaxSize;
+	_FreshlyLoaded = other._FreshlyLoaded;
+	_PixelsReloaded = other._PixelsReloaded;
 }
 
 

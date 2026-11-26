@@ -450,6 +450,8 @@ bool CDriverVulkan::createTextureImage(uint32 width, uint32 height, uint mipCoun
 	out.Usage = usage;
 	out.Format = format;
 	out.Layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	out.ImageGeneration = ++_TextureImageGeneration;
+	out.FullyUploaded = false;
 	return true;
 }
 
@@ -547,6 +549,7 @@ bool CDriverVulkan::createRenderTargetImage(ITexture &tex, CTextureVulkan &out)
 			}
 		}
 	}
+	out.FullyUploaded = true;
 	nldebug("Vulkan: %srender target %ux%u created", cube ? "cube " : "", width, height);
 	return true;
 }
@@ -718,6 +721,7 @@ VkImageView CDriverVulkan::getWhiteCubeTexture()
 		return VK_NULL_HANDLE;
 	_WhiteCubeTexture.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	_WhiteCubeTexture.Uploaded = true;
+	_WhiteCubeTexture.FullyUploaded = true;
 	return _WhiteCubeTexture.View;
 }
 
@@ -1240,6 +1244,7 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 		// NB: not "uploaded": the pixels are still the zero clear, the real
 		// ones are streamed in later through uploadTexture().
 		out.Uploaded = false;
+		out.FullyUploaded = false;
 		if (dbg)
 			nlinfo("VulkanTexDbg: '%s' image created WITHOUT pixels (cleared to zero, %u mips)", dbgName.c_str(), mipCount);
 		return true;
@@ -1605,6 +1610,7 @@ bool CDriverVulkan::uploadTextureCubeVulkan(ITexture &tex, CTextureVulkan &out)
 	out.SourceFormat = firstFace->getPixelFormat();
 	out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	out.Uploaded = true;
+	out.FullyUploaded = true;
 	return true;
 }
 
@@ -1693,6 +1699,7 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out)
 
 	out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	out.Uploaded = true;
+	out.FullyUploaded = true;
 	return true;
 }
 
@@ -1877,10 +1884,12 @@ CTextureDrvInfosVulkan *CDriverVulkan::getTextureDrvInfos(ITexture &tex, bool *c
 			{
 				const CTextureDrvInfosVulkan *hitInfo = (it == map.end()) ? NULL
 					: static_cast<const CTextureDrvInfosVulkan *>((const ITextureDrvInfos *)it->second);
-				nlinfo("VulkanTexDbg: share lookup '%s' -> %s image=%p uploaded=%d", name.c_str(),
+				nlinfo("VulkanTexDbg: share lookup '%s' -> %s image=%p uploaded=%d fully=%d gen=%u", name.c_str(),
 					(it == map.end()) ? "miss (create)" : "hit (reuse image)",
 					hitInfo ? (void *)hitInfo->Texture.Image : (void *)0,
-					hitInfo ? (int)hitInfo->Texture.Uploaded : -1);
+					hitInfo ? (int)hitInfo->Texture.Uploaded : -1,
+					hitInfo ? (int)hitInfo->Texture.FullyUploaded : -1,
+					hitInfo ? hitInfo->Texture.ImageGeneration : 0);
 			}
 			if (it == map.end())
 			{
@@ -1947,6 +1956,80 @@ bool CDriverVulkan::setupTexture(ITexture &tex)
 	return setupTextureEx(tex, true, allUploaded, false);
 }
 
+bool CDriverVulkan::canUploadInPlace(ITexture &tex, const CTextureVulkan &out) const
+{
+	if (out.Image == VK_NULL_HANDLE)
+		return false;
+	const uint32 width = tex.getWidth();
+	const uint32 height = tex.getHeight();
+	if (width == 0 || height == 0 || out.Width != width || out.Height != height)
+		return false;
+	const uint32 mips = tex.mipMapOn() ? max(1u, (uint32)tex.getMipMapCount()) : 1;
+	if (out.MipLevels != mips)
+		return false;
+	// The source representation must match: uploadTexturePixels() copies raw
+	// blocks for a compressed image and converts texels for an uncompressed
+	// one, so mixing the two would put bytes in the wrong format.
+	const VkFormat sourceFormat = (tex.getUploadFormat() == ITexture::Auto)
+		? compressedTextureFormat(tex.getPixelFormat()) : VK_FORMAT_UNDEFINED;
+	if (out.CompressFromRGBA)
+		return sourceFormat == VK_FORMAT_UNDEFINED;
+	return out.Compressed == (sourceFormat != VK_FORMAT_UNDEFINED);
+}
+
+void CDriverVulkan::markTextureFullyUploaded(ITexture &tex, uint32 imageGeneration)
+{
+	CTextureDrvInfosVulkan *info = findTextureDrvInfos(tex);
+	if (!info || info->Texture.Image == VK_NULL_HANDLE)
+		return;
+	if (imageGeneration != 0 && imageGeneration != info->Texture.ImageGeneration)
+	{
+		++_StatsSharedGenerationMismatch;
+		std::string dbgName;
+		texDbgName(tex, dbgName);
+		if (texDbgEnabled(dbgName))
+			nlinfo("VulkanTexDbg: '%s' stale stream completion gen %u (current %u), ignored",
+				dbgName.c_str(), imageGeneration, info->Texture.ImageGeneration);
+		return;
+	}
+	info->Texture.FullyUploaded = true;
+	tex.clearFreshlyLoaded();
+	tex.clearPixelsReloaded();
+	std::string dbgName;
+	texDbgName(tex, dbgName);
+	if (texDbgEnabled(dbgName))
+		nlinfo("VulkanTexDbg: '%s' shared image FULLY uploaded (gen %u)", dbgName.c_str(),
+			info->Texture.ImageGeneration);
+}
+
+bool CDriverVulkan::isTextureSharedPartial(ITexture &tex)
+{
+	if (!tex.supportSharing())
+		return false;
+	// Do not create the per-texture driver info just to answer this: doing so
+	// would turn the first creator into a share hit on an empty entry. Look at
+	// the already bound info, then at the share-name map without inserting.
+	const CTextureDrvInfosVulkan *bound = findTextureDrvInfos(tex);
+	if (bound != NULL)
+		return bound->Texture.Image == VK_NULL_HANDLE || !bound->Texture.FullyUploaded;
+	std::string name;
+	getTextureShareName(tex, name);
+	CSynchronized<TTexDrvInfoPtrMap>::CAccessor access(&_SyncTexDrvInfos);
+	TTexDrvInfoPtrMap &map = access.value();
+	ItTexDrvInfoPtrMap it = map.find(name);
+	if (it == map.end() || it->second == NULL)
+		return false;
+	const CTextureDrvInfosVulkan *info = static_cast<const CTextureDrvInfosVulkan *>(
+		(const ITextureDrvInfos *)it->second);
+	return info->Texture.Image == VK_NULL_HANDLE || !info->Texture.FullyUploaded;
+}
+
+uint32 CDriverVulkan::getTextureImageGeneration(ITexture &tex) const
+{
+	const CTextureDrvInfosVulkan *info = findTextureDrvInfos(tex);
+	return info ? info->Texture.ImageGeneration : 0;
+}
+
 bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUploaded, bool bMustRecreateSharedTexture)
 {
 	bAllUploaded = false;
@@ -1975,44 +2058,117 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 		return true;
 	}
 
-	// A shared texture found through its share name already holds the pixels
-	// another ITexture uploaded. Loading this instance's bitmap would be pure
-	// overhead (and its size is not even known before generate()), so leave the
-	// image alone unless the caller explicitly wants it recreated.
-	if (!createdInfo && tex.supportSharing() && !bMustRecreateSharedTexture)
+	const bool fresh = tex.isFreshlyLoaded();
+	const bool reload = tex.pixelsReloaded();
+	const bool shareNameHit = !createdInfo && tex.supportSharing();
+
+	std::string dbgName;
+	const bool dbg = tex.supportSharing() && (texDbgName(tex, dbgName), texDbgEnabled(dbgName));
+
+	// A live shared image is never replaced by a fresh serialized instance or
+	// by a non-pixel touch. Link when complete; wait when it is still being
+	// streamed. A synchronous (bUpload=true) caller may fill the existing
+	// image in place, but never call uploadTextureVulkan()/setTextureImage().
+	if (shareNameHit && !bMustRecreateSharedTexture)
 	{
-		// The share-name map already had an entry: another ITexture instance
-		// owns this image. CShapeBank creates the image first (setupTextureEx
-		// with bUpload=false) and streams the mips in over the next frames.
-		// Skip the upload here: the creator streams the chain and this instance
-		// links immediately, showing the zero-cleared image until the mips
-		// arrive. That is the pre-4dd79583c behaviour and it matters: making
-		// every share hit in the created-but-unstreamed window upload the same
-		// mips again multiplied the shape-bank byte budget and delayed object
-		// linking (the recent pop-in).
-		// NLVK_SHARED_STREAM_DUP=1 restores the duplicate streaming for A/B;
-		// NLVK_NO_SHARED_STREAM=1 is kept as the explicit "skip" switch.
-		static const bool duplicateStream = getenv("NLVK_SHARED_STREAM_DUP") != NULL;
-		static const bool noSharedStream = getenv("NLVK_NO_SHARED_STREAM") != NULL;
-		if (vk.Uploaded || noSharedStream || !duplicateStream)
+		if (vk.Image != VK_NULL_HANDLE)
 		{
+			const bool freshOrTouch = fresh || !reload;
+			if (freshOrTouch)
+			{
+				if (vk.FullyUploaded)
+				{
+					updateTextureSampler(tex, vk);
+					tex.clearTouched();
+					tex.clearFreshlyLoaded();
+					tex.clearPixelsReloaded();
+					bAllUploaded = true;
+					if (dbg)
+						nlinfo("VulkanTexDbg: '%s' share hit on complete image, linked", dbgName.c_str());
+					return true;
+				}
+				if (!bUpload)
+				{
+					if (dbg)
+						nlinfo("VulkanTexDbg: '%s' share hit partial, waiting for creator", dbgName.c_str());
+					return false;
+				}
+				// A synchronous caller must not leave a partial image behind.
+				// Fill the live image in place, or build a complete replacement
+				// if this instance's file is actually incompatible.
+				tex.generate();
+				if (!canUploadInPlace(tex, vk))
+				{
+					if (dbg)
+						nlinfo("VulkanTexDbg: '%s' fresh share hit incompatible, building a complete replacement", dbgName.c_str());
+					CTextureVulkan created;
+					if (!uploadTextureVulkan(tex, created, true))
+						return false;
+					setTextureImage(*info, created);
+					updateTextureSampler(tex, info->Texture);
+					tex.clearTouched();
+					tex.clearFreshlyLoaded();
+					tex.clearPixelsReloaded();
+					bAllUploaded = true;
+					return true;
+				}
+				if (!uploadTexturePixels(tex, vk))
+					return false;
+				vk.FullyUploaded = true;
+				updateTextureSampler(tex, vk);
+				tex.clearTouched();
+				tex.clearFreshlyLoaded();
+				tex.clearPixelsReloaded();
+				bAllUploaded = true;
+				if (dbg)
+					nlinfo("VulkanTexDbg: '%s' share hit filled in place", dbgName.c_str());
+				return true;
+			}
+
+			// Real pixel reload: update the live image in place when the
+			// representation is compatible; otherwise build the complete new
+			// image first, then swap it in. setTextureImage() defers the old
+			// image's destruction until no in-flight frame can use it.
+			tex.generate();
+			if (canUploadInPlace(tex, vk))
+			{
+				if (!uploadTexturePixels(tex, vk))
+					return false;
+				vk.FullyUploaded = true;
+				updateTextureSampler(tex, vk);
+				tex.clearTouched();
+				tex.clearFreshlyLoaded();
+				tex.clearPixelsReloaded();
+				bAllUploaded = true;
+				if (dbg)
+					nlinfo("VulkanTexDbg: '%s' reload updated in place", dbgName.c_str());
+				return true;
+			}
+			CTextureVulkan created;
+			if (!uploadTextureVulkan(tex, created, true))
+				return false;
+			setTextureImage(*info, created);
+			updateTextureSampler(tex, info->Texture);
 			tex.clearTouched();
+			tex.clearFreshlyLoaded();
+			tex.clearPixelsReloaded();
 			bAllUploaded = true;
+			if (dbg)
+				nlinfo("VulkanTexDbg: '%s' reload swapped in complete image gen %u", dbgName.c_str(),
+					info->Texture.ImageGeneration);
 			return true;
 		}
-		std::string dbgName;
-		texDbgName(tex, dbgName);
-		if (texDbgEnabled(dbgName))
-			nlinfo("VulkanTexDbg: '%s' shared image has no pixels yet, letting the caller stream it", dbgName.c_str());
 	}
 
 	if (vk.Image != VK_NULL_HANDLE && !bMustRecreateSharedTexture && !tex.touched())
-		return true;
-
-	if (vk.Image != VK_NULL_HANDLE && !bMustRecreateSharedTexture &&
-		vk.Width == tex.getWidth() && vk.Height == tex.getHeight())
 	{
-		// Same size: update the pixels in place so that nothing is destroyed
+		bAllUploaded = vk.FullyUploaded;
+		return true;
+	}
+
+	if (vk.Image != VK_NULL_HANDLE && !bMustRecreateSharedTexture && canUploadInPlace(tex, vk))
+	{
+		// Same image: update the pixels in place so that nothing is destroyed
 		// while commands reference it (animated textures hit this path a lot).
 		if (bUpload)
 		{
@@ -2028,6 +2184,7 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 			{
 				if (!uploadTexturePixels(tex, vk))
 					return false;
+				vk.FullyUploaded = true;
 			}
 			else
 			{
@@ -2038,18 +2195,37 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 						return false;
 				}
 			}
+			tex.clearFreshlyLoaded();
+			tex.clearPixelsReloaded();
 		}
 		tex.clearTouched();
 		bAllUploaded = bUpload;
 		return true;
 	}
 
+	// New image. A real reload or a forced recreate must be complete before
+	// it replaces the old one; a fresh creator with bUpload=false creates the
+	// zeroed image that ShapeBank streams into.
+	const bool fullCreate = bUpload || reload || (bMustRecreateSharedTexture && !createdInfo);
+	if (!fullCreate && !createdInfo && tex.supportSharing() && vk.Image != VK_NULL_HANDLE)
+	{
+		// This path must not be reached: a share hit is handled above.
+		++_StatsSharedRecreatedFromNoUpload;
+		nlwarning("Vulkan: shared image recreated from a bUpload=false caller (count %llu)",
+			(unsigned long long)_StatsSharedRecreatedFromNoUpload);
+	}
 	CTextureVulkan created;
-	if (!uploadTextureVulkan(tex, created, bUpload))
+	if (!uploadTextureVulkan(tex, created, fullCreate))
 		return false;
 	setTextureImage(*info, created);
+	updateTextureSampler(tex, info->Texture);
 	tex.clearTouched();
-	bAllUploaded = bUpload;
+	if (fullCreate)
+	{
+		tex.clearFreshlyLoaded();
+		tex.clearPixelsReloaded();
+	}
+	bAllUploaded = fullCreate;
 	return true;
 }
 
@@ -2071,10 +2247,24 @@ bool CDriverVulkan::uploadTexture(ITexture &tex, CRect &rect, uint8 nNumMipMap)
 	if (info->Texture.Image == VK_NULL_HANDLE ||
 		info->Texture.Width != tex.getWidth() || info->Texture.Height != tex.getHeight())
 	{
+		// A fresh serialized texture must never replace a live shared image.
+		// ShapeBank waits for the creator; this guard is the last line of
+		// defence if another caller reaches the streaming API directly.
+		if (info->Texture.Image != VK_NULL_HANDLE && tex.supportSharing() &&
+			tex.isFreshlyLoaded() && !tex.pixelsReloaded())
+		{
+			++_StatsSharedRecreatedFromNoUpload;
+			nlwarning("Vulkan: refusing to replace live shared image '%s' from a bUpload=false caller (count %llu)",
+				tex.getShareName().c_str(), (unsigned long long)_StatsSharedRecreatedFromNoUpload);
+			return false;
+		}
+		const bool fullCreate = tex.pixelsReloaded();
 		CTextureVulkan created;
-		if (!uploadTextureVulkan(tex, created, false))
+		if (!uploadTextureVulkan(tex, created, fullCreate))
 			return false;
 		setTextureImage(*info, created);
+		if (fullCreate)
+			markTextureFullyUploaded(tex, info->Texture.ImageGeneration);
 	}
 
 	return uploadTextureRegion(tex, info->Texture, rect, nNumMipMap);

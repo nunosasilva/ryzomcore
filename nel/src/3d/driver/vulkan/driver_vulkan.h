@@ -386,6 +386,7 @@ struct CTextureVulkan
 	CTextureVulkan()
 		: Image(VK_NULL_HANDLE), Memory(VK_NULL_HANDLE), MemorySize(0), View(VK_NULL_HANDLE), Sampler(VK_NULL_HANDLE)
 		, Framebuffer(VK_NULL_HANDLE), Width(0), Height(0), MipLevels(1), Layers(1), Cube(false), HasAlpha(false), Uploaded(false)
+		, FullyUploaded(false), ImageGeneration(0)
 		, Compressed(false), CompressFromRGBA(false), SourceFormat(CBitmap::DonTKnow), Format(VK_FORMAT_UNDEFINED), Usage(0)
 		, Layout(VK_IMAGE_LAYOUT_UNDEFINED), DepthTarget(-1)
 	{
@@ -428,6 +429,13 @@ struct CTextureVulkan
 	bool			Cube;
 	bool			HasAlpha;
 	bool			Uploaded;
+	/// True only when every mip/face of this image generation has been
+	/// uploaded. A region upload sets Uploaded but not this; ShapeBank marks it
+	/// when its per-mip stream finishes.
+	bool			FullyUploaded;
+	/// Bumped whenever a new VkImage is created for this slot. A completion
+	/// from an older stream must not mark a newer image complete.
+	uint32			ImageGeneration;
 	/// True when the pixels are kept compressed (DXTC uploaded as a BC
 	/// format), which makes the driver keep the texture bitmap compressed and
 	/// upload raw blocks instead of converting every texel to RGBA.
@@ -602,6 +610,9 @@ public:
 	virtual bool isTextureExist(const ITexture &tex) override;
 	virtual bool setupTexture(ITexture &tex) override;
 	virtual bool setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUploaded, bool bMustRecreateSharedTexture) override;
+	virtual void markTextureFullyUploaded(ITexture &tex, uint32 imageGeneration = 0) override;
+	virtual bool isTextureSharedPartial(ITexture &tex) override;
+	virtual uint32 getTextureImageGeneration(ITexture &tex) const override;
 	virtual bool uploadTexture(ITexture &tex, NLMISC::CRect &rect, uint8 nNumMipMap) override;
 	virtual bool uploadTextureCube(ITexture &tex, NLMISC::CRect &rect, uint8 nNumMipMap, uint8 nNumFace) override;
 	virtual void forceDXTCCompression(bool dxtcComp) override;
@@ -1656,6 +1667,9 @@ private:
 	uint32					_StagingRingIdleFrames;
 	/// Upload all mip levels of the bitmap.
 	bool					uploadTexturePixels(ITexture &tex, CTextureVulkan &out);
+	/// True when the current bitmap can be uploaded into an existing image
+	/// without changing its size/mip chain/representation.
+	bool					canUploadInPlace(ITexture &tex, const CTextureVulkan &out) const;
 	/// Upload a sub-rectangle of one mip level, leaving the rest of the image
 	/// intact (used by touchRect() and uploadTexture()).
 	bool					uploadTextureRegion(ITexture &tex, CTextureVulkan &out, const NLMISC::CRect &rect, uint mipLevel);
@@ -1806,8 +1820,16 @@ private:
 	/// Bumped when a texture drv infos is destroyed, so a recycled ITexture
 	/// address can never match a cached stage entry.
 	uint64					_TextureGeneration;
+	/// Image generation for CTextureVulkan::ImageGeneration. Bumped for every
+	/// created VkImage so stale stream completions are detectable.
+	uint32					_TextureImageGeneration;
 	uint64					_StatsTexInfoHits;
 	uint64					_StatsTexInfoMisses;
+	/// Must stay 0: a fresh serialized texture must never replace a live
+	/// shared image through a bUpload=false caller.
+	uint64					_StatsSharedRecreatedFromNoUpload;
+	/// A stream completion arrived for an older image generation.
+	uint64					_StatsSharedGenerationMismatch;
 	/// NLVK_STATS: sampler cache activity, per window. Lookups include the
 	/// hits; creates counts the vkCreateSampler calls since startup.
 	uint64					_StatsSamplerLookups;

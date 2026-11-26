@@ -411,6 +411,20 @@ public:
 	virtual bool			setupTextureEx(	ITexture &tex, bool bUpload, bool &bAllUploaded,
 											bool bMustRecreateSharedTexture = false) = 0;
 
+	/** Mark a shared image as completely uploaded (all mips/faces). The
+	 *  optional image generation makes a stale completion from an older image
+	 *  harmless. Drivers that do not cache shared images ignore it.
+	 */
+	virtual void			markTextureFullyUploaded(ITexture &/*tex*/, uint32 /*imageGeneration*/ = 0) {}
+
+	/** True when a live shared image for this texture exists but some mips are
+	 *  still missing. ShapeBank keeps the caller in AsyncLoad_Texture.
+	 */
+	virtual bool			isTextureSharedPartial(ITexture &/*tex*/) { return false; }
+
+	/// Generation of the current shared image (0 when there is none).
+	virtual uint32			getTextureImageGeneration(ITexture &/*tex*/) const { return 0; }
+
 	/** The texture must be created or uploadTexture do nothing.
 	 *  These function can be used to upload piece by piece a texture. Use it in conjunction with setupTextureEx(..., false);
 	 *  For compressed textures, the rect must aligned on pixel block. (a block of pixel size is 4x4 pixels).
