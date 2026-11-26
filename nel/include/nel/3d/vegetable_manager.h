@@ -186,6 +186,14 @@ public:
 		float	bendFactor, float bendPhase, float bendFreqFactor, float blendDistMax,
 		TVegetableWater vegetWaterState, CVegetableUV8 dlmUV);
 
+	/** Setup a density multiplicator [0,1], for performance reason for instance
+	 */
+	void			setGlobalDensity(float density);
+
+	/** Get density multiplicator [0,1], for performance reason for instance
+	 */
+	float			getGlobalDensity() const {return _GlobalDensity;}
+
 	/** Opt-in doubled microvegetation distance. Set it before the first
 	 *	vegetable block is created.
 	 */
@@ -330,6 +338,9 @@ private:
 	CVector											_DirectionalLight;
 	NLMISC::CRGBA									_GlobalAmbient;
 	NLMISC::CRGBA									_GlobalDiffuse;
+
+	/// Global Vegetable Density
+	float											_GlobalDensity;
 
 	/// profile
 	uint											_NumVegetableFaceRendered;

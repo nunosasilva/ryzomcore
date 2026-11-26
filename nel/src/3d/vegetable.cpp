@@ -138,6 +138,9 @@ void	CVegetable::generateGroupEx(float nbInst, const CVector &posInWorld, const 
 	// modulate density with angleFactor.
 	nbInst*= angleFact;
 
+	// modulate result by Global Manager density
+	nbInst*= _Manager->getGlobalDensity();
+
 	// Stock passes 1.0; the extra path keeps the authored density (1.0).
 	nbInst*= densityScale;
 

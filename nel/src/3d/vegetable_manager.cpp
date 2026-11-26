@@ -60,6 +60,7 @@ CVegetableManager::CVegetableManager(uint maxVertexVbHardUnlit, uint maxVertexVb
 	_ClipBlockMemory(NL3D_VEGETABLE_CLIP_BLOCK_BLOCKSIZE),
 	_SortBlockMemory(NL3D_VEGETABLE_SORT_BLOCK_BLOCKSIZE),
 	_InstanceGroupMemory(NL3D_VEGETABLE_INSTANCE_GROUP_BLOCKSIZE),
+	_GlobalDensity(1.f),
 	_NumZSortBlendLayers(nbBlendLayers), _ZSortLayerDistMax(blendLayerDistMax),
 	_ZSortScene(nullptr)
 {
@@ -1950,6 +1951,13 @@ void			CVegetableManager::swapIgRdrPassHardMode(CVegetableInstanceGroup *ig, uin
 	vegetRdrPass.HardMode= !vegetRdrPass.HardMode;
 }
 
+
+// ***************************************************************************
+void		CVegetableManager::setGlobalDensity(float density)
+{
+	clamp(density, 0.f, 100.f);
+	_GlobalDensity= density;
+}
 
 // ***************************************************************************
 void		CVegetableManager::setExtraEnabled(bool enabled)

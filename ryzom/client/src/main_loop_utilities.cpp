@@ -189,6 +189,13 @@ void updateFromClientCfg()
 		}
 	}
 
+	//---------------------------------------------------
+	if (ClientCfg.MicroVegetDensity != LastClientCfg.MicroVegetDensity)
+	{
+		// Density (percentage to ratio)
+		if (Landscape) Landscape->setVegetableDensity(ClientCfg.MicroVegetDensity/100.f);
+	}
+
 	// GRAPHICS - SPECIAL EFFECTS
 	//---------------------------------------------------
 	if (ClientCfg.FxNbMaxPoly != LastClientCfg.FxNbMaxPoly)

@@ -3544,6 +3544,37 @@ void		CLandscape::setupColorsFromTileFlags(const NLMISC::CRGBA colors[4])
 }
 
 // ***************************************************************************
+void		CLandscape::setVegetableDensity(float density)
+{
+	// if the density is really different from what actually setuped
+	if(density!=_VegetableManager->getGlobalDensity())
+	{
+		_VegetableManager->setGlobalDensity(density);
+
+		// must recreate all vegetables IGs
+		for(ItZoneMap it= Zones.begin();it!=Zones.end();it++)
+		{
+			// for all patch.
+			sint	N= (*it).second->getNumPatchs();
+			for(sint i=0;i<N;i++)
+			{
+				// delete vegetable Igs of this patch
+				CPatch	*pa= ((*it).second)->getPatch(i);
+				pa->deleteAllVegetableIgs();
+				// then recreate vegetable Igs of this patch
+				pa->recreateAllVegetableIgs();
+			}
+		}
+	}
+}
+
+// ***************************************************************************
+float		CLandscape::getVegetableDensity() const
+{
+	return _VegetableManager->getGlobalDensity();
+}
+
+// ***************************************************************************
 // ***************************************************************************
 // Lightmap Get interface.
 // ***************************************************************************
