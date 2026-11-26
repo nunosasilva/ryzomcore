@@ -1761,17 +1761,42 @@ VkBuffer CDriverVulkan::createDedicatedVertexUpload(uint32 size, void *&mapped)
 VkBuffer CDriverVulkan::getIndexUploadBuffer(const void *data, uint32 size, uint32 stride)
 {
 	(void)stride;
+	const uint32 alignedSize = (size + 3) & ~3u;
 	const uint64 required = (uint64)_IndexRingOffset + size;
 	if (_IndexRing == VK_NULL_HANDLE || required > (uint64)_IndexRingFrameBase + _IndexRingHalf)
 	{
+		// Record how much this generation used before a growth replaces it.
+		// A mid-frame growth starts a new generation in a new buffer and the
+		// old one stays alive until submit; the ring half only has to fit one
+		// generation, so the high-water is the peak of those, not their sum.
+		const uint64 used = _IndexRingOffset - _IndexRingFrameBase;
+		if (used > _IndexRingFrameHighWater)
+			_IndexRingFrameHighWater = used;
 		// Each frame has its own half: the previous frame may still be reading
 		// the indices it copied at the same offsets. Cap it like the vertex
 		// ring (see nextRingSize()).
 		const uint32 newSize = nextRingSize(_IndexRingSize, 2u * 1024u * 1024u, size, NL_VK_INDEX_RING_MAX);
 		if (newSize == 0)
 		{
-			nlwarning("Vulkan: index ring would exceed %u MiB for a %u-byte upload (ring %u MiB)",
-				NL_VK_INDEX_RING_MAX / (1024u * 1024u), size, _IndexRingSize / (1024u * 1024u));
+			++_StatsIndexRingDrops;
+			_StatsIndexRingDropBytes += size;
+			++_IndexRingFrameDrops;
+			_IndexRingFrameDropBytes += size;
+			// This generation is full; its real requirement is what it holds
+			// plus every upload the cap refused (offset does not advance).
+			const uint64 needed = (_IndexRingOffset - _IndexRingFrameBase) + _IndexRingFrameDropBytes;
+			if (needed > _IndexRingFrameHighWater)
+				_IndexRingFrameHighWater = needed;
+			// Warn once per frame: the zone load that first hit this limit
+			// logged 17,076 identical warnings and rotated the log.
+			if (!_IndexRingDropReported)
+			{
+				_IndexRingDropReported = true;
+				nlwarning("Vulkan: index ring would exceed %u MiB for a %u-byte upload (ring %u MiB, %llu KiB requested in this half); dropping dynamic index draws",
+					NL_VK_INDEX_RING_MAX / (1024u * 1024u), size,
+					_IndexRingSize / (1024u * 1024u),
+					(unsigned long long)(needed / 1024));
+			}
 			return VK_NULL_HANDLE;
 		}
 		VkBufferCreateInfo bci;
@@ -1824,7 +1849,10 @@ VkBuffer CDriverVulkan::getIndexUploadBuffer(const void *data, uint32 size, uint
 	_IndexRingOffset = (_IndexRingOffset + 3) & ~3u;
 	memcpy((uint8 *)_IndexRingMapped + _IndexRingOffset, data, size);
 	_IndexRingDrawOffset = _IndexRingOffset;
-	_IndexRingOffset += (size + 3) & ~3u;
+	_IndexRingOffset += alignedSize;
+	const uint64 used = _IndexRingOffset - _IndexRingFrameBase;
+	if (used > _IndexRingFrameHighWater)
+		_IndexRingFrameHighWater = used;
 	return _IndexRing;
 }
 

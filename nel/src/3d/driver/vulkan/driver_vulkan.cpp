@@ -229,6 +229,10 @@ CDriverVulkan::CDriverVulkan()
 	_IndexRingDrawOffset = 0;
 	_IndexRingFrameBase = 0;
 	_IndexRingHalf = 0;
+	_IndexRingFrameHighWater = 0;
+	_IndexRingFrameDrops = 0;
+	_IndexRingFrameDropBytes = 0;
+	_IndexRingDropReported = false;
 	_UniformRing = VK_NULL_HANDLE;
 	_UniformRingMemory = VK_NULL_HANDLE;
 	_UniformRingMapped = NULL;
@@ -415,6 +419,11 @@ CDriverVulkan::CDriverVulkan()
 	_StatsUniformHighWater = 0;
 	_StatsUniformHighWaterMax = 0;
 	_StatsUniformRingMax = 0;
+	_StatsIndexRingHighWater = 0;
+	_StatsIndexRingHighWaterMax = 0;
+	_StatsIndexRingSizeMax = 0;
+	_StatsIndexRingDrops = 0;
+	_StatsIndexRingDropBytes = 0;
 	_StatsVertexRingDrops = 0;
 	_StatsVertexRingDropBytes = 0;
 	_StatsVertexRingHighWater = 0;
@@ -2284,6 +2293,10 @@ bool CDriverVulkan::beginFrame()
 	_RenderTargetFace = 0;
 	_IndexRingFrameBase = _FrameIndex * _IndexRingHalf;
 	_IndexRingOffset = _IndexRingFrameBase;
+	_IndexRingFrameHighWater = 0;
+	_IndexRingFrameDrops = 0;
+	_IndexRingFrameDropBytes = 0;
+	_IndexRingDropReported = false;
 	// The texture staging ring may already hold data allocated between the
 	// previous frame and this one (a texture the engine set up outside a frame);
 	// those copies are replayed into this frame, so their bytes must survive.
@@ -2592,7 +2605,25 @@ bool CDriverVulkan::swapBuffers()
 			_StatsVertexRingHighWaterMax = vertexUsed;
 		if (_VertexRingSize > _StatsVertexRingSizeMax)
 			_StatsVertexRingSizeMax = _VertexRingSize;
+
+		const uint64 indexUsed = _IndexRingFrameHighWater;
+		if (indexUsed > _StatsIndexRingHighWater)
+			_StatsIndexRingHighWater = indexUsed;
+		if (indexUsed > _StatsIndexRingHighWaterMax)
+			_StatsIndexRingHighWaterMax = indexUsed;
+		if (_IndexRingSize > _StatsIndexRingSizeMax)
+			_StatsIndexRingSizeMax = _IndexRingSize;
 	}
+
+	// One line per frame that lost indices, even without NLVK_STATS: a zone
+	// load used to log one warning per dropped upload (17,076 in the 2560x1440
+	// Fairhaven teleport), which buried the rest of the log. The per-upload
+	// warning is now only the first drop; this is the frame total.
+	if (_IndexRingFrameDrops)
+		nlinfo("Vulkan: index ring dropped %llu index uploads (%llu KiB) in the frame that just ended (ring %u MiB, %u MiB per half)",
+			(unsigned long long)_IndexRingFrameDrops,
+			(unsigned long long)(_IndexRingFrameDropBytes / 1024),
+			_IndexRingSize / (1024u * 1024u), _IndexRingSize / (1024u * 1024u) / 2);
 
 	if ((_SwapBufferCounter % 600) == 0)
 		nldebug("Vulkan: frame %llu, %u vertex draws, %u indexed draws, %u pipelines, %llu target binds, %llu MB textures",
@@ -2715,6 +2746,12 @@ bool CDriverVulkan::swapBuffers()
 				(unsigned long long)(_StatsVertexRingSizeMax / 1024),
 				(unsigned long long)_StatsVertexRingDrops,
 				(unsigned long long)(_StatsVertexRingDropBytes / (1024ull * 1024ull)));
+			nlinfo("Vulkan stats: index ring high-water %llu KiB/frame (max %llu KiB), size %u KiB (max %u KiB), drops %llu (%llu MiB)",
+				(unsigned long long)(_StatsIndexRingHighWater / 1024),
+				(unsigned long long)(_StatsIndexRingHighWaterMax / 1024),
+				_IndexRingSize / 1024, _StatsIndexRingSizeMax / 1024,
+				(unsigned long long)_StatsIndexRingDrops,
+				(unsigned long long)(_StatsIndexRingDropBytes / (1024ull * 1024ull)));
 			_StatsTexInfoHits = 0;
 			_StatsTexInfoMisses = 0;
 			_StatsSamplerLookups = 0;
@@ -2733,6 +2770,7 @@ bool CDriverVulkan::swapBuffers()
 			_StatsWindowFrames = 0;
 			_StatsUniformHighWater = 0;
 			_StatsVertexRingHighWater = 0;
+			_StatsIndexRingHighWater = 0;
 			_StatsDraws = 0;
 			_StatsOcclusionIssued = 0;
 			_StatsOcclusionHarvested = 0;

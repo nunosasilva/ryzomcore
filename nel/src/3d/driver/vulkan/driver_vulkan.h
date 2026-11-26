@@ -82,8 +82,19 @@ const uint32 NL_VK_STAGING_RING_MAX = 64u * 1024u * 1024u;
 // 64-bit math and returns 0 above the cap, keeping the old ring. The 512k-cap
 // all-hard path needs up to ~30.7 MiB once.
 const uint32 NL_VK_VERTEX_RING_MAX = 2u * 1024u * 1024u * 1024u;
-const uint32 NL_VK_INDEX_RING_MAX = 64u * 1024u * 1024u;
-// The stock 50m vegetation fits the 64 MiB ring, but the 100m
+// Every indexed draw copies its indices into this per-frame ring: vegetation
+// sorted blocks and instance groups, landscape/polygon drawers, meshes, skinned
+// meshes and UI quads. A loading screen can record a whole zone inside one
+// "frame" (no swapBuffers for tens of seconds), so the ring must retain every
+// index upload that frame's command buffer draws from. A 64 MiB ring (32 MiB
+// per-frame half) was filled by the dense 2560x1440 Fairhaven teleport at
+// density 1.0 with the loose far-band vegetsets: 17,076 uploads were dropped,
+// 7.43 MiB of index data after the 32 MiB half filled, so the loaded frame
+// needed ~40 MiB and its last vegetation/landscape draws vanished. 256 MiB
+// gives a 128 MiB half, like the uniform ring; the ring still only grows when
+// a frame needs it, so stock sessions keep the smaller ring.
+const uint32 NL_VK_INDEX_RING_MAX = 256u * 1024u * 1024u;
+// The stock 50m vegetation fits the 64 MiB uniform ring, but the 100m
 // MicroVegetExtra mode roughly quadruples the vegetation draws (measured
 // ~3.1k total draws at the Silan camp vs ~1.8k stock). Its per-frame half of
 // 32 MiB is just short there: the ring reached the cap and the last draws of
@@ -1303,6 +1314,16 @@ private:
 	uint32					_StatsUniformHighWater;
 	uint32					_StatsUniformHighWaterMax;
 	uint32					_StatsUniformRingMax;
+	/// NLVK_STATS: index-ring per-frame high-water (bytes) in the current
+	/// window and over the run, the largest ring reached, and the cumulative
+	/// dropped uploads. The high-water is the peak use of one ring generation
+	/// plus the bytes its dropped uploads asked for, so a run that hits the cap
+	/// still reports the half size a frame really needed.
+	uint64					_StatsIndexRingHighWater;
+	uint64					_StatsIndexRingHighWaterMax;
+	uint32					_StatsIndexRingSizeMax;
+	uint64					_StatsIndexRingDrops;
+	uint64					_StatsIndexRingDropBytes;
 	uint64					_StatsLastTargetBinds;
 	/// Compile a glsl3vi snippet into the mega VP variants it can select.
 	bool					compileInsertVertexProgram(CVertexProgram *program, IProgram::CSource *insertSrc);
@@ -1736,6 +1757,17 @@ private:
 	/// Per-frame halves, same reason as the uniform ring.
 	uint32					_IndexRingFrameBase;
 	uint32					_IndexRingHalf;
+	/// Largest usage of any ring generation in the frame being recorded.
+	/// A mid-frame growth starts a new generation (the old buffer stays alive
+	/// separately until submit), so the half only has to fit one generation;
+	/// the peak is what the shader-visible half must hold. Dropped bytes are
+	/// included, so a frame that hits the cap reports what it really needed.
+	uint64					_IndexRingFrameHighWater;
+	/// Uploads dropped because the half was full, and the bytes they asked
+	/// for. The first drop warns; the frame total is reported at swap.
+	uint64					_IndexRingFrameDrops;
+	uint64					_IndexRingFrameDropBytes;
+	bool					_IndexRingDropReported;
 
 	// --- Cached draw state ---
 	CMatrix					_GLProjMat;
