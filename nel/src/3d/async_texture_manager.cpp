@@ -577,6 +577,8 @@ bool			CAsyncTextureManager::uploadTexturePart(ITexture *pText, IDriver *pDriver
 			return false;
 	}
 
+	// Every mip is in the image: sharing shapes no longer need to wait.
+	pDriver->markTextureFullyUploaded(*pText);
 	return true;
 }
 
