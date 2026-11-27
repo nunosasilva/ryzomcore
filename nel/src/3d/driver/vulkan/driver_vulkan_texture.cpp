@@ -1063,6 +1063,10 @@ bool CDriverVulkan::clearTextureImage(CTextureVulkan &out, uint32 mipCount)
 	if (out.Image == VK_NULL_HANDLE || mipCount == 0)
 		return false;
 
+	if (mipCount > MaxTextureCopyRegions)
+		nlwarning("Vulkan: clearing %u mips of a %ux%u image exceeds the %u-region batch",
+			mipCount, out.Width, out.Height, MaxTextureCopyRegions);
+
 	VkExtent3D extent;
 	VkDeviceSize levelBytes = 0;
 	if (!textureLevelLayout(out.Format, out.Width, out.Height, extent, levelBytes) || levelBytes == 0)
@@ -1619,6 +1623,9 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out)
 		return false;
 
 	const uint32 mipCount = out.MipLevels ? out.MipLevels : 1;
+	if (mipCount > MaxTextureCopyRegions)
+		nlwarning("Vulkan: uploading %u mips of a %ux%u image exceeds the %u-region batch",
+			mipCount, out.Width, out.Height, MaxTextureCopyRegions);
 
 	// Compressed textures are copied straight from the CBitmap: its mip chain
 	// is already DXT data, so nothing is converted or generated on the CPU.
@@ -1949,6 +1956,31 @@ bool CDriverVulkan::isTextureSharedPartial(const ITexture &tex)
 		return false;
 	const CTextureDrvInfosVulkan *info = findTextureDrvInfos(tex);
 	return info != NULL && info->Texture.Image != VK_NULL_HANDLE && !info->Texture.FullyUploaded;
+}
+
+bool CDriverVulkan::isTextureSharedCompatible(const ITexture &tex)
+{
+	const CTextureDrvInfosVulkan *info = findTextureDrvInfos(tex);
+	if (!info || info->Texture.Image == VK_NULL_HANDLE)
+		return false;
+
+	const CTextureVulkan &vk = info->Texture;
+	if (vk.Width != tex.getWidth() || vk.Height != tex.getHeight())
+		return false;
+	if (tex.mipMapOn() && vk.MipLevels != tex.getMipMapCount())
+		return false;
+	if (vk.SourceFormat != tex.getPixelFormat())
+		return false;
+
+	// The image format was chosen from the source format at creation time.
+	// Compare the two flags that also affect it (BC1/BC3 selection and the
+	// ForceDXTC RGBA->BC3 path); the name-only share key cannot see them.
+	const bool compressed = tex.getUploadFormat() == ITexture::Auto &&
+		compressedTextureFormat(tex.getPixelFormat()) != VK_FORMAT_UNDEFINED;
+	const bool compressFromRGBA = !compressed && _ForceDXTCCompression && _SupportsBC &&
+		tex.getUploadFormat() == ITexture::Auto && tex.getPixelFormat() == CBitmap::RGBA &&
+		tex.allowDegradation();
+	return vk.Compressed == compressed && vk.CompressFromRGBA == compressFromRGBA;
 }
 
 void CDriverVulkan::markTextureFullyUploaded(ITexture &tex)

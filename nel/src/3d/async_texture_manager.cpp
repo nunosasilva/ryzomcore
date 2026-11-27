@@ -510,20 +510,50 @@ bool			CAsyncTextureManager::uploadTexturePart(ITexture *pText, IDriver *pDriver
 		}
 		else
 		{
-			// Create the texture only and do not upload anything
+			// Create the texture only and do not upload anything.
+			//
+			// The legacy path passed bMustRecreateSharedTexture=true to force
+			// an image with this async entry's (coarse) size. That destroys a
+			// live shared image (the full shape/material image other objects
+			// sample) and swaps in the coarse one before it is streamed: the
+			// widespread partial/black-texture artifact. Drivers that track
+			// shared image state keep the live image instead:
+			//  - complete: nothing to stream, use it as is;
+			//  - partial and compatible: stream the mips into it in place;
+			//  - partial and incompatible: refuse to stream, never replace it;
+			//  - no image: create it, then stream below.
 			bool isRel = pText->getReleasable ();
 			pText->setReleasable (false);
 			bool isAllUploaded = false;
-			/* Even if the shared texture is still referenced and so still exist in driver, we MUST recreate with good size
-				the texture. This is important for Texture Memory Load Balancing
-				(this may means that is used elsewhere than in the CAsyncTextureManager)
-				Hence: bMustRecreateSharedTexture==true
-			*/
-			pDriver->setupTextureEx (*pText, false, isAllUploaded, true);
+			const bool sharedStreaming = pDriver->supportsSharedImageStreaming();
+			const bool setupOk = sharedStreaming
+				? pDriver->setupTextureEx (*pText, false, isAllUploaded, false)
+				: pDriver->setupTextureEx (*pText, false, isAllUploaded, true);
 			pText->setReleasable (isRel);
-			// if the texture is already uploaded, abort partial uploading.
+
+			// The image is complete (possibly created by another owner): use it.
 			if (isAllUploaded)
 				return true;
+
+			if (sharedStreaming && !setupOk)
+			{
+				if (!pDriver->isTextureSharedPartial(*pText))
+				{
+					nlwarning("AsyncTexture: setupTextureEx failed for '%s'", pText->getShareName().c_str());
+					return false;
+				}
+				if (!pDriver->isTextureSharedCompatible(*pText))
+				{
+					// Another owner has a live image with a different
+					// representation (typically the full shape image while this
+					// entry is a coarse LOD). Streaming into it would corrupt
+					// that image; replacing it would corrupt every other user.
+					nlwarning("AsyncTexture: not streaming '%s': existing shared image has a different representation",
+						pText->getShareName().c_str());
+					return true;
+				}
+				// Compatible and partially streamed: fill it in place below.
+			}
 		}
 	}
 

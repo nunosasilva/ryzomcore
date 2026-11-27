@@ -628,6 +628,8 @@ public:
 	virtual bool isTextureExist(const ITexture &tex) override;
 	virtual bool isTextureSharedPartial(const ITexture &tex) override;
 	virtual void markTextureFullyUploaded(ITexture &tex) override;
+	virtual bool supportsSharedImageStreaming() override { return true; }
+	virtual bool isTextureSharedCompatible(const ITexture &tex) override;
 	virtual bool setupTexture(ITexture &tex) override;
 	virtual bool setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUploaded, bool bMustRecreateSharedTexture) override;
 	virtual bool uploadTexture(ITexture &tex, NLMISC::CRect &rect, uint8 nNumMipMap) override;
@@ -1614,7 +1616,7 @@ private:
 	uint32					_UploadCopyCount;
 	/// Mip levels one copy command can span (16 covers any texture the engine
 	/// can produce: 2^16 texels are not representable anyway).
-	static const uint		MaxTextureCopyRegions = 16;
+	static const uint		MaxTextureCopyRegions = 32;
 	/// One image copy: layout transitions around a vkCmdCopyBufferToImage, or a
 	/// layout-only transition when RegionCount is 0.
 	struct STextureCopy

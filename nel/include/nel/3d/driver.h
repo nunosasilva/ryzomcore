@@ -405,6 +405,20 @@ public:
 	 */
 	virtual void			markTextureFullyUploaded(ITexture &/*tex*/) {}
 
+	/** True when the driver tracks whether a shared image is complete and can
+	 *	stream into a compatible partial shared image in place. The async
+	 *	texture manager uses the legacy full-recreate path on drivers that
+	 *	do not expose this state.
+	 */
+	virtual bool			supportsSharedImageStreaming() { return false; }
+
+	/** True when the existing driver image for this texture has the same
+	 *	representation (width, height, mip count and source format) as the
+	 *	texture. Only meaningful when isTextureSharedPartial() is true and
+	 *	supportsSharedImageStreaming() is true.
+	 */
+	virtual bool			isTextureSharedCompatible(const ITexture &/*tex*/) { return false; }
+
 	/** setup a texture, generate and upload if needed. same as setupTextureEx(tex, true, dummy);
 	 */
 	virtual bool			setupTexture(ITexture &tex) = 0;
