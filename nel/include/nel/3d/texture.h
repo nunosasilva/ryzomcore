@@ -342,21 +342,6 @@ public:
 	 */
 	virtual bool			supportSharing() const {return false;}
 
-	/** True when this ITexture was just deserialized and has no generated
-	 *  pixels yet. serial() calls touch() on read, but that is not a reload:
-	 *  the driver must link it to a shared image, not replace that image.
-	 */
-	virtual bool			isFreshlyLoaded() const { return false; }
-
-	/** True when the pixel source really changed (setFileName, a new bitmap or
-	 *  a reload). Only this may replace/recreate a shared image.
-	 */
-	virtual bool			pixelsReloaded() const { return false; }
-
-	/// Consume the flags once the driver has linked/uploaded the texture.
-	virtual void			clearFreshlyLoaded() {}
-	virtual void			clearPixelsReloaded() {}
-
 	/**
 	 * Return the Unique ident/name of the texture, used for Driver sharing caps.
 	 * Deriver should add a prefix for their texture type. eg "file::pipoland", "noise::4-4-2" etc....

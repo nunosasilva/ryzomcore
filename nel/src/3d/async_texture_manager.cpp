@@ -523,10 +523,7 @@ bool			CAsyncTextureManager::uploadTexturePart(ITexture *pText, IDriver *pDriver
 			pText->setReleasable (isRel);
 			// if the texture is already uploaded, abort partial uploading.
 			if (isAllUploaded)
-			{
-				pDriver->markTextureFullyUploaded(*pText);
 				return true;
-			}
 		}
 	}
 
@@ -580,7 +577,6 @@ bool			CAsyncTextureManager::uploadTexturePart(ITexture *pText, IDriver *pDriver
 			return false;
 	}
 
-	pDriver->markTextureFullyUploaded(*pText);
 	return true;
 }
 

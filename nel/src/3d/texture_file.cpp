@@ -276,11 +276,7 @@ void	CTextureFile::serial(NLMISC::IStream &f)
 		_AllowDegradation= true;
 
 	if(f.isReading())
-	{
-		_FreshlyLoaded = true;
-		_PixelsReloaded = false;
 		touch();
-	}
 }
 
 
@@ -302,10 +298,6 @@ CTextureFile &CTextureFile::operator = (const CTextureFile &other)
 	// copy base infos
 	(ITexture &) *this = (ITexture &) other;
 	dupInfo(other);
-	// Assigning a file texture to an existing one changes its pixel source:
-	// it is a reload, not a fresh serialized instance.
-	_FreshlyLoaded = false;
-	_PixelsReloaded = true;
 	return *this;
 }
 
@@ -318,8 +310,6 @@ void CTextureFile::dupInfo(const CTextureFile &other)
 	_MipMapSkipAtLoad = other._MipMapSkipAtLoad;
 	_EnlargeCanvasNonPOW2Tex   = other._EnlargeCanvasNonPOW2Tex;
 	m_UntrustedMaxSize = other.m_UntrustedMaxSize;
-	_FreshlyLoaded = other._FreshlyLoaded;
-	_PixelsReloaded = other._PixelsReloaded;
 }
 
 

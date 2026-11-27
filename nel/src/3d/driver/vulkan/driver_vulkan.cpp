@@ -403,11 +403,8 @@ CDriverVulkan::CDriverVulkan()
 	memset(_StageTextureVk, 0, sizeof(_StageTextureVk));
 	memset(_StageTextureGen, 0, sizeof(_StageTextureGen));
 	_TextureGeneration = 1;
-	_TextureImageGeneration = 0;
 	_StatsTexInfoHits = 0;
 	_StatsTexInfoMisses = 0;
-	_StatsSharedRecreatedFromNoUpload = 0;
-	_StatsSharedGenerationMismatch = 0;
 	_MegaLightTableValid = false;
 	_MegaLightTableOffset = 0xFFFFFFFF;
 	memset(&_LightMapDynLightEntry, 0, sizeof(_LightMapDynLightEntry));
@@ -2727,9 +2724,6 @@ bool CDriverVulkan::swapBuffers()
 			nlinfo("Vulkan stats: texture infos: %llu resolved without a share-name lookup, %llu lookups per frame",
 				(unsigned long long)(_StatsTexInfoHits / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				(unsigned long long)(_StatsTexInfoMisses / (_StatsWindowFrames ? _StatsWindowFrames : 1)));
-			nlinfo("Vulkan stats: shared textures: recreated-from-no-upload %llu (must be 0), generation mismatches %llu",
-				(unsigned long long)_StatsSharedRecreatedFromNoUpload,
-				(unsigned long long)_StatsSharedGenerationMismatch);
 			nlinfo("Vulkan stats: samplers: %llu cache lookups/frame, %llu created since startup, %u cached now",
 				(unsigned long long)(_StatsSamplerLookups / (_StatsWindowFrames ? _StatsWindowFrames : 1)),
 				(unsigned long long)_StatsSamplerCreates, (uint)_Samplers.size());
@@ -2760,8 +2754,6 @@ bool CDriverVulkan::swapBuffers()
 				(unsigned long long)(_StatsIndexRingDropBytes / (1024ull * 1024ull)));
 			_StatsTexInfoHits = 0;
 			_StatsTexInfoMisses = 0;
-			_StatsSharedRecreatedFromNoUpload = 0;
-			_StatsSharedGenerationMismatch = 0;
 			_StatsSamplerLookups = 0;
 			_StatsPipelineCreateNs = 0;
 			_StatsPipelineCreates = 0;

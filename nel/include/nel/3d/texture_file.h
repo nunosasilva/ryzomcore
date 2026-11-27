@@ -46,12 +46,7 @@ public:
 	 * \author Stephane Coutelas
 	 * \date 2000
 	 */
-	CTextureFile()
-	{
-		_AllowDegradation=true; _SupportSharing= true; _EnlargeCanvasNonPOW2Tex = false;
-		_MipMapSkipAtLoad=0; m_UntrustedMaxSize = 0;
-		_FreshlyLoaded = false; _PixelsReloaded = false;
-	}
+	CTextureFile() { _AllowDegradation=true; _SupportSharing= true; _EnlargeCanvasNonPOW2Tex = false; _MipMapSkipAtLoad=0; m_UntrustedMaxSize = 0; }
 
 	// copy ctor
 	CTextureFile(const CTextureFile &other);
@@ -77,8 +72,6 @@ public:
 		_EnlargeCanvasNonPOW2Tex = false;
 		_MipMapSkipAtLoad=0;
 		m_UntrustedMaxSize = 0;
-		_FreshlyLoaded = false;
-		_PixelsReloaded = false;
 	}
 
 
@@ -92,8 +85,6 @@ public:
 	{
 		touch();
 		_FileName = s;
-		_FreshlyLoaded = false;
-		_PixelsReloaded = true;
 	}
 
 
@@ -120,10 +111,6 @@ public:
 	virtual bool			supportSharing() const NL_OVERRIDE {return _SupportSharing;}
 
 	virtual std::string		getShareName() const NL_OVERRIDE;
-	virtual bool			isFreshlyLoaded() const NL_OVERRIDE { return _FreshlyLoaded; }
-	virtual bool			pixelsReloaded() const NL_OVERRIDE { return _PixelsReloaded; }
-	virtual void			clearFreshlyLoaded() NL_OVERRIDE { _FreshlyLoaded = false; }
-	virtual void			clearPixelsReloaded() NL_OVERRIDE { _PixelsReloaded = false; }
 	// User can disable the sharing system. Default is to be enabled. Not serialized
 	void					enableSharing(bool enable);
 
@@ -161,7 +148,7 @@ public:
 	 *  NLMISC::CBitmap::loadUntrusted, and an image of more than maxSize pixels a side, or that cannot be read, becomes the
 	 *  dummy texture. 0 (the default) is a file of the game data. Not serialized.
 	 */
-	void			setUntrustedMaxSize(uint32 maxSize) { touch(); m_UntrustedMaxSize = maxSize; _PixelsReloaded = true; }
+	void			setUntrustedMaxSize(uint32 maxSize) { touch(); m_UntrustedMaxSize = maxSize; }
 	uint32			getUntrustedMaxSize() const { return m_UntrustedMaxSize; }
 
 	/** Flag that tell that 3d driver supports non-power of 2 textures
@@ -177,8 +164,6 @@ private:
 	bool        _EnlargeCanvasNonPOW2Tex;    // Non power of 2 textures are cropped. Default is false
 	uint8		_MipMapSkipAtLoad;	// Default is 0.
 	uint32		m_UntrustedMaxSize;	// Default is 0, a trusted file.
-	bool		_FreshlyLoaded;		// serial() read: link/wait, do not recreate
-	bool		_PixelsReloaded;		// setFileName/new bitmap: real reload
 private:
 	void		dupInfo(const CTextureFile &other);
 
