@@ -220,12 +220,17 @@ public:
 	/// frame: an instance whose LOD needs no geomorph) falls back to the
 	/// persistent buffer.
 	uint64		_DrawBufferFrame;
+	/// Vertex-ring generation _DrawBuffer was allocated in. Growing the ring
+	/// replaces the buffer and restarts the per-frame offsets; a slice from an
+	/// older generation must not be bound.
+	uint32		_DrawBufferGeneration;
 	/// Copy-on-write state (CpuReadWrite buffers). The engine writes such a
 	/// buffer several times per frame before drawing it (skinning, morphing,
 	/// geomorphing), and those writes must accumulate: one ring slice per frame
 	/// and buffer, kept while it has not been drawn yet. A new slice is only
 	/// taken when the previous one has already been referenced by a draw.
 	uint64		_CoWFrame;
+	uint32		_CoWGeneration;
 	VkBuffer	_CoWBuffer;
 	uint32		_CoWOffset;
 	bool		_CoWDrawn;
@@ -274,16 +279,25 @@ public:
 		_DrawBuffer = _PartialWrite ? VK_NULL_HANDLE : _VertexBuffer[_Slot];
 		_DrawOffset = 0;
 		_DrawBufferFrame = ~0ull;
+		_DrawBufferGeneration = 0;
 	}
-	void		resetCoW() { _CoWFrame = ~0ull; _CoWBuffer = VK_NULL_HANDLE; _CoWOffset = 0; _CoWDrawn = false; }
+	void		resetCoW()
+	{
+		_CoWFrame = ~0ull;
+		_CoWGeneration = 0;
+		_CoWBuffer = VK_NULL_HANDLE;
+		_CoWOffset = 0;
+		_CoWDrawn = false;
+	}
 	/// Frame boundary: forget last frame's copy and a draw pointer that is not
 	/// from this frame. Called by the draw paths, which are the only place a
-	/// stale copy can surface.
-	void		beginFrameState(uint64 now)
+	/// stale copy can surface. A ring growth during the frame also invalidates
+	/// every slice allocated before it.
+	void		beginFrameState(uint64 now, uint32 ringGeneration)
 	{
-		if (_CoWFrame != now)
+		if (_CoWFrame != now || _CoWGeneration != ringGeneration)
 			resetCoW();
-		if (_DrawBufferFrame != now)
+		if (_DrawBufferFrame != now || _DrawBufferGeneration != ringGeneration)
 			resetDrawBuffer();
 	}
 	/// A draw used the current copy in this frame: the next write needs a new
@@ -1762,6 +1776,9 @@ private:
 	uint32					_VertexRingOffset;
 	uint32					_VertexRingFrameBase;
 	uint32					_VertexRingHalf;
+	/// Bumped whenever the ring buffer is replaced by a growth. Slices from
+	/// the old ring are then invalid even though the swap counter is unchanged.
+	uint32					_VertexRingGeneration;
 	VkBuffer				_IndexRing;
 	VkDeviceMemory			_IndexRingMemory;
 	void					*_IndexRingMapped;
@@ -1932,6 +1949,7 @@ public:
 	}
 	VkBuffer				vertexRingBuffer() const { return _VertexRing; }
 	void					*vertexRingMapped() const { return _VertexRingMapped; }
+	uint32					vertexRingGeneration() const { return _VertexRingGeneration; }
 };
 
 } /* namespace NLVULKAN */

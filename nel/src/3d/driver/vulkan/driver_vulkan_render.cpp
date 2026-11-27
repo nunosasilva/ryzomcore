@@ -1111,6 +1111,12 @@ CVBDrvInfosVulkan::CVBDrvInfosVulkan(CDriverVulkan *drv, ItVBDrvInfoPtrList it, 
 	, _CopyOnWrite(false)
 	, _DrawFrame(~0ull)
 	, _DrawBufferFrame(~0ull)
+	, _DrawBufferGeneration(0)
+	, _CoWFrame(~0ull)
+	, _CoWGeneration(0)
+	, _CoWBuffer(VK_NULL_HANDLE)
+	, _CoWOffset(0)
+	, _CoWDrawn(false)
 	, _PartialWrite(false)
 	, _DirtyBegin(0)
 	, _DirtyEnd(0)
@@ -1345,11 +1351,13 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 			_DrawBuffer = buffer;
 			_DrawOffset = 0;
 			_DrawBufferFrame = driver->getSwapBufferCounter();
+			_DrawBufferGeneration = driver->vertexRingGeneration();
 			return (uint8 *)mapped + begin;
 		}
 		_DrawBuffer = driver->vertexRingBuffer();
 		_DrawOffset = offset;
 		_DrawBufferFrame = driver->getSwapBufferCounter();
+		_DrawBufferGeneration = driver->vertexRingGeneration();
 		return (uint8 *)driver->vertexRingMapped() + offset + begin;
 	}
 
@@ -1409,9 +1417,10 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 	{
 		driver->countVBCoWLock();
 		const uint64 now = driver->getSwapBufferCounter();
-		if (_CoWFrame != now)
+		const uint32 ringGeneration = driver->vertexRingGeneration();
+		if (_CoWFrame != now || _CoWGeneration != ringGeneration)
 			resetCoW();
-		bool haveSlice = (_CoWFrame == now && _CoWBuffer != VK_NULL_HANDLE);
+		bool haveSlice = (_CoWFrame == now && _CoWGeneration == ringGeneration && _CoWBuffer != VK_NULL_HANDLE);
 		void *ring = driver->vertexRingMapped();
 		if (readOnly)
 		{
@@ -1420,6 +1429,7 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 			_DrawBuffer = haveSlice ? _CoWBuffer : _VertexBuffer[_Slot];
 			_DrawOffset = haveSlice ? _CoWOffset : 0;
 			_DrawBufferFrame = now;
+			_DrawBufferGeneration = ringGeneration;
 			return (uint8 *)(haveSlice ? ring : _Mapped[_Slot]) + _DrawOffset + begin;
 		}
 
@@ -1451,6 +1461,7 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 				_CoWBuffer = driver->vertexRingBuffer();	// the ring may have grown
 				_CoWOffset = ringOffset;
 				_CoWFrame = now;
+				_CoWGeneration = driver->vertexRingGeneration();
 				_CoWDrawn = false;
 				haveSlice = true;
 			}
@@ -1466,15 +1477,17 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 				_DrawBuffer = _VertexBuffer[_Slot];
 				_DrawOffset = 0;
 				_DrawBufferFrame = ~0ull;
+				_DrawBufferGeneration = 0;
 				return (uint8 *)_Mapped[_Slot] + begin;
 			}
 		}
 
-		if (_CoWFrame == now && _CoWBuffer != VK_NULL_HANDLE)
+		if (_CoWFrame == now && _CoWGeneration == driver->vertexRingGeneration() && _CoWBuffer != VK_NULL_HANDLE)
 		{
 			_DrawBuffer = _CoWBuffer;
 			_DrawOffset = _CoWOffset;
 			_DrawBufferFrame = now;
+			_DrawBufferGeneration = _CoWGeneration;
 			_Drawn = false;
 			return (uint8 *)driver->vertexRingMapped() + _CoWOffset + begin;
 		}
@@ -1499,6 +1512,7 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 	_DrawBuffer = _VertexBuffer[_Slot];
 	_DrawOffset = 0;
 	_DrawBufferFrame = driver ? driver->getSwapBufferCounter() : ~0ull;
+	_DrawBufferGeneration = driver ? driver->vertexRingGeneration() : 0;
 	return (uint8 *)_Mapped[_Slot] + begin;
 }
 
@@ -1582,10 +1596,13 @@ bool CDriverVulkan::flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &inf
 		return true;
 
 	const uint64 now = getSwapBufferCounter();
+	const uint32 ringGeneration = _VertexRingGeneration;
 	// A copy is needed for the first activation of the frame, and again after any
 	// new write: the engine writes vertices for a patch and then draws it, so a
-	// stale slice would show the previous content of that patch.
-	const bool firstThisFrame = (info._DrawBufferFrame != now);
+	// stale slice would show the previous content of that patch. A slice from
+	// before a ring growth is also stale even though the swap counter matches.
+	const bool firstThisFrame = (info._DrawBufferFrame != now ||
+		info._DrawBufferGeneration != ringGeneration);
 	const bool dirty = !vb.getDirtyRanges().empty() || info.hasDirty();
 	if (!firstThisFrame && !dirty)
 		return true;
@@ -1614,12 +1631,14 @@ bool CDriverVulkan::flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &inf
 		info._DrawBuffer = VK_NULL_HANDLE;
 		info._DrawOffset = 0;
 		info._DrawBufferFrame = ~0ull;
+		info._DrawBufferGeneration = 0;
 		return true;
 	}
 	memcpy((uint8 *)ring + ringOffset, &info._Shadow[0], bytes);
 	info._DrawBuffer = vertexRingBuffer();	// the ring may have grown
 	info._DrawOffset = ringOffset;
 	info._DrawBufferFrame = now;
+	info._DrawBufferGeneration = _VertexRingGeneration;
 	info.clearDirty();
 	vb.clearDirtyRanges();
 	if (_StatsEnabled)
@@ -1728,6 +1747,7 @@ uint32 CDriverVulkan::allocVertexRing(uint32 size, const char *label)
 		_VertexRingHalf = newSize / 2;
 		_VertexRingFrameBase = _FrameIndex * _VertexRingHalf;
 		_VertexRingOffset = _VertexRingFrameBase;
+		++_VertexRingGeneration;
 		nlinfo("Vulkan: vertex ring grown to %u bytes", newSize);
 	}
 	const uint32 offset = (_VertexRingOffset + 3) & ~3u;
@@ -2515,7 +2535,9 @@ void CDriverVulkan::bindVertexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDev
 /// it never lets the engine write write-combined memory.
 void CDriverVulkan::makeShadowSlice(CVBDrvInfosVulkan &info, uint64 now)
 {
-	const bool haveSlice = (info._CoWFrame == now && info._CoWBuffer != VK_NULL_HANDLE);
+	const uint32 ringGeneration = _VertexRingGeneration;
+	const bool haveSlice = (info._CoWFrame == now && info._CoWGeneration == ringGeneration &&
+		info._CoWBuffer != VK_NULL_HANDLE);
 	// A slice that was filled before the last write must not be reused: the draw
 	// would read stale vertices. A slice filled after the last write is shared by
 	// every draw of this frame that does not write in between (the accumulation
@@ -2537,6 +2559,7 @@ void CDriverVulkan::makeShadowSlice(CVBDrvInfosVulkan &info, uint64 now)
 			info._CoWBuffer = vertexRingBuffer();	// the ring may have grown
 			info._CoWOffset = ringOffset;
 			info._CoWFrame = now;
+			info._CoWGeneration = _VertexRingGeneration;
 			info._CoWDrawn = false;
 			info._ShadowDirty = false;
 		}
@@ -2550,24 +2573,27 @@ void CDriverVulkan::makeShadowSlice(CVBDrvInfosVulkan &info, uint64 now)
 			info.resetCoW();
 		}
 	}
-	if (info._CoWFrame == now && info._CoWBuffer != VK_NULL_HANDLE)
+	if (info._CoWFrame == now && info._CoWGeneration == ringGeneration &&
+		info._CoWBuffer != VK_NULL_HANDLE)
 	{
 		info._DrawBuffer = info._CoWBuffer;
 		info._DrawOffset = info._CoWOffset;
 		info._DrawBufferFrame = now;
+		info._DrawBufferGeneration = info._CoWGeneration;
 	}
 	else
 	{
 		info._DrawBuffer = info._VertexBuffer[info._Slot];
 		info._DrawOffset = 0;
 		info._DrawBufferFrame = now;
+		info._DrawBufferGeneration = ringGeneration;
 	}
 }
 
 bool CDriverVulkan::beginVertexDraw(CVBDrvInfosVulkan &info)
 {
 	const uint64 now = getSwapBufferCounter();
-	info.beginFrameState(now);
+	info.beginFrameState(now, vertexRingGeneration());
 	if (info._CopyOnWrite && info._ShadowEnabled && info._Size)
 	{
 		if (_VbSnapshots)

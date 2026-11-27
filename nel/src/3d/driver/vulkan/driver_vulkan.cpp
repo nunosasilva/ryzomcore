@@ -225,6 +225,7 @@ CDriverVulkan::CDriverVulkan()
 	_VertexRingOffset = 0;
 	_VertexRingFrameBase = 0;
 	_VertexRingHalf = 0;
+	_VertexRingGeneration = 0;
 	_IndexRing = VK_NULL_HANDLE;
 	_IndexRingMemory = VK_NULL_HANDLE;
 	_IndexRingMapped = NULL;
