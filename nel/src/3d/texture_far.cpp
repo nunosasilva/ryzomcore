@@ -423,11 +423,36 @@ void CTextureFar::doGenerate (bool async)
 	// would leave every other patch in whatever memory the allocator returns.
 	// The Vulkan driver used to re-upload the whole bitmap on each update and
 	// that showed as rainbow/garbage patches at distance until relog.
-	if (getWidth() != NL_FAR_TEXTURE_EDGE_SIZE || getHeight() != NL_FAR_TEXTURE_EDGE_SIZE)
+	//
+	// A released bitmap (GL drivers call release() after upload) keeps its
+	// dimensions but frees the pixels; a partial allocation can also leave
+	// the dimensions set. Check the pixel array itself, and rebuild every
+	// patch when the storage is new: the rectangles in _ListInvalidRect are
+	// not enough to fill a freshly allocated atlas.
+	bool reallocated = false;
+	if (getWidth() != NL_FAR_TEXTURE_EDGE_SIZE ||
+		getHeight() != NL_FAR_TEXTURE_EDGE_SIZE ||
+		getPixels().size() != NL_FAR_TEXTURE_EDGE_SIZE * NL_FAR_TEXTURE_EDGE_SIZE * sizeof(CRGBA))
+	{
 		CBitmap::resize (NL_FAR_TEXTURE_EDGE_SIZE, NL_FAR_TEXTURE_EDGE_SIZE, RGBA, false);
+		reallocated = true;
+	}
 
+	if (reallocated)
+	{
+		// The whole atlas is new (or was released): rebuild every patch, not
+		// only the invalid rectangles. Otherwise the untouched patches keep
+		// uninitialised heap bytes, and the bilinear edge of each patch
+		// samples the uninitialised texel next to it.
+		TPosToPatchMap::iterator itPosToPid = _PosToPatchMap.begin();
+		while (itPosToPid != _PosToPatchMap.end())
+		{
+			rebuildPatch (itPosToPid->first, itPosToPid->second);
+			++itPosToPid;
+		}
+	}
 	// Rectangle invalidate ?
-	if (_ListInvalidRect.begin()!=_ListInvalidRect.end())
+	else if (_ListInvalidRect.begin()!=_ListInvalidRect.end())
 	{
 		// Yes, rebuild only those rectangles.
 
