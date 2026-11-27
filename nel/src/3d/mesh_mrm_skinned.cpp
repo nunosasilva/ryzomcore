@@ -1965,38 +1965,31 @@ void		CMeshMRMSkinnedGeom::updateRawSkinNormal(bool enabled, CMeshMRMSkinnedInst
 			for(i=0;i<skinLod.RdrPass.size();i++)
 			{
 				// remap tris.
-				skinLod.RdrPass[i].setFormat(NL_SKINNED_MESH_MRM_INDEX_FORMAT);
-				skinLod.RdrPass[i].setNumIndexes(lod.RdrPass[i].getNumTriangle()*3);
-				const uint16	*srcTriPtr= &(lod.RdrPass[i].PBlock[0]);
+				const uint32 numIndices = (uint32)lod.RdrPass[i].PBlock.size();
+				// Same range rule as CMeshMRMGeom: the remapped index plus the
+				// geomorph slots can exceed 65,535 even when the source PBlock is
+				// a 16-bit vector. Pick the destination from the actual range.
+				const bool dst32 = ((uint64)_VBufferFinal.getNumVertices() + numGeoms > 0xffff);
+				skinLod.RdrPass[i].setFormat(dst32 ? CIndexBuffer::Indices32 : NL_SKINNED_MESH_MRM_INDEX_FORMAT);
+				skinLod.RdrPass[i].setNumIndexes(numIndices);
+				const uint16	*srcTriPtr= numIndices ? &(lod.RdrPass[i].PBlock[0]) : NULL;
 				CIndexBufferReadWrite ibaWrite;
 				skinLod.RdrPass[i].lock (ibaWrite);
-				#ifndef NL_SKINNED_MESH_MRM_INDEX16
-					nlassert(ibaWrite.getFormat() == CIndexBuffer::Indices32);
-					uint32	*dstTriPtr= (uint32	*) ibaWrite.getPtr();
-					uint32	numIndices= lod.RdrPass[i].PBlock.size();
-					for(uint j=0;j<numIndices;j++, srcTriPtr++, dstTriPtr++)
+				const bool write32 = (ibaWrite.getFormat() == CIndexBuffer::Indices32);
+				uint8 *dstBytes = (uint8 *)ibaWrite.getPtr();
+				for(uint32 j=0;j<numIndices;j++)
+				{
+					const uint32 vid = *srcTriPtr++;
+					// If this index refers to a Geomorphed vertex, don't modify!
+					const uint32 out = (vid < numGeoms) ? vid : (vertexRemap[vid] + numGeoms);
+					if (write32)
+						((uint32 *)dstBytes)[j] = out;
+					else
 					{
-						uint	vid= (uint)*srcTriPtr;
-						// If this index refers to a Geomorphed vertex, don't modify!
-						if(vid<numGeoms)
-							*dstTriPtr= vid;
-						else
-							*dstTriPtr= vertexRemap[vid] + numGeoms;
+						nlassert(out <= 0xffff);
+						((uint16 *)dstBytes)[j] = (uint16)out;
 					}
-				#else
-					nlassert(ibaWrite.getFormat() == CIndexBuffer::Indices16);
-					uint16	*dstTriPtr= (uint16 *) ibaWrite.getPtr();
-					uint32	numIndices= (uint32)lod.RdrPass[i].PBlock.size();
-					for(uint j=0;j<numIndices;j++, srcTriPtr++, dstTriPtr++)
-					{
-						uint	vid= (uint)*srcTriPtr;
-						// If this index refers to a Geomorphed vertex, don't modify!
-						if(vid<numGeoms)
-							*dstTriPtr= vid;
-						else
-							*dstTriPtr= (uint16) (vertexRemap[vid] + numGeoms);
-					}
-				#endif
+				}
 			}
 		}
 	}

@@ -3572,7 +3572,10 @@ void		CMeshMRMGeom::updateRawSkinNormal(bool enabled, CMeshMRMInstance *mi, sint
 			}
 
 			// The remap from old index in _VBufferFinal to RawSkin vertices (without Geomorphs).
-			static	vector<TMeshMRMIndexType>	vertexRemap;
+			// Keep this 32-bit: the remapped index plus numGeoms can exceed 65,535
+			// even when the source PBlock is 16-bit, and a 32-bit source block can
+			// carry indices above 65,535 directly.
+			static	vector<uint32>	vertexRemap;
 			vertexRemap.resize( _VBufferFinal.getNumVertices() );
 			sint	softSize[4];
 			sint	hardSize[4];
@@ -3753,42 +3756,37 @@ void		CMeshMRMGeom::updateRawSkinNormal(bool enabled, CMeshMRMInstance *mi, sint
 				// NB: since RawSkin is possible only with SkinGrouping, and since SkniGrouping is
 				// possible only with no Quads/Lines, we should have only Tris here.
 				// remap tris.
-				skinLod.RdrPass[i].setFormat(NL_DEFAULT_INDEX_BUFFER_FORMAT);
-				skinLod.RdrPass[i].setNumIndexes(lod.RdrPass[i].PBlock.getNumIndexes());
+				const uint32 numIndices = lod.RdrPass[i].PBlock.getNumIndexes();
+				const bool src32 = (lod.RdrPass[i].PBlock.getFormat() == CIndexBuffer::Indices32);
+				// The destination format must cover both the source indices and
+				// vertexRemap[vid] + numGeoms. Do not choose the branch from the
+				// destination: a 32-bit source reinterpreted as uint16 silently
+				// corrupts the remap in release.
+				const bool dst32 = src32 ||
+					((uint64)_VBufferFinal.getNumVertices() + numGeoms > 0xffff);
+				skinLod.RdrPass[i].setFormat(dst32 ? CIndexBuffer::Indices32 : NL_DEFAULT_INDEX_BUFFER_FORMAT);
+				skinLod.RdrPass[i].setNumIndexes(numIndices);
 				CIndexBufferRead ibaRead;
 				lod.RdrPass[i].PBlock.lock (ibaRead);
 				CIndexBufferReadWrite ibaWrite;
 				skinLod.RdrPass[i].lock (ibaWrite);
-				if (skinLod.RdrPass[i].getFormat() == CIndexBuffer::Indices32)
+				const bool read32 = (ibaRead.getFormat() == CIndexBuffer::Indices32);
+				const bool write32 = (ibaWrite.getFormat() == CIndexBuffer::Indices32);
+				const uint8 *srcBytes = (const uint8 *)ibaRead.getPtr();
+				uint8 *dstBytes = (uint8 *)ibaWrite.getPtr();
+				for(uint32 j=0;j<numIndices;j++)
 				{
-					nlassert(ibaRead.getFormat() == CIndexBuffer::Indices32);
-					const uint32	*srcTriPtr= (const uint32 *) ibaRead.getPtr();
-					uint32	*dstTriPtr= (uint32	*) ibaWrite.getPtr();
-					uint32	numIndices= lod.RdrPass[i].PBlock.getNumIndexes();
-					for(uint j=0;j<numIndices;j++, srcTriPtr++, dstTriPtr++)
+					const uint32 vid = read32
+						? ((const uint32 *)srcBytes)[j]
+						: ((const uint16 *)srcBytes)[j];
+					// If this index refers to a Geomorphed vertex, don't modify!
+					const uint32 out = (vid < numGeoms) ? vid : (vertexRemap[vid] + numGeoms);
+					if (write32)
+						((uint32 *)dstBytes)[j] = out;
+					else
 					{
-						uint	vid= *srcTriPtr;
-						// If this index refers to a Geomorphed vertex, don't modify!
-						if(vid<numGeoms)
-							*dstTriPtr= vid;
-						else
-							*dstTriPtr= vertexRemap[vid] + numGeoms;
-					}
-				}
-				else
-				{
-					nlassert(ibaRead.getFormat() == CIndexBuffer::Indices16);
-					const uint16	*srcTriPtr= (const uint16 *) ibaRead.getPtr();
-					uint16	*dstTriPtr= (uint16	*) ibaWrite.getPtr();
-					uint32	numIndices= lod.RdrPass[i].PBlock.getNumIndexes();
-					for(uint j=0;j<numIndices;j++, srcTriPtr++, dstTriPtr++)
-					{
-						uint	vid= *srcTriPtr;
-						// If this index refers to a Geomorphed vertex, don't modify!
-						if(vid<numGeoms)
-							*dstTriPtr= vid;
-						else
-							*dstTriPtr= vertexRemap[vid] + numGeoms;
+						nlassert(out <= 0xffff);
+						((uint16 *)dstBytes)[j] = (uint16)out;
 					}
 				}
 			}
