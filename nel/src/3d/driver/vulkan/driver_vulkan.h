@@ -1098,6 +1098,9 @@ private:
 	bool					recreateSwapchain(const char *reason);
 	/// True while the X window still exists (X errors are not fatal).
 	bool					windowAlive();
+	/// Add or remove _NET_WM_STATE_FULLSCREEN on the window we own. The WM
+	/// decides the final geometry; the swapchain follows the surface extent.
+	bool					setFullscreenState(bool fullscreen);
 	/// True when the window has a drawable size. A minimised window (or a
 	/// window-manager resize passing through 0x0) has none, and no swapchain
 	/// can be created for it.

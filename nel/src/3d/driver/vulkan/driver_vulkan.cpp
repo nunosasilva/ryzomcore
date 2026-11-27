@@ -40,6 +40,10 @@
 #include <algorithm>
 #include <chrono>
 
+#if defined(NL_OS_UNIX) && !defined(NL_OS_MAC)
+#	include <X11/Xatom.h>
+#endif
+
 using namespace std;
 using namespace NLMISC;
 using namespace NL3D;
@@ -1819,6 +1823,74 @@ uint32 CDriverVulkan::findMemoryType(uint32 typeBits, VkMemoryPropertyFlags prop
 // Window / display
 // ---------------------------------------------------------------------------
 
+bool CDriverVulkan::setFullscreenState(bool fullscreen)
+{
+#if defined(NL_OS_UNIX) && !defined(NL_OS_MAC)
+	if (!_Display || !_XWindow || !_OwnWindow)
+		return true;
+
+	const Atom wmState = XInternAtom(_Display, "_NET_WM_STATE", False);
+	const Atom wmFullscreen = XInternAtom(_Display, "_NET_WM_STATE_FULLSCREEN", False);
+	if (wmState == None || wmFullscreen == None)
+	{
+		nlwarning("Vulkan: cannot intern the EWMH fullscreen atoms");
+		return false;
+	}
+
+	XWindowAttributes attr;
+	XErrorHandler oldHandler = XSetErrorHandler(ignoreXError);
+	const bool gotAttr = XGetWindowAttributes(_Display, _XWindow, &attr) != 0;
+	XSetErrorHandler(oldHandler);
+	if (!gotAttr)
+		return false;
+
+	if (attr.map_state != IsUnmapped)
+	{
+		// The window is already managed: ask the WM to add/remove the state.
+		XEvent xev;
+		memset(&xev, 0, sizeof(xev));
+		xev.xclient.type = ClientMessage;
+		xev.xclient.serial = 0;
+		xev.xclient.send_event = True;
+		xev.xclient.display = _Display;
+		xev.xclient.window = _XWindow;
+		xev.xclient.message_type = wmState;
+		xev.xclient.format = 32;
+		xev.xclient.data.l[0] = fullscreen ? 1 : 0; // _NET_WM_STATE_ADD / _REMOVE
+		xev.xclient.data.l[1] = (long)wmFullscreen;
+		xev.xclient.data.l[2] = 0;
+		xev.xclient.data.l[3] = 1; // source: application
+		xev.xclient.data.l[4] = 0;
+
+		oldHandler = XSetErrorHandler(ignoreXError);
+		const bool sent = XSendEvent(_Display, DefaultRootWindow(_Display), False,
+			SubstructureRedirectMask | SubstructureNotifyMask, &xev) != 0;
+		XSync(_Display, False);
+		XSetErrorHandler(oldHandler);
+		if (!sent)
+		{
+			nlwarning("Vulkan: failed to %s fullscreen", fullscreen ? "enter" : "leave");
+			return false;
+		}
+	}
+	else
+	{
+		// Not mapped yet: the initial state goes in the property; the WM reads
+		// it when it manages the window.
+		if (fullscreen)
+			XChangeProperty(_Display, _XWindow, wmState, XA_ATOM, 32,
+				PropModeReplace, (const unsigned char *)&wmFullscreen, 1);
+		else
+			XDeleteProperty(_Display, _XWindow, wmState);
+		XFlush(_Display);
+	}
+	return true;
+#else
+	// The Vulkan driver has no window backend for this platform yet.
+	return true;
+#endif
+}
+
 bool CDriverVulkan::setDisplay(nlWindow wnd, const GfxMode &mode, bool show, bool resizeable)
 {
 	if (_Display)
@@ -1856,9 +1928,27 @@ bool CDriverVulkan::setDisplay(nlWindow wnd, const GfxMode &mode, bool show, boo
 	_WmDeleteMessage = XInternAtom(_Display, "WM_DELETE_WINDOW", False);
 	XSetWMProtocols(_Display, _XWindow, &_WmDeleteMessage, 1);
 	XStoreName(_Display, _XWindow, "Ryzom");
+
+	// Tell the WM this is a normal application window. When the config asks
+	// for fullscreen, set the EWMH state before mapping: the WM reads it when
+	// it starts managing the window and resizes it to the monitor. The
+	// swapchain follows the surface extent, so a monitor-sized window works.
+	if (_OwnWindow)
+	{
+		const Atom wmType = XInternAtom(_Display, "_NET_WM_WINDOW_TYPE", False);
+		const Atom wmNormal = XInternAtom(_Display, "_NET_WM_WINDOW_TYPE_NORMAL", False);
+		if (wmType != None && wmNormal != None)
+			XChangeProperty(_Display, _XWindow, wmType, XA_ATOM, 32,
+				PropModeReplace, (const unsigned char *)&wmNormal, 1);
+		if (!mode.Windowed && !setFullscreenState(true))
+			nlwarning("Vulkan: could not request fullscreen for the initial window");
+	}
+
 	XMapWindow(_Display, _XWindow);
 	XFlush(_Display);
 	_WindowVisible = show;
+	nlinfo("Vulkan: display %s %ux%u", mode.Windowed ? "windowed" : "fullscreen",
+		_WindowWidth, _WindowHeight);
 
 #if defined(NL_OS_UNIX) && !defined(NL_OS_MAC)
 	_EventEmitter.init(_Display, _XWindow, NULL);
@@ -1876,8 +1966,15 @@ bool CDriverVulkan::setDisplay(nlWindow wnd, const GfxMode &mode, bool show, boo
 
 bool CDriverVulkan::setMode(const GfxMode &mode)
 {
+	// Toggle the EWMH state before resizing: the WM owns the final geometry in
+	// fullscreen, and resizing a window it is about to fullscreen would only
+	// fight it. On failure keep _CurrentMode unchanged so the caller can retry
+	// (setVideoMode falls back to a windowed mode).
+	if (mode.Windowed != _CurrentMode.Windowed && !setFullscreenState(!mode.Windowed))
+		return false;
+
 	_CurrentMode = mode;
-	if (mode.Width && mode.Height && (mode.Width != _SwapchainExtent.width || mode.Height != _SwapchainExtent.height))
+	if (mode.Width && mode.Height && (mode.Width != _WindowWidth || mode.Height != _WindowHeight))
 	{
 		_WindowWidth = mode.Width;
 		_WindowHeight = mode.Height;
@@ -1890,6 +1987,8 @@ bool CDriverVulkan::setMode(const GfxMode &mode)
 		// was reset for a submission that the recreation would throw away.
 		_SwapchainOutOfDate = true;
 	}
+	nlinfo("Vulkan: mode %s %ux%u", mode.Windowed ? "windowed" : "fullscreen",
+		(uint)mode.Width, (uint)mode.Height);
 	return true;
 }
 
