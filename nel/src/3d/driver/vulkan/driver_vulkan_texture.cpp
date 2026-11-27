@@ -1013,19 +1013,21 @@ static void texDbgName(ITexture &tex, std::string &out)
 }
 
 
-/// Extent (in blocks for compressed formats) and byte size of one mip level.
+/// Extent (in texels, as vkCmdCopyBufferToImage expects even for compressed
+/// formats) and byte size of one mip level. The byte size accounts for the
+/// 4x4 compressed blocks.
 static bool textureLevelLayout(VkFormat format, uint32 width, uint32 height, VkExtent3D &extent, VkDeviceSize &bytes)
 {
 	if (width == 0 || height == 0)
 		return false;
+	extent.width = width;
+	extent.height = height;
 	extent.depth = 1;
 	switch (format)
 	{
 	case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
 	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
-		extent.width = max(1u, (width + 3) / 4);
-		extent.height = max(1u, (height + 3) / 4);
-		bytes = (VkDeviceSize)extent.width * extent.height * 8;
+		bytes = (VkDeviceSize)max(1u, (width + 3) / 4) * max(1u, (height + 3) / 4) * 8;
 		return true;
 	case VK_FORMAT_BC2_UNORM_BLOCK:
 	case VK_FORMAT_BC3_UNORM_BLOCK:
@@ -1033,14 +1035,10 @@ static bool textureLevelLayout(VkFormat format, uint32 width, uint32 height, VkE
 	case VK_FORMAT_BC5_UNORM_BLOCK:
 	case VK_FORMAT_BC6H_UFLOAT_BLOCK:
 	case VK_FORMAT_BC7_UNORM_BLOCK:
-		extent.width = max(1u, (width + 3) / 4);
-		extent.height = max(1u, (height + 3) / 4);
-		bytes = (VkDeviceSize)extent.width * extent.height * 16;
+		bytes = (VkDeviceSize)max(1u, (width + 3) / 4) * max(1u, (height + 3) / 4) * 16;
 		return true;
 	case VK_FORMAT_R8G8B8A8_UNORM:
 	case VK_FORMAT_R8G8B8A8_SRGB:
-		extent.width = width;
-		extent.height = height;
 		bytes = (VkDeviceSize)width * height * 4;
 		return true;
 	default:
