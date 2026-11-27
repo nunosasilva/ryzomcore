@@ -3028,7 +3028,11 @@ void	CMeshGeom::buildGPUSkinVB()
 	for (std::map<uint32, uint32>::iterator it = materialIndexCount.begin(); it != materialIndexCount.end(); ++it)
 		totalIndices += it->second;
 
-	_GPUSkinIB.setFormat(NL_MESH_INDEX_FORMAT);
+	// This is one combined IB over every matrix block, so its vertex indices
+	// can exceed 65,535 even when each source PBlock is 16-bit. Runtime-built
+	// meshes already build the source blocks 32-bit (mesh.cpp); keep the
+	// combined copy 32-bit too instead of truncating it in release.
+	_GPUSkinIB.setFormat(CIndexBuffer::Indices32);
 	_GPUSkinIB.setBufferUsage(CIndexBuffer::Immutable, false);
 	_GPUSkinIB.setNumIndexes(totalIndices);
 

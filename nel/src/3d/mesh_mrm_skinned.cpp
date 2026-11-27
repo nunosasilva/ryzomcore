@@ -2465,7 +2465,10 @@ void CMeshMRMSkinnedGeom::buildGPUSkinVB()
 		}
 	}
 
-	_GPUSkinIB.setFormat(NL_SKINNED_MESH_MRM_INDEX_FORMAT);
+	// Combined IB over every LOD, same 65,535-vertex risk as the other
+	// _GPUSkinIB builders. Keep it 32-bit; the source PBlocks may be 16 or
+	// 32-bit.
+	_GPUSkinIB.setFormat(CIndexBuffer::Indices32);
 	_GPUSkinIB.setBufferUsage(CIndexBuffer::Immutable, false);
 	_GPUSkinIB.setNumIndexes(totalIndices);
 
