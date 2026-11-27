@@ -25,6 +25,8 @@
 #include "nel/misc/debug.h"
 #include "nel/misc/hierarchical_timer.h"
 
+#include <algorithm>
+
 using namespace std;
 using namespace NLMISC;
 
@@ -231,6 +233,40 @@ void CTextureFile::buildBitmapFromFile(NLMISC::CBitmap &dest, const std::string 
 			// Bug...
 			nlwarning("TextureFile: %s is not a Power Of 2: %d,%d", fileName.c_str(), dest.getWidth(), dest.getHeight());
 			dest.makeNonPowerOf2Dummy();
+		}
+	}
+
+	// The full map and the other enlarged-canvas UI textures are compressed
+	// DDS files with a single mip. A one-mip BC1 image minified into the map
+	// window aliases badly: the 4x4 block palettes show as checker/rainbow
+	// patches. The engine cannot mip a compressed or non-POT bitmap, so build
+	// the chain here: decode once, cap the canvas at 2048 (the content is
+	// still the same fraction of the canvas, so CGroupMap's _URatio remains
+	// valid), and let the regular RGBA path build and upload the mips.
+	const bool oneMipCompressed = (dest.PixelFormat == CBitmap::DXTC1 ||
+		dest.PixelFormat == CBitmap::DXTC1Alpha ||
+		dest.PixelFormat == CBitmap::DXTC3 ||
+		dest.PixelFormat == CBitmap::DXTC5) && dest.getMipMapCount() == 1;
+	if (enlargeCanvasNonPOW2Tex && oneMipCompressed &&
+		dest.getWidth() >= 1024 && dest.getHeight() >= 1024)
+	{
+		const uint32 srcW = dest.getWidth();
+		const uint32 srcH = dest.getHeight();
+		if (dest.convertToType(CBitmap::RGBA))
+		{
+			if (dest.getWidth() > 2048 || dest.getHeight() > 2048)
+			{
+				const uint32 maxDim = std::max(dest.getWidth(), dest.getHeight());
+				dest.resample((dest.getWidth() * 2048) / maxDim,
+					(dest.getHeight() * 2048) / maxDim);
+			}
+			dest.buildMipMaps();
+			nlinfo("TextureFile: '%s' is a %ux%u one-mip compressed texture; built %u RGBA mip levels at %ux%u",
+				fileName.c_str(), srcW, srcH, dest.getMipMapCount(), dest.getWidth(), dest.getHeight());
+		}
+		else
+		{
+			nlwarning("TextureFile: cannot decompress the one-mip texture '%s' for mip generation", fileName.c_str());
 		}
 	}
 }
