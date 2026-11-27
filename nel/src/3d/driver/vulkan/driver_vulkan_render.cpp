@@ -1122,6 +1122,8 @@ CVBDrvInfosVulkan::CVBDrvInfosVulkan(CDriverVulkan *drv, ItVBDrvInfoPtrList it, 
 	, _DirtyEnd(0)
 	, _LockBegin(0)
 	, _LockEnd(0)
+	, _WrittenHighWater(0)
+	, _TailFilled(0)
 	, _ShadowEnabled(false)
 	, _ShadowBegin(0)
 	, _ShadowEnd(0)
@@ -1374,6 +1376,8 @@ uint8 *CVBDrvInfosVulkan::lock(uint begin, uint end, bool readOnly)
 				_LockEnd = (uint32)_Shadow.size();
 			if (_LockBegin > _LockEnd)
 				_LockBegin = _LockEnd;
+			if (_LockEnd > _WrittenHighWater)
+				_WrittenHighWater = _LockEnd;
 		}
 		return &_Shadow[begin];
 	}
@@ -1617,6 +1621,40 @@ bool CDriverVulkan::flushPartialWrites(CVertexBuffer &vb, CVBDrvInfosVulkan &inf
 	}
 	if (bytes == 0)
 		return true;
+
+	// A PartialWrite shadow starts zeroed, and the engine may draw a buffer
+	// whose used range is larger than the part it has ever written (the rest
+	// is capacity, or a caller asked for more vertices than it filled). A zero
+	// landscape vertex is not degenerate: its VP maps it to the mirrored
+	// landscape centre, so it draws a huge spike; a zero vegetation vertex
+	// gives 0 * inf = NaN. Replace the never-written tail with copies of the
+	// last written vertex: an invisible duplicate instead of garbage.
+	const uint32 vertexSize = vb.getVertexSize();
+	const uint32 highWater = std::min(info._WrittenHighWater, bytes);
+	const uint32 fullWrittenEnd = vertexSize ? (highWater / vertexSize) * vertexSize : highWater;
+	if (vertexSize != 0 && fullWrittenEnd != 0 && fullWrittenEnd < bytes)
+	{
+		const uint32 fillFrom = std::max(fullWrittenEnd, info._TailFilled);
+		if (fillFrom < bytes)
+		{
+			uint8 *shadow = &info._Shadow[0];
+			const uint32 src = fullWrittenEnd - vertexSize;
+			for (uint32 dst = fillFrom; dst < bytes; dst += vertexSize)
+			{
+				const uint32 n = std::min(vertexSize, bytes - dst);
+				memcpy(shadow + dst, shadow + src, n);
+			}
+			info._TailFilled = bytes;
+			_StatsPartialTailBytes += bytes - fillFrom;
+		}
+		static uint32 warnedTail = 0;
+		if (warnedTail < 5)
+		{
+			++warnedTail;
+			nlwarning("Vulkan: PartialWrite '%s' uses %u bytes but only %u were ever written; filling the tail with the last vertex",
+				vb.getName().c_str(), bytes, fullWrittenEnd);
+		}
+	}
 
 	const uint32 ringOffset = allocVertexRing(bytes, vb.getName().c_str());
 	void *ring = vertexRingMapped();

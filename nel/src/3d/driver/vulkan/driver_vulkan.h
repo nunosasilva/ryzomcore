@@ -332,6 +332,14 @@ public:
 	uint32		_DirtyEnd;
 	uint32		_LockBegin;
 	uint32		_LockEnd;
+	/// Highest byte offset ever locked for writing. Bytes beyond it have
+	/// never been written and are zero in the shadow; flushPartialWrites()
+	/// fills the used tail with the last written vertex instead of drawing
+	/// vertices at the mirrored landscape centre (a huge spike) or NaNs.
+	uint32		_WrittenHighWater;
+	/// Tail already filled with duplicate vertices, so a repeated flush does
+	/// not copy it again while _WrittenHighWater has not moved.
+	uint32		_TailFilled;
 	void		markDirty(uint32 begin, uint32 end)
 	{
 		if (end <= begin)
@@ -1285,6 +1293,7 @@ private:
 	uint64					_StatsPartialFlushes;
 	uint64					_StatsPartialBytes;
 	uint64					_StatsPartialDrops;
+	uint64					_StatsPartialTailBytes;
 	/// Vertex-ring upload failures (all buffers, including the hard VB) and the
 	/// per-frame high-water of the ring offset.
 	uint64					_StatsVertexRingDrops;
