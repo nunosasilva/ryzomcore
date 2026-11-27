@@ -1613,8 +1613,17 @@ void	CMeshMRMGeom::updateShiftedTriangleCache(CMeshMRMInstance *mi, sint curLodI
 			totalTri+= pbList[i]->getNumIndexes()/3;
 		}
 
-		// Allocate triangles indices.
-		mi->_ShiftedTriangleCache->RawIndices.setFormat(NL_MESH_MRM_INDEX_FORMAT);
+		// Allocate triangles indices. The source PBlocks can be 32-bit (runtime
+		// built or upgraded on load), and baseVertex shifts every index; keep
+		// the shifted cache 32-bit in either case instead of reinterpreting a
+		// 32-bit source as 16-bit or truncating the shift.
+		bool need32 = (baseVertex != 0);
+		for (i = 0; i < pbList.size() && !need32; ++i)
+		{
+			if (pbList[i]->getFormat() == CIndexBuffer::Indices32)
+				need32 = true;
+		}
+		mi->_ShiftedTriangleCache->RawIndices.setFormat(need32 ? CIndexBuffer::Indices32 : NL_MESH_MRM_INDEX_FORMAT);
 		mi->_ShiftedTriangleCache->RawIndices.setNumIndexes(totalTri*3);
 
 		// Lock the index buffer
@@ -1638,11 +1647,19 @@ void	CMeshMRMGeom::updateShiftedTriangleCache(CMeshMRMInstance *mi, sint curLodI
 					// index, and fill
 					CIndexBufferRead ibaRead;
 					pbList[i]->lock (ibaRead);
-					nlassert(ibaRead.getFormat() == CIndexBuffer::Indices32);
-					const uint32	*pSrcTri= (const uint32 *) ibaRead.getPtr();
 					uint32	*pDstTri= dstPtr+dstRdrPass.Triangles;
-					for(;nIds>0;nIds--,pSrcTri++,pDstTri++)
-						*pDstTri= *pSrcTri + baseVertex;
+					if (ibaRead.getFormat() == CIndexBuffer::Indices32)
+					{
+						const uint32	*pSrcTri= (const uint32 *) ibaRead.getPtr();
+						for(;nIds>0;nIds--,pSrcTri++,pDstTri++)
+							*pDstTri= *pSrcTri + baseVertex;
+					}
+					else
+					{
+						const uint16	*pSrcTri= (const uint16 *) ibaRead.getPtr();
+						for(;nIds>0;nIds--,pSrcTri++,pDstTri++)
+							*pDstTri= *pSrcTri + baseVertex;
+					}
 				}
 
 				// Next
@@ -2644,13 +2661,26 @@ bool	CMeshMRMGeom::buildGeometryForLod(uint lodId, std::vector<CVector> &vertice
 			return false;
 		CIndexBufferRead iba;
 		pb.lock (iba);
-		nlassert(iba.getFormat()==NL_MESH_MRM_INDEX_FORMAT);
-		TMeshMRMIndexType *src= (TMeshMRMIndexType *) iba.getPtr();
-		for(uint n= pb.getNumIndexes();n>0;n--, src++)
+		const uint32 numIndices = pb.getNumIndexes();
+		if (iba.getFormat() == CIndexBuffer::Indices32)
 		{
-			uint	idx= *src;
-			// Flag the vertex with its own index => used.
-			vertexRemap[idx]= idx;
+			const uint32 *src = (const uint32 *)iba.getPtr();
+			for (uint32 n = numIndices; n > 0; --n, ++src)
+			{
+				const uint32 idx = *src;
+				// Flag the vertex with its own index => used.
+				vertexRemap[idx] = (sint)idx;
+			}
+		}
+		else
+		{
+			const uint16 *src = (const uint16 *)iba.getPtr();
+			for (uint32 n = numIndices; n > 0; --n, ++src)
+			{
+				const uint32 idx = *src;
+				// Flag the vertex with its own index => used.
+				vertexRemap[idx] = (sint)idx;
+			}
 		}
 
 		// total num indices
@@ -2739,14 +2769,28 @@ bool	CMeshMRMGeom::buildGeometryForLod(uint lodId, std::vector<CVector> &vertice
 		const CIndexBuffer &pb = getRdrPassPrimitiveBlock(lodId, i);
 		CIndexBufferRead iba;
 		pb.lock (iba);
-		TMeshMRMIndexType *src= (TMeshMRMIndexType *) iba.getPtr();
-		for(uint n= pb.getNumIndexes();n>0;n--, src++)
+		const uint32 numIndices = pb.getNumIndexes();
+		if (iba.getFormat() == CIndexBuffer::Indices32)
 		{
-			// resolve any geomorph, and final remapping
-			uint	remapedIdx= vertexRemap[*src];
-			nlassert(remapedIdx<vertices.size());
-			*pDstIndex= remapedIdx;
-			pDstIndex++;
+			const uint32 *src = (const uint32 *)iba.getPtr();
+			for (uint32 n = numIndices; n > 0; --n, ++src)
+			{
+				// resolve any geomorph, and final remapping
+				uint remapedIdx = vertexRemap[*src];
+				nlassert(remapedIdx < vertices.size());
+				*pDstIndex++ = remapedIdx;
+			}
+		}
+		else
+		{
+			const uint16 *src = (const uint16 *)iba.getPtr();
+			for (uint32 n = numIndices; n > 0; --n, ++src)
+			{
+				// resolve any geomorph, and final remapping
+				uint remapedIdx = vertexRemap[*src];
+				nlassert(remapedIdx < vertices.size());
+				*pDstIndex++ = remapedIdx;
+			}
 		}
 	}
 	// should have filled the entire buffer

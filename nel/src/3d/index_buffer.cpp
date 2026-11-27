@@ -339,6 +339,25 @@ void CIndexBuffer::buildSerialVector(std::vector<uint32> &dest) const
 // ***************************************************************************
 void CIndexBuffer::restoreFromSerialVector(const std::vector<uint32> &src)
 {
+	// The serialized shape format always stores indices as 32-bit values, but
+	// authored mesh PBlocks are created 16-bit for memory. A block whose
+	// vertices exceed 65,535 would be truncated silently in release (the old
+	// nlassert is compiled out). Keep the data: upgrade this buffer to 32-bit
+	// when a serialized index does not fit.
+	if (_Format == Indices16)
+	{
+		for (size_t k = 0; k < src.size(); ++k)
+		{
+			if (src[k] > 0xffff)
+			{
+				nlwarning("CIndexBuffer '%s': serialized index %u at %u does not fit 16 bits; upgrading the buffer to 32-bit indices",
+					getName().c_str(), src[k], (uint32)k);
+				_Format = Indices32;
+				break;
+			}
+		}
+	}
+
 	// for now, just convert to wanted format
 	if (_Format == Indices16)
 	{
