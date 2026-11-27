@@ -156,8 +156,11 @@ void CShapeBank::processWaitingShapes ()
 
 			case AsyncLoad_Texture:
 			{
+				// This flag is a per-frame result: retry the shared-image check
+				// next frame instead of blocking this shape forever.
+				rWS.WaitForSharedTexture = false;
 				// Setup all textures and lightmaps of the shape
-				if (nTotalUploaded > _MaxUploadPerFrame)
+				if (nTotalUploaded > _MaxUploadPerFrame || rWS.WaitForSharedTexture)
 					break;
 
 				CMeshBase *pMesh = dynamic_cast<CMeshBase*>(pShp);
@@ -178,6 +181,8 @@ void CShapeBank::processWaitingShapes ()
 								if (rMat.texturePresent(j))
 								{
 									if ((!_pDriver->isTextureExist(*rMat.getTexture(j))) ||
+										_pDriver->isTextureSharedPartial(*rMat.getTexture(j)) ||
+										rWS.WaitForSharedTexture ||
 										(rWS.UpTextLine > 0) || (rWS.UpTextMipMap > 0))
 									{
 										//_pDriver->setupTexture (*rMat.getTexture(j));
@@ -212,11 +217,11 @@ void CShapeBank::processWaitingShapes ()
 								++rWS.UpTextProgress;
 							}
 							++CurrentProgress;
-							if (nTotalUploaded > _MaxUploadPerFrame)
+							if (nTotalUploaded > _MaxUploadPerFrame || rWS.WaitForSharedTexture)
 								break;
 						}
 
-						if (nTotalUploaded > _MaxUploadPerFrame)
+						if (nTotalUploaded > _MaxUploadPerFrame || rWS.WaitForSharedTexture)
 							break;
 
 						// Do the same with lightmaps
@@ -228,6 +233,8 @@ void CShapeBank::processWaitingShapes ()
 								if (CurrentProgress >= rWS.UpTextProgress)
 								{
 									if ((!_pDriver->isTextureExist(*pText)) ||
+										_pDriver->isTextureSharedPartial(*pText) ||
+										rWS.WaitForSharedTexture ||
 										(rWS.UpTextLine > 0) || (rWS.UpTextMipMap > 0))
 									{
 										//_pDriver->setupTexture (*pText);
@@ -246,15 +253,15 @@ void CShapeBank::processWaitingShapes ()
 								}
 								++CurrentProgress;
 								++j; pText = rMat.getLightMap (j);
-								if (nTotalUploaded > _MaxUploadPerFrame)
+								if (nTotalUploaded > _MaxUploadPerFrame || rWS.WaitForSharedTexture)
 									break;
 							}
 						}
-						if (nTotalUploaded > _MaxUploadPerFrame)
+						if (nTotalUploaded > _MaxUploadPerFrame || rWS.WaitForSharedTexture)
 							break;
 					}
 				}
-				if (nTotalUploaded > _MaxUploadPerFrame)
+				if (nTotalUploaded > _MaxUploadPerFrame || rWS.WaitForSharedTexture)
 					break;
 
 				rWS.State = AsyncLoad_Ready;
@@ -339,14 +346,57 @@ bool CShapeBank::processWSUploadTexture (CWaitingShape &rWS, uint32 &nTotalUploa
 
 	if ((rWS.UpTextMipMap == 0) && (rWS.UpTextLine == 0))
 	{
-		// Create the texture only and do not upload anything
+		// Create the texture only and do not upload anything. A partial
+		// shared image is a wait, not a failure: keep the shape in
+		// AsyncLoad_Texture until its creator finishes the mips.
 		bool isRel = pText->getReleasable ();
 		pText->setReleasable (false);
 		bool isAllUploaded = false;
-		_pDriver->setupTextureEx (*pText, false, isAllUploaded);
+		const bool setupOk = _pDriver->setupTextureEx (*pText, false, isAllUploaded);
 		pText->setReleasable (isRel);
+		if (!setupOk)
+		{
+			if (_pDriver->isTextureSharedPartial(*pText))
+			{
+				++rWS.WaitSharedFrames;
+				static const uint32 watchdogFrames = 600; // ~10 s at 60 fps
+				if (rWS.WaitSharedFrames >= watchdogFrames)
+				{
+					nlwarning("ShapeBank: shared texture '%s' stuck partial for %u frames; filling it in place",
+						pText->getShareName().c_str(), rWS.WaitSharedFrames);
+					bool all = false;
+					// Never pass bMustRecreateSharedTexture here: the live
+					// image may be used by other shapes. Fill it in place if
+					// its representation is compatible.
+					if (_pDriver->setupTextureEx(*pText, true, all, false) && all)
+					{
+						_pDriver->markTextureFullyUploaded(*pText);
+						rWS.WaitSharedFrames = 0;
+						rWS.WaitForSharedTexture = false;
+						return true;
+					}
+					nlwarning("ShapeBank: could not fill shared texture '%s' in place; keeping the shape waiting",
+						pText->getShareName().c_str());
+					// Retry the watchdog only after another full interval instead
+					// of logging every frame.
+					rWS.WaitSharedFrames = 0;
+				}
+				rWS.WaitForSharedTexture = true;
+			}
+			else
+			{
+				nlwarning("ShapeBank: setupTextureEx failed for '%s'", pText->getShareName().c_str());
+				rWS.WaitForSharedTexture = true;
+			}
+			return false;
+		}
+		rWS.WaitForSharedTexture = false;
 		if (isAllUploaded)
+		{
+			_pDriver->markTextureFullyUploaded(*pText);
+			rWS.WaitSharedFrames = 0;
 			return true;
+		}
 	}
 
 	if (pText->mipMapOn())
@@ -418,16 +468,66 @@ bool CShapeBank::processWSUploadTexture (CWaitingShape &rWS, uint32 &nTotalUploa
 		}
 
 		nTotalUploaded += nWeight;
-		if (nTotalUploaded > _MaxUploadPerFrame)
+		if (nTotalUploaded > _MaxUploadPerFrame || rWS.WaitForSharedTexture)
 			return false;
 	}
 
+	// Every mip of this texture is now in the shared image; sharing shapes
+	// may link it without waiting for the rest of this shape.
+	_pDriver->markTextureFullyUploaded(*pText);
 	if (pText->getReleasable())
 		pText->release();
 
 	rWS.UpTextMipMap = 0;
 	rWS.UpTextLine = 0;
+	rWS.WaitSharedFrames = 0;
 	return true;
+}
+
+// ***************************************************************************
+void CShapeBank::forceEndUpLoadTexture(CWaitingShape &rWS)
+{
+	CMeshBase *pMesh = dynamic_cast<CMeshBase*>(rWS.ShapePtr);
+	if (pMesh == nullptr)
+		return;
+
+	const uint32 nbMat = pMesh->getNbMaterial();
+	for (uint32 i = 0; i < nbMat; ++i)
+	{
+		const CMaterial &rMat = pMesh->getMaterial(i);
+
+		for (uint8 j = 0; j < IDRV_MAT_MAXTEXTURES; ++j)
+		{
+			if (!rMat.texturePresent(j))
+				continue;
+			ITexture *pText = rMat.getTexture(j);
+			bool all = false;
+			if (!_pDriver->setupTextureEx(*pText, true, all, false) || !all)
+				nlwarning("ShapeBank: cancelled creator could not complete shared texture '%s' in place; leaving the image partial", pText->getShareName().c_str());
+			else
+				_pDriver->markTextureFullyUploaded(*pText);
+			if (pText->getReleasable())
+				pText->release();
+		}
+
+		if (rMat.getShader() == CMaterial::LightMap)
+		{
+			uint j = 0;
+			ITexture *pText = rMat.getLightMap(j);
+			while (pText != nullptr)
+			{
+				bool all = false;
+				if (!_pDriver->setupTextureEx(*pText, true, all, false) || !all)
+					nlwarning("ShapeBank: cancelled creator could not complete shared lightmap '%s' in place; leaving the image partial", pText->getShareName().c_str());
+				else
+					_pDriver->markTextureFullyUploaded(*pText);
+				if (pText->getReleasable())
+					pText->release();
+				++j;
+				pText = rMat.getLightMap(j);
+			}
+		}
+	}
 }
 
 // ***************************************************************************
@@ -577,7 +677,7 @@ void CShapeBank::cancelLoadAsync (const std::string &shapeNameNotLwr)
 									partialy uploaded data!
 						*/
 						// \todo yoyo: should be very rare, and don't know if really happens. must do tests
-						//forceEndUpLoadTexture(wsmmIt->second);
+						forceEndUpLoadTexture(wsmmIt->second);
 					}
 
 					// then delete this shape

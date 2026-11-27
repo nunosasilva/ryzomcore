@@ -718,6 +718,7 @@ VkImageView CDriverVulkan::getWhiteCubeTexture()
 		return VK_NULL_HANDLE;
 	_WhiteCubeTexture.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	_WhiteCubeTexture.Uploaded = true;
+	_WhiteCubeTexture.FullyUploaded = true;
 	return _WhiteCubeTexture.View;
 }
 
@@ -1238,6 +1239,7 @@ bool CDriverVulkan::uploadTextureVulkan(ITexture &tex, CTextureVulkan &out, bool
 		// NB: not "uploaded": the pixels are still the zero clear, the real
 		// ones are streamed in later through uploadTexture().
 		out.Uploaded = false;
+		out.FullyUploaded = false;
 		if (dbg)
 			nlinfo("VulkanTexDbg: '%s' image created WITHOUT pixels (cleared to zero, %u mips)", dbgName.c_str(), mipCount);
 		return true;
@@ -1603,6 +1605,7 @@ bool CDriverVulkan::uploadTextureCubeVulkan(ITexture &tex, CTextureVulkan &out)
 	out.SourceFormat = firstFace->getPixelFormat();
 	out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	out.Uploaded = true;
+	out.FullyUploaded = true;
 	return true;
 }
 
@@ -1691,6 +1694,7 @@ bool CDriverVulkan::uploadTexturePixels(ITexture &tex, CTextureVulkan &out)
 
 	out.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	out.Uploaded = true;
+	out.FullyUploaded = true;
 	return true;
 }
 
@@ -1939,6 +1943,24 @@ bool CDriverVulkan::isTextureExist(const ITexture &tex)
 	return info != NULL && info->Texture.Image != VK_NULL_HANDLE;
 }
 
+bool CDriverVulkan::isTextureSharedPartial(const ITexture &tex)
+{
+	if (!tex.supportSharing())
+		return false;
+	const CTextureDrvInfosVulkan *info = findTextureDrvInfos(tex);
+	return info != NULL && info->Texture.Image != VK_NULL_HANDLE && !info->Texture.FullyUploaded;
+}
+
+void CDriverVulkan::markTextureFullyUploaded(ITexture &tex)
+{
+	CTextureDrvInfosVulkan *info = findTextureDrvInfos(tex);
+	if (info)
+	{
+		info->Texture.Uploaded = true;
+		info->Texture.FullyUploaded = true;
+	}
+}
+
 bool CDriverVulkan::setupTexture(ITexture &tex)
 {
 	bool allUploaded = false;
@@ -1974,37 +1996,58 @@ bool CDriverVulkan::setupTextureEx(ITexture &tex, bool bUpload, bool &bAllUpload
 	}
 
 	// A shared texture found through its share name already holds the pixels
-	// another ITexture uploaded. Loading this instance's bitmap would be pure
-	// overhead (and its size is not even known before generate()), so leave the
-	// image alone unless the caller explicitly wants it recreated.
+	// another ITexture uploaded. Link it only when the creator finished the
+	// whole chain; a partially streamed image must not be handed to a shape
+	// (that is the Fairhaven mairie black/partial-high-mip race).
+	bool forceSharedUpload = false;
 	if (!createdInfo && tex.supportSharing() && !bMustRecreateSharedTexture)
 	{
-		// The share-name map already had an entry: another ITexture instance
-		// owns this image. CShapeBank creates the image first (setupTextureEx
-		// with bUpload=false) and streams the mips in over the next frames.
-		// Skip the upload here: the creator streams the chain and this instance
-		// links immediately, showing the zero-cleared image until the mips
-		// arrive. That is the pre-4dd79583c behaviour and it matters: making
-		// every share hit in the created-but-unstreamed window upload the same
-		// mips again multiplied the shape-bank byte budget and delayed object
-		// linking (the recent pop-in).
-		// NLVK_SHARED_STREAM_DUP=1 restores the duplicate streaming for A/B;
+		// NLVK_SHARED_STREAM_DUP=1 restores duplicate streaming for A/B;
 		// NLVK_NO_SHARED_STREAM=1 is kept as the explicit "skip" switch.
 		static const bool duplicateStream = getenv("NLVK_SHARED_STREAM_DUP") != NULL;
 		static const bool noSharedStream = getenv("NLVK_NO_SHARED_STREAM") != NULL;
-		if (vk.Uploaded || noSharedStream || !duplicateStream)
+		if (vk.FullyUploaded || noSharedStream)
 		{
 			tex.clearTouched();
 			bAllUploaded = true;
 			return true;
 		}
-		std::string dbgName;
-		texDbgName(tex, dbgName);
-		if (texDbgEnabled(dbgName))
-			nlinfo("VulkanTexDbg: '%s' shared image has no pixels yet, letting the caller stream it", dbgName.c_str());
+		if (duplicateStream || bUpload)
+		{
+			// A/B duplicate streaming, or a synchronous caller that must
+			// upload: fill the live image in place rather than replacing it.
+			forceSharedUpload = true;
+			std::string dbgName;
+			texDbgName(tex, dbgName);
+			if (texDbgEnabled(dbgName))
+				nlinfo("VulkanTexDbg: '%s' shared image partial, duplicating the stream", dbgName.c_str());
+		}
+		else
+		{
+			// CShapeBank calls with bUpload=false. Keep the shape in
+			// AsyncLoad_Texture and let the creator finish; never report a
+			// partial image as complete.
+			std::string dbgName;
+			texDbgName(tex, dbgName);
+			if (texDbgEnabled(dbgName))
+				nlinfo("VulkanTexDbg: '%s' shared image partial, waiting for creator", dbgName.c_str());
+			bAllUploaded = false;
+			return false;
+		}
 	}
 
-	if (vk.Image != VK_NULL_HANDLE && !bMustRecreateSharedTexture && !tex.touched())
+	if (forceSharedUpload && vk.Image != VK_NULL_HANDLE &&
+		(vk.Width != tex.getWidth() || vk.Height != tex.getHeight() ||
+			(tex.mipMapOn() && vk.MipLevels != tex.getMipMapCount())))
+	{
+		// A synchronous caller that hit a shared image with a different
+		// representation must not replace the live image another shape is
+		// using. Leave it alone; the shape-bank watchdog / a real reload will
+		// resolve the inconsistent share name.
+		return false;
+	}
+
+	if (vk.Image != VK_NULL_HANDLE && !bMustRecreateSharedTexture && !tex.touched() && !forceSharedUpload)
 		return true;
 
 	if (vk.Image != VK_NULL_HANDLE && !bMustRecreateSharedTexture &&

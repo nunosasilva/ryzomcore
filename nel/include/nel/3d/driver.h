@@ -393,6 +393,18 @@ public:
 	 */
 	virtual bool			isTextureExist(const ITexture &tex) = 0;
 
+	/** True when the texture's image exists but not every mip has been
+	 *	uploaded yet. Drivers that do not track partial shared images return
+	 *	false. Used by CShapeBank to avoid linking a shape on a partially
+	 *	streamed shared image.
+	 */
+	virtual bool			isTextureSharedPartial(const ITexture &/*tex*/) { return false; }
+
+	/** Mark a shared image complete after its owner finished streaming all
+	 *	mips. No-op for drivers that do not track it.
+	 */
+	virtual void			markTextureFullyUploaded(ITexture &/*tex*/) {}
+
 	/** setup a texture, generate and upload if needed. same as setupTextureEx(tex, true, dummy);
 	 */
 	virtual bool			setupTexture(ITexture &tex) = 0;
